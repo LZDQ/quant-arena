@@ -1,0 +1,1 @@
+source "$AUTOENV_CUR_DIR/.venv/bin/activate"
