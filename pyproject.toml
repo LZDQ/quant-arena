@@ -1,0 +1,25 @@
+[project]
+name = "quant-arena"
+version = "0.1.0"
+description = "Filesystem-backed stock trading simulation and monitoring service."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+	"fastapi>=0.115.0,<1.0.0",
+	"pydantic>=2.9.0,<3.0.0",
+	"uvicorn>=0.32.0,<1.0.0",
+]
+
+[dependency-groups]
+dev = [
+	"httpx>=0.28.0,<1.0.0",
+	"pytest>=8.0.0,<9.0.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.10.9,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "quant_arena"
+module-root = ""
