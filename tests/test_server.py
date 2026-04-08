@@ -5,9 +5,10 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from mcp import types
 
 from quant_arena.market import StaticMarketDataProvider
-from quant_arena.models import QuoteSnapshot
+from quant_arena.models import DailyBar, FiveMinuteBar, QuoteSnapshot
 from quant_arena.server import create_app
 
 
@@ -18,12 +19,19 @@ def _write_json(path: Path, data: dict) -> None:
 		handle.write("\n")
 
 
-def _make_app(tmp_path: Path, quote_price: float = 10.0, quote_time: datetime | None = None) -> TestClient:
+def _make_app(
+	tmp_path: Path,
+	quote_price: float = 10.0,
+	quote_time: datetime | None = None,
+	daily_bars: dict[tuple[str, date], DailyBar] | None = None,
+	five_minute_bars: dict[tuple[str, date], list[FiveMinuteBar]] | None = None,
+) -> TestClient:
+	resolved_quote_time = quote_time or datetime(2026, 4, 6, 1, 0, tzinfo=timezone.utc)
 	quote = QuoteSnapshot(
-		symbol="sh.600000",
+		code="sh.600000",
 		name="demo",
-		trade_date=date(2026, 4, 6),
-		as_of=quote_time or datetime(2026, 4, 6, 1, 0, tzinfo=timezone.utc),
+		trade_date=resolved_quote_time.date(),
+		as_of=resolved_quote_time,
 		last_price=quote_price,
 		prev_close=10.0,
 		limit_up=11.0,
@@ -33,14 +41,21 @@ def _make_app(tmp_path: Path, quote_price: float = 10.0, quote_time: datetime | 
 	_write_json(
 		config_path,
 		{
-			"project_root": str((tmp_path / "private-project").resolve()),
+			"agents_root": str((tmp_path / "private-agents").resolve()),
 			"market_data_root": str((tmp_path / "public-market").resolve()),
 			"enable_background_polling": False,
 			"polling_interval_seconds": 0,
 			"fees": {"commission_bps": 3.0, "min_commission": 5.0, "stamp_tax_bps": 10.0},
 		},
 	)
-	app = create_app(config_path=config_path, market_provider=StaticMarketDataProvider({"sh.600000": quote}))
+	app = create_app(
+		config_path=config_path,
+		market_provider=StaticMarketDataProvider(
+			{"sh.600000": quote},
+			daily_bars=daily_bars,
+			five_minute_bars=five_minute_bars,
+		),
+	)
 	return TestClient(app)
 
 
@@ -49,7 +64,7 @@ def test_paths_and_agent_lifecycle(tmp_path: Path) -> None:
 		paths = client.get("/api/paths")
 		assert paths.status_code == 200
 		payload = paths.json()
-		assert payload["project_root"].endswith("private-project")
+		assert payload["agents_root"].endswith("private-agents")
 		assert payload["market_data_root"].endswith("public-market")
 
 		created = client.post(
@@ -67,9 +82,9 @@ def test_paths_and_agent_lifecycle(tmp_path: Path) -> None:
 		assert listed.status_code == 200
 		assert [item["agent_id"] for item in listed.json()] == ["alpha"]
 
-		agents_path = tmp_path / "private-project" / "config" / "agents.json"
-		assert agents_path.exists()
-		assert not (tmp_path / "public-market" / "config" / "agents.json").exists()
+		agent_config_path = tmp_path / "private-agents" / "alpha" / "config.json"
+		assert agent_config_path.exists()
+		assert not (tmp_path / "public-market" / "alpha" / "config.json").exists()
 
 
 def test_submit_buy_then_fill_on_next_refresh(tmp_path: Path) -> None:
@@ -87,7 +102,7 @@ def test_submit_buy_then_fill_on_next_refresh(tmp_path: Path) -> None:
 
 		order = client.post(
 			"/api/agents/alpha/orders",
-			json={"symbol": "sh.600000", "side": "buy", "quantity": 100, "limit_price": 10.0},
+			json={"code": "sh.600000", "side": "buy", "quantity": 100, "limit_price": 10.0},
 		)
 		assert order.status_code == 200
 		assert order.json()["status"] == "pending"
@@ -106,7 +121,7 @@ def test_submit_buy_then_fill_on_next_refresh(tmp_path: Path) -> None:
 			market_provider=StaticMarketDataProvider(
 				{
 					"sh.600000": QuoteSnapshot(
-						symbol="sh.600000",
+						code="sh.600000",
 						name="demo",
 						trade_date=date(2026, 4, 7),
 						as_of=datetime(2026, 4, 7, 1, 0, tzinfo=timezone.utc),
@@ -139,7 +154,7 @@ def test_t_plus_one_blocks_same_day_sell_until_next_day(tmp_path: Path) -> None:
 				"initial_cash": 100000,
 			},
 		)
-		client.post("/api/agents/alpha/orders", json={"symbol": "sh.600000", "side": "buy", "quantity": 100, "limit_price": 10.0})
+		client.post("/api/agents/alpha/orders", json={"code": "sh.600000", "side": "buy", "quantity": 100, "limit_price": 10.0})
 		client.post("/api/market/refresh")
 		operations = client.get("/api/agents/alpha/operations")
 		assert operations.json()["fills"] == []
@@ -149,7 +164,7 @@ def test_t_plus_one_blocks_same_day_sell_until_next_day(tmp_path: Path) -> None:
 		market_provider=StaticMarketDataProvider(
 			{
 				"sh.600000": QuoteSnapshot(
-					symbol="sh.600000",
+					code="sh.600000",
 					name="demo",
 					trade_date=date(2026, 4, 7),
 					as_of=datetime(2026, 4, 7, 1, 0, tzinfo=timezone.utc),
@@ -166,7 +181,7 @@ def test_t_plus_one_blocks_same_day_sell_until_next_day(tmp_path: Path) -> None:
 
 		sell = fill_client.post(
 			"/api/agents/alpha/orders",
-			json={"symbol": "sh.600000", "side": "sell", "quantity": 100, "limit_price": 9.8},
+			json={"code": "sh.600000", "side": "sell", "quantity": 100, "limit_price": 9.8},
 		)
 		assert sell.status_code == 200
 		fill_client.post("/api/market/refresh")
@@ -179,7 +194,7 @@ def test_t_plus_one_blocks_same_day_sell_until_next_day(tmp_path: Path) -> None:
 		market_provider=StaticMarketDataProvider(
 			{
 				"sh.600000": QuoteSnapshot(
-					symbol="sh.600000",
+					code="sh.600000",
 					name="demo",
 					trade_date=date(2026, 4, 8),
 					as_of=datetime(2026, 4, 8, 1, 0, tzinfo=timezone.utc),
@@ -212,23 +227,210 @@ def test_mcp_requires_token_and_can_submit_order(tmp_path: Path) -> None:
 		unauthorized = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize"})
 		assert unauthorized.status_code == 401
 
-		authorized = client.post(
+		initialized = client.post(
 			"/mcp",
 			headers={"X-Agent-Token": "secret"},
 			json={
 				"jsonrpc": "2.0",
-				"id": 2,
-				"method": "tools/call",
+				"id": 1,
+				"method": "initialize",
 				"params": {
-					"name": "submit_operation",
-					"arguments": {
-						"symbol": "sh.600000",
-						"side": "buy",
-						"quantity": 100,
-						"limit_price": 10.0,
-					},
+					"protocolVersion": types.LATEST_PROTOCOL_VERSION,
+					"capabilities": {},
+					"clientInfo": {"name": "pytest", "version": "0.1.0"},
 				},
 			},
 		)
-		assert authorized.status_code == 200
-		assert authorized.json()["result"]["content"][0]["json"]["symbol"] == "sh.600000"
+		assert initialized.status_code == 200
+		assert initialized.json()["result"]["serverInfo"]["name"] == "quant-arena"
+
+		tools = client.post(
+			"/mcp",
+			headers={"X-Agent-Token": "secret"},
+			json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+		)
+		assert tools.status_code == 200
+		assert any(tool["name"] == "submit_operation" for tool in tools.json()["result"]["tools"])
+
+
+def test_sync_market_data_writes_daily_bar_after_close(tmp_path: Path) -> None:
+	trade_date = date(2026, 4, 8)
+	with _make_app(
+		tmp_path,
+		quote_price=10.0,
+		quote_time=datetime(2026, 4, 8, 7, 10, tzinfo=timezone.utc),
+		daily_bars={
+			("sh.600000", trade_date): DailyBar(
+				code="sh.600000",
+				trade_date=trade_date,
+				open_price=9.9,
+				high_price=10.2,
+				low_price=9.8,
+				close_price=10.0,
+				prev_close=9.8,
+				volume=123456,
+				amount=1234567,
+			)
+		},
+	) as client:
+		client.post(
+			"/api/agents",
+			json={
+				"agent_id": "alpha",
+				"display_name": "Alpha",
+				"token_secret": "secret",
+				"initial_cash": 100000,
+			},
+		)
+		client.post(
+			"/api/agents/alpha/orders",
+			json={"code": "sh.600000", "side": "buy", "quantity": 100, "limit_price": 10.0},
+		)
+
+		client.app.state.ctx.arena.sync_market_data(now=datetime(2026, 4, 8, 7, 10, tzinfo=timezone.utc))
+
+		daily_path = tmp_path / "public-market" / "daily-bars" / "sh.600000" / "2026-04-08.json"
+		assert daily_path.exists()
+		with daily_path.open("r", encoding="utf-8") as handle:
+			payload = json.load(handle)
+		assert payload["close_price"] == 10.0
+
+
+def test_sync_market_data_writes_five_minute_bars_during_session(tmp_path: Path) -> None:
+	trade_date = date(2026, 4, 8)
+	with _make_app(
+		tmp_path,
+		quote_price=10.0,
+		quote_time=datetime(2026, 4, 8, 2, 5, tzinfo=timezone.utc),
+		five_minute_bars={
+			("sh.600000", trade_date): [
+				FiveMinuteBar(
+					code="sh.600000",
+					trade_date=trade_date,
+					bar_time=datetime(2026, 4, 8, 10, 0, tzinfo=timezone.utc),
+					open_price=9.95,
+					high_price=10.05,
+					low_price=9.94,
+					close_price=10.0,
+					volume=1000,
+					amount=10000,
+				),
+				FiveMinuteBar(
+					code="sh.600000",
+					trade_date=trade_date,
+					bar_time=datetime(2026, 4, 8, 10, 5, tzinfo=timezone.utc),
+					open_price=10.0,
+					high_price=10.08,
+					low_price=9.99,
+					close_price=10.02,
+					volume=900,
+					amount=9018,
+				),
+			]
+		},
+	) as client:
+		client.post(
+			"/api/agents",
+			json={
+				"agent_id": "alpha",
+				"display_name": "Alpha",
+				"token_secret": "secret",
+				"initial_cash": 100000,
+			},
+		)
+		client.post(
+			"/api/agents/alpha/orders",
+			json={"code": "sh.600000", "side": "buy", "quantity": 100, "limit_price": 10.0},
+		)
+
+		client.app.state.ctx.arena.sync_market_data(now=datetime(2026, 4, 8, 2, 5, tzinfo=timezone.utc))
+
+		bars_path = tmp_path / "public-market" / "5min-bars" / "sh.600000" / "2026-04-08.json"
+		assert bars_path.exists()
+		with bars_path.open("r", encoding="utf-8") as handle:
+			payload = json.load(handle)
+		assert len(payload) == 2
+		assert payload[-1]["close_price"] == 10.02
+
+		status = client.get("/api/market/status")
+		assert status.status_code == 200
+		code_status = status.json()["codes"][0]
+		assert code_status["code"] == "sh.600000"
+		assert code_status["latest_five_minute_bar_date"] == "2026-04-08"
+		assert code_status["five_minute_bar_count"] == 2
+
+		bars = client.get("/api/market/bars", params={"code": "sh.600000"})
+		assert bars.status_code == 200
+		payload = bars.json()
+		assert payload["code"] == "sh.600000"
+		assert payload["trade_date"] == "2026-04-08"
+		assert len(payload["five_minute_bars"]) == 2
+		assert payload["five_minute_bars"][-1]["close_price"] == 10.02
+
+
+def test_parse_today_market_data_if_missing(tmp_path: Path) -> None:
+	trade_date = date(2026, 4, 8)
+	with _make_app(
+		tmp_path,
+		quote_price=10.0,
+		quote_time=datetime(2026, 4, 8, 2, 5, tzinfo=timezone.utc),
+		daily_bars={
+			("sh.600000", trade_date): DailyBar(
+				code="sh.600000",
+				trade_date=trade_date,
+				open_price=9.9,
+				high_price=10.2,
+				low_price=9.8,
+				close_price=10.0,
+				prev_close=9.8,
+				volume=123456,
+				amount=1234567,
+			)
+		},
+		five_minute_bars={
+			("sh.600000", trade_date): [
+				FiveMinuteBar(
+					code="sh.600000",
+					trade_date=trade_date,
+					bar_time=datetime(2026, 4, 8, 10, 0, tzinfo=timezone.utc),
+					open_price=9.95,
+					high_price=10.05,
+					low_price=9.94,
+					close_price=10.0,
+					volume=1000,
+					amount=10000,
+				)
+			]
+		},
+	) as client:
+		client.post(
+			"/api/agents",
+			json={
+				"agent_id": "alpha",
+				"display_name": "Alpha",
+				"token_secret": "secret",
+				"initial_cash": 100000,
+			},
+		)
+		client.post(
+			"/api/agents/alpha/orders",
+			json={"code": "sh.600000", "side": "buy", "quantity": 100, "limit_price": 10.0},
+		)
+
+		result = client.post("/api/market/parse-today")
+		assert result.status_code == 200
+		payload = result.json()
+		assert payload["trade_date"] == "2026-04-08"
+		assert payload["tracked_codes"] == ["sh.600000"]
+		assert payload["parsed_daily_codes"] == ["sh.600000"]
+		assert payload["parsed_five_minute_codes"] == ["sh.600000"]
+
+		daily_path = tmp_path / "public-market" / "daily-bars" / "sh.600000" / "2026-04-08.json"
+		five_minute_path = tmp_path / "public-market" / "5min-bars" / "sh.600000" / "2026-04-08.json"
+		assert daily_path.exists()
+		assert five_minute_path.exists()
+
+		again = client.post("/api/market/parse-today")
+		assert again.status_code == 200
+		assert again.json()["parsed_daily_codes"] == []
+		assert again.json()["parsed_five_minute_codes"] == []

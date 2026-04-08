@@ -1,9 +1,7 @@
 """Domain models for simulation and APIs."""
 
-from __future__ import annotations
-
 from datetime import date, datetime
-from typing import Any, Literal
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -14,9 +12,9 @@ OrderStatus = Literal["pending", "filled", "canceled"]
 
 
 class QuoteSnapshot(BaseModel):
-	"""Latest market quote for one symbol."""
+	"""Latest market quote for one code."""
 
-	symbol: str
+	code: str
 	name: str | None = None
 	trade_date: date
 	as_of: datetime
@@ -24,6 +22,34 @@ class QuoteSnapshot(BaseModel):
 	prev_close: float = Field(gt=0)
 	limit_up: float = Field(gt=0)
 	limit_down: float = Field(gt=0)
+
+
+class DailyBar(BaseModel):
+	"""One daily OHLCV bar."""
+
+	code: str
+	trade_date: date
+	open_price: float = Field(ge=0)
+	high_price: float = Field(ge=0)
+	low_price: float = Field(ge=0)
+	close_price: float = Field(ge=0)
+	prev_close: float = Field(ge=0)
+	volume: float = Field(ge=0)
+	amount: float = Field(ge=0)
+
+
+class FiveMinuteBar(BaseModel):
+	"""One 5-minute OHLCV bar."""
+
+	code: str
+	trade_date: date
+	bar_time: datetime
+	open_price: float = Field(ge=0)
+	high_price: float = Field(ge=0)
+	low_price: float = Field(ge=0)
+	close_price: float = Field(ge=0)
+	volume: float = Field(ge=0)
+	amount: float = Field(ge=0)
 
 
 class PositionLot(BaseModel):
@@ -39,7 +65,7 @@ class OrderRecord(BaseModel):
 
 	order_id: str = Field(default_factory=lambda: uuid4().hex)
 	agent_id: str
-	symbol: str
+	code: str
 	side: OrderSide
 	quantity: int = Field(gt=0)
 	limit_price: float = Field(gt=0)
@@ -58,7 +84,7 @@ class FillRecord(BaseModel):
 	fill_id: str = Field(default_factory=lambda: uuid4().hex)
 	order_id: str
 	agent_id: str
-	symbol: str
+	code: str
 	side: OrderSide
 	quantity: int = Field(gt=0)
 	executed_at: datetime
@@ -93,7 +119,7 @@ class AgentState(BaseModel):
 class PositionView(BaseModel):
 	"""API view of one portfolio position."""
 
-	symbol: str
+	code: str
 	quantity: int
 	sellable_quantity: int
 	avg_cost: float
@@ -139,9 +165,43 @@ class PathsResponse(BaseModel):
 	"""Resolved runtime paths."""
 
 	config_path: str
-	project_root: str
+	agents_root: str
 	market_data_root: str
-	agents_config_path: str
+
+
+class MarketCodeStatus(BaseModel):
+	"""Public market-data status for one code."""
+
+	code: str
+	latest_daily_bar_date: date | None = None
+	latest_five_minute_bar_date: date | None = None
+	five_minute_bar_count: int = 0
+	last_five_minute_bar_time: datetime | None = None
+
+
+class MarketStatusResponse(BaseModel):
+	"""Public market-data overview."""
+
+	tracked_codes: list[str]
+	codes: list[MarketCodeStatus]
+
+
+class MarketBarsResponse(BaseModel):
+	"""Public market-data payload for one code/date."""
+
+	code: str
+	trade_date: date
+	daily_bar: DailyBar | None = None
+	five_minute_bars: list[FiveMinuteBar] = Field(default_factory=list)
+
+
+class MarketParseResponse(BaseModel):
+	"""Result of a manual market-data parse attempt."""
+
+	trade_date: date
+	tracked_codes: list[str]
+	parsed_daily_codes: list[str]
+	parsed_five_minute_codes: list[str]
 
 
 class CreateAgentRequest(BaseModel):
@@ -170,25 +230,7 @@ class UpdateAgentRequest(BaseModel):
 class SubmitOrderRequest(BaseModel):
 	"""Submit a pending order."""
 
-	symbol: str
+	code: str
 	side: OrderSide
 	quantity: int = Field(gt=0)
 	limit_price: float = Field(gt=0)
-
-
-class MCPRequest(BaseModel):
-	"""Minimal JSON-RPC style MCP request."""
-
-	jsonrpc: str = "2.0"
-	id: str | int | None = None
-	method: str
-	params: dict[str, Any] | None = None
-
-
-class MCPResponse(BaseModel):
-	"""Minimal JSON-RPC style MCP response."""
-
-	jsonrpc: str = "2.0"
-	id: str | int | None = None
-	result: Any | None = None
-	error: dict[str, Any] | None = None

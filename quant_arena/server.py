@@ -1,9 +1,7 @@
 """FastAPI server for quant-arena."""
 
-from __future__ import annotations
-
 import asyncio
-import json
+from contextlib import AsyncExitStack
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
@@ -11,14 +9,19 @@ from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from quant_arena.arena import ArenaService
-from quant_arena.config import AgentConfig, AppConfig, load_agents_config, load_app_config
+from quant_arena.config import AgentConfig, AppConfig, load_app_config
 from quant_arena.market import BaoStockMarketDataProvider, MarketDataProvider
-from quant_arena.models import CreateAgentRequest, MCPRequest, MCPResponse, PathsResponse, SubmitOrderRequest, UpdateAgentRequest
+from quant_arena.mcp_server import create_mcp_server, wrap_mcp_with_agent_auth
+from quant_arena.models import CreateAgentRequest, MarketBarsResponse, MarketParseResponse, MarketStatusResponse, PathsResponse, SubmitOrderRequest, UpdateAgentRequest
 from quant_arena.storage import ArenaStorage
+
+
+DEFAULT_CONFIG_PATH = Path.home() / ".quant-arena" / "config.json"
 
 
 class AppState:
@@ -34,9 +37,9 @@ class AppState:
 
 def _load_arena(config_path: Path, market_provider: MarketDataProvider | None = None) -> AppState:
 	config = load_app_config(config_path)
-	storage = ArenaStorage(Path(config.project_root).resolve(), Path(config.market_data_root).resolve())
+	storage = ArenaStorage(Path(config.agents_root).resolve(), Path(config.market_data_root).resolve())
 	storage.ensure_layout()
-	agents = load_agents_config(storage.agents_config_path())
+	agents = storage.load_agent_configs()
 	arena = ArenaService(config=config, storage=storage, market_data=market_provider or BaoStockMarketDataProvider())
 	arena.set_agents(agents)
 	return AppState(config_path=config_path, config=config, storage=storage, arena=arena)
@@ -44,6 +47,7 @@ def _load_arena(config_path: Path, market_provider: MarketDataProvider | None = 
 
 async def _poll_market(state: AppState) -> None:
 	while True:
+		state.arena.sync_market_data()
 		state.arena.match_pending_orders()
 		await asyncio.sleep(state.config.polling_interval_seconds)
 
@@ -51,25 +55,37 @@ async def _poll_market(state: AppState) -> None:
 def create_app(config_path: Path | None = None, market_provider: MarketDataProvider | None = None) -> FastAPI:
 	"""Create the FastAPI app."""
 
-	resolved_config = (config_path or Path("./config/app.json")).resolve()
+	resolved_config = (config_path or DEFAULT_CONFIG_PATH).resolve()
+	mcp_server = create_mcp_server(lambda: app.state.ctx.arena)
 
 	@asynccontextmanager
 	async def lifespan(app: FastAPI):
-		state = _load_arena(resolved_config, market_provider=market_provider)
-		app.state.ctx = state
-		if state.config.enable_background_polling and state.config.polling_interval_seconds > 0:
-			state.background_task = asyncio.create_task(_poll_market(state))
-		yield
-		if state.background_task is not None:
-			state.background_task.cancel()
+		async with AsyncExitStack() as stack:
+			state = _load_arena(resolved_config, market_provider=market_provider)
+			app.state.ctx = state
+			await stack.enter_async_context(mcp_server.session_manager.run())
+			if state.config.enable_background_polling and state.config.polling_interval_seconds > 0:
+				state.background_task = asyncio.create_task(_poll_market(state))
 			try:
-				await state.background_task
-			except asyncio.CancelledError:
-				pass
+				yield
+			finally:
+				if state.background_task is not None:
+					state.background_task.cancel()
+					try:
+						await state.background_task
+					except asyncio.CancelledError:
+						pass
 
 	app = FastAPI(title="quant-arena", lifespan=lifespan)
-	static_dir = resolved_config.parent.parent / "static"
+	app.add_middleware(
+		CORSMiddleware,
+		allow_origins=["*"],
+		allow_methods=["*"],
+		allow_headers=["*"],
+	)
+	static_dir = Path(__file__).resolve().parent.parent / "static"
 	app.mount("/assets", StaticFiles(directory=static_dir / "assets", check_dir=False), name="assets")
+	app.mount("/mcp/", wrap_mcp_with_agent_auth(mcp_server.streamable_http_app(), lambda: app.state.ctx.arena))
 
 	def get_state() -> AppState:
 		return app.state.ctx
@@ -83,9 +99,8 @@ def create_app(config_path: Path | None = None, market_provider: MarketDataProvi
 		state = get_state()
 		return PathsResponse(
 			config_path=str(state.config_path),
-			project_root=str(state.storage.project_root),
+			agents_root=str(state.storage.agents_root),
 			market_data_root=str(state.storage.market_data_root),
-			agents_config_path=str(state.storage.agents_config_path()),
 		)
 
 	@app.get("/api/agents")
@@ -134,93 +149,31 @@ def create_app(config_path: Path | None = None, market_provider: MarketDataProvi
 
 	@app.post("/api/market/refresh")
 	def refresh_market() -> dict[str, str]:
+		get_state().arena.sync_market_data()
 		get_state().arena.match_pending_orders()
 		return {"status": "ok"}
+
+	@app.post("/api/market/parse-today", response_model=MarketParseResponse)
+	def parse_today_market() -> MarketParseResponse:
+		return get_state().arena.parse_today_market_data_if_missing()
+
+	@app.get("/api/market/status", response_model=MarketStatusResponse)
+	def get_market_status() -> MarketStatusResponse:
+		return get_state().arena.get_market_status()
+
+	@app.get("/api/market/bars", response_model=MarketBarsResponse)
+	def get_market_bars(code: str, trade_date: str | None = None) -> MarketBarsResponse:
+		parsed_trade_date = date.fromisoformat(trade_date) if trade_date else None
+		return get_state().arena.get_market_bars(code, parsed_trade_date)
 
 	@app.get("/api/rankings")
 	def get_rankings(date_value: str | None = None) -> Any:
 		target_date = date.fromisoformat(date_value) if date_value else None
 		return get_state().arena.get_rankings(target_date)
 
-	@app.post("/mcp", response_model=MCPResponse)
-	async def mcp_endpoint(request: Request) -> MCPResponse:
-		state = get_state()
-		headers = {key.lower(): value for key, value in request.headers.items()}
-		agent = state.arena.authenticate_agent(headers)
-		payload = MCPRequest.model_validate(await request.json())
-		params = payload.params or {}
-		try:
-			if payload.method == "initialize":
-				result = {
-					"serverInfo": {"name": "quant-arena", "version": "0.1.0"},
-					"capabilities": {"resources": {}, "tools": {}},
-				}
-			elif payload.method == "resources/list":
-				result = {
-					"resources": [
-						{"uri": "arena://portfolio", "name": "Current portfolio", "mimeType": "application/json"},
-						{"uri": "arena://operations", "name": "Recent operations", "mimeType": "application/json"},
-					]
-				}
-			elif payload.method == "resources/read":
-				uri = params.get("uri")
-				if uri == "arena://portfolio":
-					content = state.arena.get_portfolio(agent.agent_id).model_dump(mode="json")
-				elif uri == "arena://operations":
-					content = state.arena.list_operations(agent.agent_id, limit=50).model_dump(mode="json")
-				else:
-					raise HTTPException(status_code=404, detail=f"Unknown resource: {uri}")
-				result = {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(content, ensure_ascii=False)}]}
-			elif payload.method == "tools/list":
-				result = {
-					"tools": [
-						{
-							"name": "get_portfolio",
-							"description": "Get current portfolio including pending orders.",
-							"inputSchema": {"type": "object", "properties": {}},
-						},
-						{
-							"name": "list_operations",
-							"description": "List orders and fills.",
-							"inputSchema": {
-								"type": "object",
-								"properties": {"limit": {"type": "integer", "minimum": 1}},
-							},
-						},
-						{
-							"name": "submit_operation",
-							"description": "Submit a pending buy or sell order.",
-							"inputSchema": {
-								"type": "object",
-								"required": ["symbol", "side", "quantity", "limit_price"],
-								"properties": {
-									"symbol": {"type": "string"},
-									"side": {"type": "string", "enum": ["buy", "sell"]},
-									"quantity": {"type": "integer", "minimum": 1},
-									"limit_price": {"type": "number", "exclusiveMinimum": 0},
-								},
-							},
-						},
-					]
-				}
-			elif payload.method == "tools/call":
-				name = params.get("name")
-				arguments = params.get("arguments") or {}
-				if name == "get_portfolio":
-					content = state.arena.get_portfolio(agent.agent_id).model_dump(mode="json")
-				elif name == "list_operations":
-					content = state.arena.list_operations(agent.agent_id, limit=arguments.get("limit")).model_dump(mode="json")
-				elif name == "submit_operation":
-					order = state.arena.submit_order(agent.agent_id, SubmitOrderRequest.model_validate(arguments))
-					content = order.model_dump(mode="json")
-				else:
-					raise HTTPException(status_code=404, detail=f"Unknown tool: {name}")
-				result = {"content": [{"type": "json", "json": content}]}
-			else:
-				raise HTTPException(status_code=404, detail=f"Unknown MCP method: {payload.method}")
-			return MCPResponse(id=payload.id, result=result)
-		except HTTPException as exc:
-			return MCPResponse(id=payload.id, error={"code": exc.status_code, "message": exc.detail})
+	@app.api_route("/mcp", methods=["GET", "POST", "DELETE"])
+	def mcp_redirect() -> RedirectResponse:
+		return RedirectResponse(url="/mcp/", status_code=307)
 
 	@app.get("/{path:path}")
 	def frontend(path: str):
@@ -238,6 +191,6 @@ def create_app(config_path: Path | None = None, market_provider: MarketDataProvi
 def run() -> None:
 	"""Run the uvicorn server."""
 
-	config_path = Path("./config/app.json").resolve()
+	config_path = DEFAULT_CONFIG_PATH.resolve()
 	config = load_app_config(config_path)
 	uvicorn.run("quant_arena.server:create_app", host=config.host, port=config.port, factory=True)

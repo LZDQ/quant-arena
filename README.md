@@ -7,10 +7,15 @@ Standalone stock trading simulation and monitoring service. It is designed to ru
 - FastAPI + uvicorn backend with `/api/*` routes.
 - Same-port web UI served by the Python app.
 - MCP-compatible JSON-RPC endpoint at `/mcp`.
+- MCP endpoint implemented with the official Python MCP SDK.
 - Filesystem-only persistence.
 - Strict storage split:
-  - market data root: public/readable cache for quotes and trading calendar
-  - project root: private agent config, orders, fills, positions, equity history
+  - market data root: public/readable bar data
+  - agents root: private agent config, orders, fills, positions, equity history
+- Background market sync:
+  - latest quotes refresh for tracked codes
+  - 5-minute bars during market hours
+  - daily bars after the market close
 - Agent registration with initial cash, token header, token secret, and T+1 sell constraint.
 - Portfolio, operations, equity-curve, ranking, order submission, and cancel APIs.
 - Matching rule: limit orders only fill on a later market refresh when the latest price crosses the submitted limit.
@@ -25,21 +30,18 @@ Standalone stock trading simulation and monitoring service. It is designed to ru
 By default, startup creates:
 
 ```text
-config/app.json
-var/
+~/.quant-arena/
+  config.json
   market-data/
-    quotes/
     daily-bars/
-    calendar/
-  project/
-    config/
-      agents.json
-    agents/
-      <agent_id>/
-        state.json
+    5min-bars/
+  agents/
+    <agent_id>/
+      config.json
+      state.json
 ```
 
-`var/market-data` is the root intended to be shared read-only with other users or agents. `var/project` is private application state and should stay unreadable to other users at the OS level.
+`~/.quant-arena/market-data` is the root intended to be shared read-only with other users or agents. `~/.quant-arena/agents` is private application state and should stay unreadable to other users at the OS level.
 
 ## Running
 
@@ -60,27 +62,41 @@ Install frontend dependencies once:
 ```bash
 cd frontend
 pnpm install
+cp .env.example .env
 ```
 
-Build from the project root:
+For local frontend development, set `VITE_API_BASE` in `frontend/.env` to the backend you want to talk to. The included example points at the default local backend:
 
 ```bash
-./build-frontend.sh
+VITE_API_BASE=http://127.0.0.1:18792
+```
+
+Then run the dev server:
+
+```bash
+cd frontend
+pnpm dev
+```
+
+For a production build:
+
+```bash
+cd frontend
+pnpm build
 ```
 
 This keeps `quant_arena/` as Python source only. Static assets are intentionally outside the package tree now.
 
 ## Configuration
 
-`config/app.json`:
+`~/.quant-arena/config.json`:
 
 ```json
 {
 	"host": "127.0.0.1",
 	"port": 18792,
-	"timezone": "Asia/Shanghai",
-	"project_root": "./var/project",
-	"market_data_root": "./var/market-data",
+	"agents_root": "~/.quant-arena/agents",
+	"market_data_root": "~/.quant-arena/market-data",
 	"polling_interval_seconds": 300,
 	"enable_background_polling": true,
 	"fees": {
@@ -91,7 +107,7 @@ This keeps `quant_arena/` as Python source only. Static assets are intentionally
 }
 ```
 
-Keep the two roots on separate filesystem paths if you want stronger permission boundaries.
+The defaults place all runtime config and data under `~/.quant-arena/`. Override `agents_root` and `market_data_root` only if you want a different permission boundary.
 
 ## API surface
 
@@ -130,13 +146,7 @@ curl http://127.0.0.1:18792/mcp \
   }'
 ```
 
-Supported MCP calls in this implementation:
-
-- `initialize`
-- `resources/list`
-- `resources/read`
-- `tools/list`
-- `tools/call`
+The server uses the official MCP streamable HTTP implementation, mounted at `/mcp`.
 
 Tools:
 
@@ -146,9 +156,9 @@ Tools:
 
 ## Notes
 
-- `baostock` is loaded lazily at runtime. Install it in the environment before using live data.
+- `baostock` is a normal runtime dependency and is used directly by the market data provider.
 - The current UI is intentionally thin and same-port. It exposes the key admin flows without introducing a separate reverse proxy.
-- Historical daily bars are not populated yet; the public `daily-bars/` directory is reserved for that next step.
+- Market-data sync only follows codes already referenced by pending orders or held positions. It is not a full-market ingestion job.
 
 ## Tests
 

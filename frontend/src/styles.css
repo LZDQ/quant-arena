@@ -77,6 +77,10 @@ td {
   border-bottom: 1px solid rgba(84, 53, 28, 0.08);
 }
 
+tbody tr {
+  vertical-align: top;
+}
+
 .app-shell {
   width: min(1440px, calc(100vw - 2rem));
   margin: 0 auto;
@@ -89,6 +93,23 @@ td {
   align-items: end;
   gap: 1rem;
   padding-bottom: 1rem;
+}
+
+.hero-copy {
+  max-width: 52rem;
+}
+
+.hero-actions {
+  display: grid;
+  justify-items: end;
+  gap: 0.65rem;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: end;
+  gap: 0.75rem;
 }
 
 .hero h1 {
@@ -108,8 +129,17 @@ td {
 }
 
 .subhead {
+  margin: 1rem 0 0;
   max-width: 52ch;
   color: var(--muted);
+}
+
+.action-hint {
+  margin: 0;
+  max-width: 24rem;
+  text-align: right;
+  color: var(--muted);
+  font-size: 0.92rem;
 }
 
 .grid {
@@ -127,8 +157,88 @@ td {
   box-shadow: var(--shadow);
 }
 
+.span-2 {
+  grid-column: span 2;
+}
+
 .panel-head h2 {
   margin: 0 0 1rem;
+}
+
+.stack {
+  display: grid;
+  gap: 1rem;
+}
+
+.metric-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.metric-card,
+.path-card {
+  padding: 0.9rem 1rem;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--panel-border);
+}
+
+.metric-card {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.metric-card code,
+.path-card code {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.metric-label {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.path-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.path-card h3 {
+  margin: 0 0 0.8rem;
+  font-size: 1rem;
+}
+
+.compact-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.selected-row {
+  background: rgba(161, 75, 23, 0.08);
+}
+
+.selected-row code {
+  color: var(--accent-strong);
+}
+
+.bars-table-wrap {
+  max-height: 28rem;
+  overflow: auto;
+}
+
+.ohlc-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  color: var(--muted);
 }
 
 .list {
@@ -175,7 +285,32 @@ td {
     align-items: start;
   }
 
+  .hero-actions {
+    justify-items: start;
+  }
+
+  .button-row {
+    justify-content: start;
+  }
+
+  .action-hint {
+    text-align: left;
+  }
+
   .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .span-2 {
+    grid-column: auto;
+  }
+
+  .metric-strip,
+  .path-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ohlc-grid {
     grid-template-columns: 1fr;
   }
 }
