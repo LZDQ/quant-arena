@@ -120,7 +120,7 @@ class ArenaService:
                 self._update_equity_snapshot(agent, state)
                 continue
             latest_prices = self.market.get_latest_prices(pending_codes)
-            market_bars_by_code: dict[str, Any] = {}
+            market_bars_by_code: dict[str, tuple[Any, Any, datetime | None]] = {}
             changed = False
             for order in state.orders:
                 if order.status != "pending":
@@ -130,11 +130,12 @@ class ArenaService:
                     continue
                 bars = market_bars_by_code.get(order.code)
                 if bars is None:
-                    bars = self.market.get_market_bars_or_none(order.code)
+                    bars = self.market.get_latest_execution_bars(order.code)
                     market_bars_by_code[order.code] = bars
-                if bars is None:
+                daily_bar, five_minute_bars, _ = bars
+                if daily_bar is None and (five_minute_bars is None or five_minute_bars.empty):
                     continue
-                executed_at, trade_date, limit_up, limit_down = self._market_execution_context(bars)
+                executed_at, trade_date, limit_up, limit_down = self._market_execution_context(daily_bar, five_minute_bars)
                 if executed_at is None or trade_date is None or limit_up is None or limit_down is None:
                     continue
                 order.last_checked_at = timestamp
@@ -285,7 +286,7 @@ class ArenaService:
 
     def _build_portfolio(self, agent: AgentConfig, state: AgentState) -> PortfolioResponse:
         latest_prices = self.market.get_latest_prices(list(state.positions.keys())) if state.positions else {}
-        market_bars_by_code: dict[str, Any] = {}
+        market_bars_by_code: dict[str, tuple[Any, Any, datetime | None]] = {}
         positions: list[PositionView] = []
         market_value = 0.0
         unrealized_pnl = 0.0
@@ -305,12 +306,12 @@ class ArenaService:
             if market_price is not None:
                 bars = market_bars_by_code.get(code)
                 if bars is None:
-                    bars = self.market.get_market_bars_or_none(code)
+                    bars = self.market.get_latest_execution_bars(code)
                     market_bars_by_code[code] = bars
-                if bars is not None:
-                    executed_at, _, _, _ = self._market_execution_context(bars)
-                    if executed_at is not None:
-                        as_of = executed_at if as_of is None else max(as_of, executed_at)
+                daily_bar, five_minute_bars, _ = bars
+                executed_at, _, _, _ = self._market_execution_context(daily_bar, five_minute_bars)
+                if executed_at is not None:
+                    as_of = executed_at if as_of is None else max(as_of, executed_at)
             positions.append(
                 PositionView(
                     code=code,
@@ -386,24 +387,25 @@ class ArenaService:
         return self._default_agent_state(agent_id, agent.initial_cash)
 
     @staticmethod
-    def _market_execution_context(bars: Any) -> tuple[datetime | None, date | None, float | None, float | None]:
-        if bars.five_minute_bars:
-            latest_bar = bars.five_minute_bars[-1]
-            daily_bar = bars.daily_bar
+    def _market_execution_context(
+        daily_bar: Any,
+        five_minute_bars: Any,
+    ) -> tuple[datetime | None, date | None, float | None, float | None]:
+        if five_minute_bars is not None and not five_minute_bars.empty:
+            latest_bar = five_minute_bars.iloc[-1]
             if daily_bar is None:
-                return latest_bar.bar_time, latest_bar.trade_date, None, None
+                return latest_bar["bar_time"].to_pydatetime(), latest_bar["trade_date"], None, None
             return (
-                latest_bar.bar_time,
-                latest_bar.trade_date,
-                round(daily_bar.prev_close * 1.1, 2),
-                round(daily_bar.prev_close * 0.9, 2),
+                latest_bar["bar_time"].to_pydatetime(),
+                latest_bar["trade_date"],
+                round(float(daily_bar["prev_close"]) * 1.1, 2),
+                round(float(daily_bar["prev_close"]) * 0.9, 2),
             )
-        if bars.daily_bar is not None:
-            daily_bar = bars.daily_bar
+        if daily_bar is not None:
             return (
-                datetime.combine(daily_bar.trade_date, time(15, 0), tzinfo=SHANGHAI_TZ),
-                daily_bar.trade_date,
-                round(daily_bar.prev_close * 1.1, 2),
-                round(daily_bar.prev_close * 0.9, 2),
+                datetime.combine(daily_bar["trade_date"], time(15, 0), tzinfo=SHANGHAI_TZ),
+                daily_bar["trade_date"],
+                round(float(daily_bar["prev_close"]) * 1.1, 2),
+                round(float(daily_bar["prev_close"]) * 0.9, 2),
             )
         return None, None, None, None

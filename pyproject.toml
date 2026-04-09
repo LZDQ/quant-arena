@@ -8,6 +8,7 @@ dependencies = [
 	"baostock>=0.8.9",
 	"fastapi>=0.115.0,<1.0.0",
 	"mcp>=1.26.0,<2.0.0",
+	"pandas>=2.2.0,<3.0.0",
 	"pydantic>=2.9.0,<3.0.0",
 	"uvicorn>=0.32.0,<1.0.0",
 ]

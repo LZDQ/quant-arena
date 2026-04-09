@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from quant_arena.models import CodeNameEntry, DailyBar, FillRecord, FiveMinuteBar, OrderRecord
+from quant_arena.models import FillRecord, OrderRecord
 
 
 class PositionView(BaseModel):
@@ -61,14 +61,9 @@ class PathsResponse(BaseModel):
     market_data_root: str
 
 
-class MarketCodeStatus(BaseModel):
-    """Public market-data status for one code."""
-
+class CodeSearchItem(BaseModel):
     code: str
-    latest_daily_bar_date: date | None = None
-    latest_five_minute_bar_date: date | None = None
-    five_minute_bar_count: int = 0
-    last_five_minute_bar_time: datetime | None = None
+    name: str
 
 
 class CodeSearchResponse(BaseModel):
@@ -78,7 +73,7 @@ class CodeSearchResponse(BaseModel):
     page: int
     page_size: int
     total: int
-    items: list[CodeNameEntry]
+    items: list[CodeSearchItem]
     last_refreshed_at: datetime | None = None
     auto_refresh_enabled: bool
 
@@ -88,22 +83,6 @@ class CodeRefreshResponse(BaseModel):
 
     refreshed_at: datetime
     entry_count: int
-
-
-class MarketStatusResponse(BaseModel):
-    """Public market-data overview."""
-
-    tracked_codes: list[str]
-    codes: list[MarketCodeStatus]
-
-
-class MarketBarsResponse(BaseModel):
-    """Public market-data payload for one code/date."""
-
-    code: str
-    trade_date: date
-    daily_bar: DailyBar | None = None
-    five_minute_bars: list[FiveMinuteBar] = Field(default_factory=list)
 
 
 class MarketParseResponse(BaseModel):
