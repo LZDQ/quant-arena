@@ -1,5 +1,4 @@
-from __future__ import annotations
-
+import csv
 import json
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -7,9 +6,9 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from mcp import types
 
-from quant_arena.market import StaticMarketDataProvider
-from quant_arena.models import DailyBar, FiveMinuteBar, QuoteSnapshot
+from quant_arena.models import CodeNameEntry, DailyBar, FiveMinuteBar, QuoteSnapshot
 from quant_arena.server import create_app
+from tests.support_market import StaticMarketDataProvider
 
 
 def _write_json(path: Path, data: dict) -> None:
@@ -23,6 +22,7 @@ def _make_app(
 	tmp_path: Path,
 	quote_price: float = 10.0,
 	quote_time: datetime | None = None,
+	code_names: list[CodeNameEntry] | None = None,
 	daily_bars: dict[tuple[str, date], DailyBar] | None = None,
 	five_minute_bars: dict[tuple[str, date], list[FiveMinuteBar]] | None = None,
 ) -> TestClient:
@@ -44,6 +44,7 @@ def _make_app(
 			"agents_root": str((tmp_path / "private-agents").resolve()),
 			"market_data_root": str((tmp_path / "public-market").resolve()),
 			"enable_background_polling": False,
+			"enable_code_name_refresh": False,
 			"polling_interval_seconds": 0,
 			"fees": {"commission_bps": 3.0, "min_commission": 5.0, "stamp_tax_bps": 10.0},
 		},
@@ -52,6 +53,7 @@ def _make_app(
 		config_path=config_path,
 		market_provider=StaticMarketDataProvider(
 			{"sh.600000": quote},
+			code_names=code_names,
 			daily_bars=daily_bars,
 			five_minute_bars=five_minute_bars,
 		),
@@ -84,6 +86,9 @@ def test_paths_and_agent_lifecycle(tmp_path: Path) -> None:
 
 		agent_config_path = tmp_path / "private-agents" / "alpha" / "config.json"
 		assert agent_config_path.exists()
+		with agent_config_path.open("r", encoding="utf-8") as handle:
+			agent_config_payload = json.load(handle)
+		assert "agent_id" not in agent_config_payload
 		assert not (tmp_path / "public-market" / "alpha" / "config.json").exists()
 
 
@@ -287,13 +292,13 @@ def test_sync_market_data_writes_daily_bar_after_close(tmp_path: Path) -> None:
 			json={"code": "sh.600000", "side": "buy", "quantity": 100, "limit_price": 10.0},
 		)
 
-		client.app.state.ctx.arena.sync_market_data(now=datetime(2026, 4, 8, 7, 10, tzinfo=timezone.utc))
+		client.app.state.ctx.market.sync_market_data(["sh.600000"], now=datetime(2026, 4, 8, 7, 10, tzinfo=timezone.utc))
 
-		daily_path = tmp_path / "public-market" / "daily-bars" / "sh.600000" / "2026-04-08.json"
+		daily_path = tmp_path / "public-market" / "bars" / "2026-04-08" / "daily.csv"
 		assert daily_path.exists()
-		with daily_path.open("r", encoding="utf-8") as handle:
-			payload = json.load(handle)
-		assert payload["close_price"] == 10.0
+		with daily_path.open("r", encoding="utf-8", newline="") as handle:
+			rows = list(csv.DictReader(handle))
+		assert rows[0]["close_price"] == "10.0"
 
 
 def test_sync_market_data_writes_five_minute_bars_during_session(tmp_path: Path) -> None:
@@ -343,14 +348,16 @@ def test_sync_market_data_writes_five_minute_bars_during_session(tmp_path: Path)
 			json={"code": "sh.600000", "side": "buy", "quantity": 100, "limit_price": 10.0},
 		)
 
-		client.app.state.ctx.arena.sync_market_data(now=datetime(2026, 4, 8, 2, 5, tzinfo=timezone.utc))
+		client.app.state.ctx.market.sync_market_data(["sh.600000"], now=datetime(2026, 4, 8, 2, 5, tzinfo=timezone.utc))
 
-		bars_path = tmp_path / "public-market" / "5min-bars" / "sh.600000" / "2026-04-08.json"
-		assert bars_path.exists()
-		with bars_path.open("r", encoding="utf-8") as handle:
-			payload = json.load(handle)
-		assert len(payload) == 2
-		assert payload[-1]["close_price"] == 10.02
+		first_bar_path = tmp_path / "public-market" / "bars" / "2026-04-08" / "5min" / "10-00.csv"
+		second_bar_path = tmp_path / "public-market" / "bars" / "2026-04-08" / "5min" / "10-05.csv"
+		assert first_bar_path.exists()
+		assert second_bar_path.exists()
+		with second_bar_path.open("r", encoding="utf-8", newline="") as handle:
+			rows = list(csv.DictReader(handle))
+		assert len(rows) == 1
+		assert rows[0]["close_price"] == "10.02"
 
 		status = client.get("/api/market/status")
 		assert status.status_code == 200
@@ -369,11 +376,11 @@ def test_sync_market_data_writes_five_minute_bars_during_session(tmp_path: Path)
 
 
 def test_parse_today_market_data_if_missing(tmp_path: Path) -> None:
-	trade_date = date(2026, 4, 8)
+	trade_date = date(2026, 4, 9)
 	with _make_app(
 		tmp_path,
 		quote_price=10.0,
-		quote_time=datetime(2026, 4, 8, 2, 5, tzinfo=timezone.utc),
+		quote_time=datetime(2026, 4, 9, 2, 5, tzinfo=timezone.utc),
 		daily_bars={
 			("sh.600000", trade_date): DailyBar(
 				code="sh.600000",
@@ -420,13 +427,13 @@ def test_parse_today_market_data_if_missing(tmp_path: Path) -> None:
 		result = client.post("/api/market/parse-today")
 		assert result.status_code == 200
 		payload = result.json()
-		assert payload["trade_date"] == "2026-04-08"
+		assert payload["trade_date"] == "2026-04-09"
 		assert payload["tracked_codes"] == ["sh.600000"]
 		assert payload["parsed_daily_codes"] == ["sh.600000"]
 		assert payload["parsed_five_minute_codes"] == ["sh.600000"]
 
-		daily_path = tmp_path / "public-market" / "daily-bars" / "sh.600000" / "2026-04-08.json"
-		five_minute_path = tmp_path / "public-market" / "5min-bars" / "sh.600000" / "2026-04-08.json"
+		daily_path = tmp_path / "public-market" / "bars" / "2026-04-09" / "daily.csv"
+		five_minute_path = tmp_path / "public-market" / "bars" / "2026-04-09" / "5min" / "10-00.csv"
 		assert daily_path.exists()
 		assert five_minute_path.exists()
 
@@ -434,3 +441,34 @@ def test_parse_today_market_data_if_missing(tmp_path: Path) -> None:
 		assert again.status_code == 200
 		assert again.json()["parsed_daily_codes"] == []
 		assert again.json()["parsed_five_minute_codes"] == []
+
+
+def test_refresh_and_search_code_names_with_paging(tmp_path: Path) -> None:
+	code_names = [
+		CodeNameEntry(code=f"sh.6000{i:02d}", name=f"Name {i}", trade_status="1")
+		for i in range(25)
+	]
+	with _make_app(tmp_path, code_names=code_names) as client:
+		result = client.post("/api/market/codes/refresh")
+		assert result.status_code == 200
+		assert result.json()["entry_count"] == 25
+
+		codes_path = tmp_path / "public-market" / "codes.csv"
+		assert codes_path.exists()
+
+		first_page = client.get("/api/market/codes", params={"page": 1, "page_size": 20})
+		assert first_page.status_code == 200
+		first_payload = first_page.json()
+		assert first_payload["total"] == 25
+		assert len(first_payload["items"]) == 20
+		assert first_payload["auto_refresh_enabled"] is False
+
+		second_page = client.get("/api/market/codes", params={"page": 2, "page_size": 20})
+		assert second_page.status_code == 200
+		assert len(second_page.json()["items"]) == 5
+
+		filtered = client.get("/api/market/codes", params={"query": "Name 2", "page": 1, "page_size": 20})
+		assert filtered.status_code == 200
+		filtered_payload = filtered.json()
+		assert filtered_payload["total"] == 6
+		assert filtered_payload["items"][0]["code"] == "sh.600002"

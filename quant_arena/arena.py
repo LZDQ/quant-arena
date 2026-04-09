@@ -1,22 +1,16 @@
 """Trading simulation engine."""
 
 from collections import defaultdict
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import HTTPException
-from zoneinfo import ZoneInfo
 
 from quant_arena.config import AgentConfig, AppConfig
-from quant_arena.market import MarketDataProvider
+from quant_arena.market import MarketService
 from quant_arena.models import (
 	AgentState,
 	EquityPoint,
 	FillRecord,
-	FiveMinuteBar,
-	MarketBarsResponse,
-	MarketCodeStatus,
-	MarketParseResponse,
-	MarketStatusResponse,
 	OperationListResponse,
 	OrderRecord,
 	PortfolioResponse,
@@ -28,23 +22,21 @@ from quant_arena.models import (
 )
 from quant_arena.storage import ArenaStorage
 
-SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
-
 
 class ArenaService:
 	"""Application service layer."""
 
-	def __init__(self, config: AppConfig, storage: ArenaStorage, market_data: MarketDataProvider):
+	def __init__(self, config: AppConfig, storage: ArenaStorage, market: MarketService):
 		self.config = config
 		self.storage = storage
-		self.market_data = market_data
+		self.market = market
 		self._agents: dict[str, AgentConfig] = {}
 
-	def set_agents(self, agents: list[AgentConfig]) -> None:
-		self._agents = {agent.agent_id: agent for agent in agents}
+	def set_agents(self, agents: dict[str, AgentConfig]) -> None:
+		self._agents = dict(sorted(agents.items(), key=lambda item: item[0]))
 
-	def list_agents(self) -> list[AgentConfig]:
-		return list(sorted(self._agents.values(), key=lambda agent: agent.agent_id))
+	def list_agent_items(self) -> list[tuple[str, AgentConfig]]:
+		return list(sorted(self._agents.items(), key=lambda item: item[0]))
 
 	def get_agent(self, agent_id: str) -> AgentConfig:
 		agent = self._agents.get(agent_id)
@@ -52,12 +44,12 @@ class ArenaService:
 			raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_id}")
 		return agent
 
-	def add_agent(self, agent: AgentConfig) -> AgentConfig:
-		if agent.agent_id in self._agents:
-			raise HTTPException(status_code=409, detail=f"Agent already exists: {agent.agent_id}")
-		self._agents[agent.agent_id] = agent
-		self.storage.save_agent_config(agent)
-		state = self.storage.load_agent_state(agent.agent_id, agent.initial_cash)
+	def add_agent(self, agent_id: str, agent: AgentConfig) -> AgentConfig:
+		if agent_id in self._agents:
+			raise HTTPException(status_code=409, detail=f"Agent already exists: {agent_id}")
+		self._agents[agent_id] = agent
+		self.storage.save_agent_config(agent_id, agent)
+		state = self.storage.load_agent_state(agent_id, agent.initial_cash)
 		self.storage.save_agent_state(state)
 		return agent
 
@@ -65,7 +57,7 @@ class ArenaService:
 		current = self.get_agent(agent_id)
 		replaced = current.model_copy(update={key: value for key, value in updates.items() if value is not None})
 		self._agents[agent_id] = replaced
-		self.storage.save_agent_config(replaced)
+		self.storage.save_agent_config(agent_id, replaced)
 		state = self.storage.load_agent_state(agent_id, current.initial_cash)
 		if updates.get("initial_cash") is not None and not state.orders and not state.fills:
 			state.cash = replaced.initial_cash
@@ -77,71 +69,27 @@ class ArenaService:
 		del self._agents[agent_id]
 		self.storage.delete_agent_state(agent_id)
 
-	def authenticate_agent(self, headers: dict[str, str]) -> AgentConfig:
-		for agent in self._agents.values():
-			header_value = headers.get(agent.token_header_name.lower())
+	def authenticate_agent(self, headers: dict[str, str]) -> str:
+		header_value = headers.get(self.config.token_header_name.lower())
+		for agent_id, agent in self._agents.items():
 			if header_value == agent.token_secret:
-				return agent
+				return agent_id
 		raise HTTPException(status_code=401, detail="Invalid agent token")
 
-	def refresh_quotes(self, codes: list[str]) -> dict[str, QuoteSnapshot]:
-		normalized_codes = sorted(set(codes))
-		if not normalized_codes:
-			return {}
-		return self.market_data.get_latest_quotes(normalized_codes)
-
-	def sync_market_data(self, now: datetime | None = None) -> None:
-		timestamp = now or datetime.now(timezone.utc)
-		tracked_codes = self._tracked_codes()
-		if not tracked_codes:
-			return
-
-		local_now = timestamp.astimezone(SHANGHAI_TZ)
-		quotes = self.refresh_quotes(tracked_codes)
-		trade_dates = {quote.trade_date for quote in quotes.values()}
-		if local_now.date() in trade_dates and self._is_market_open(local_now):
-			self.storage.save_five_minute_bars(self.market_data.get_five_minute_bars(tracked_codes, local_now.date()))
-		if local_now.date() in trade_dates and self._is_after_market_close(local_now):
-			self.storage.save_daily_bars(self.market_data.get_daily_bars(tracked_codes, local_now.date()))
-
-	def parse_today_market_data_if_missing(self, now: datetime | None = None) -> MarketParseResponse:
-		timestamp = now or datetime.now(timezone.utc)
-		local_today = timestamp.astimezone(SHANGHAI_TZ).date()
-		tracked_codes = self._tracked_codes()
-		if not tracked_codes:
-			return MarketParseResponse(
-				trade_date=local_today,
-				tracked_codes=[],
-				parsed_daily_codes=[],
-				parsed_five_minute_codes=[],
-			)
-
-		quotes = self.refresh_quotes(tracked_codes)
-		today_codes = sorted(code for code, quote in quotes.items() if quote.trade_date == local_today)
-		missing_daily_codes = [code for code in today_codes if self.storage.load_daily_bar(code, local_today) is None]
-		missing_five_minute_codes = [code for code in today_codes if not self.storage.load_five_minute_bars(code, local_today)]
-
-		if missing_daily_codes:
-			self.storage.save_daily_bars(self.market_data.get_daily_bars(missing_daily_codes, local_today))
-		if missing_five_minute_codes:
-			self.storage.save_five_minute_bars(self.market_data.get_five_minute_bars(missing_five_minute_codes, local_today))
-
-		return MarketParseResponse(
-			trade_date=local_today,
-			tracked_codes=today_codes,
-			parsed_daily_codes=missing_daily_codes,
-			parsed_five_minute_codes=missing_five_minute_codes,
-		)
-
-	def submit_order(self, agent_id: str, request: SubmitOrderRequest, submitted_at: datetime | None = None) -> OrderRecord:
+	def submit_order(
+		self,
+		agent_id: str,
+		request: SubmitOrderRequest,
+		submitted_at: datetime | None = None
+	) -> OrderRecord:
 		agent = self.get_agent(agent_id)
 		now = submitted_at or datetime.now(timezone.utc)
-		quotes = self.refresh_quotes([request.code])
+		quotes = self.market.refresh_quotes([request.code])
 		if request.code not in quotes:
 			raise HTTPException(status_code=404, detail=f"No market quote available for {request.code}")
-		state = self.storage.load_agent_state(agent.agent_id, agent.initial_cash)
+		state = self.storage.load_agent_state(agent_id, agent.initial_cash)
 		order = OrderRecord(
-			agent_id=agent.agent_id,
+			agent_id=agent_id,
 			code=request.code,
 			side=request.side,
 			quantity=request.quantity,
@@ -155,7 +103,7 @@ class ArenaService:
 
 	def cancel_order(self, agent_id: str, order_id: str) -> OrderRecord:
 		agent = self.get_agent(agent_id)
-		state = self.storage.load_agent_state(agent.agent_id, agent.initial_cash)
+		state = self.storage.load_agent_state(agent_id, agent.initial_cash)
 		for order in state.orders:
 			if order.order_id == order_id:
 				if order.status != "pending":
@@ -168,13 +116,13 @@ class ArenaService:
 
 	def match_pending_orders(self, now: datetime | None = None) -> None:
 		timestamp = now or datetime.now(timezone.utc)
-		for agent in self.list_agents():
-			state = self.storage.load_agent_state(agent.agent_id, agent.initial_cash)
+		for agent_id, agent in self.list_agent_items():
+			state = self.storage.load_agent_state(agent_id, agent.initial_cash)
 			pending_codes = [order.code for order in state.orders if order.status == "pending"]
 			if not pending_codes:
 				self._update_equity_snapshot(agent, state)
 				continue
-			quotes = self.refresh_quotes(pending_codes)
+			quotes = self.market.refresh_quotes(pending_codes)
 			changed = False
 			for order in state.orders:
 				if order.status != "pending":
@@ -203,7 +151,7 @@ class ArenaService:
 
 	def get_portfolio(self, agent_id: str) -> PortfolioResponse:
 		agent = self.get_agent(agent_id)
-		state = self.storage.load_agent_state(agent.agent_id, agent.initial_cash)
+		state = self.storage.load_agent_state(agent_id, agent.initial_cash)
 		return self._build_portfolio(agent, state)
 
 	def list_operations(
@@ -214,7 +162,7 @@ class ArenaService:
 		limit: int | None = None,
 	) -> OperationListResponse:
 		agent = self.get_agent(agent_id)
-		state = self.storage.load_agent_state(agent.agent_id, agent.initial_cash)
+		state = self.storage.load_agent_state(agent_id, agent.initial_cash)
 		orders = [order for order in state.orders if self._in_range(order.submitted_at, start, end)]
 		fills = [fill for fill in state.fills if self._in_range(fill.executed_at, start, end)]
 		if limit is not None:
@@ -224,7 +172,7 @@ class ArenaService:
 
 	def get_equity_curve(self, agent_id: str, start: date | None = None, end: date | None = None) -> list[EquityPoint]:
 		agent = self.get_agent(agent_id)
-		state = self.storage.load_agent_state(agent.agent_id, agent.initial_cash)
+		state = self.storage.load_agent_state(agent_id, agent.initial_cash)
 		points = state.equity_history
 		if start is not None:
 			points = [point for point in points if point.date >= start]
@@ -234,15 +182,15 @@ class ArenaService:
 
 	def get_rankings(self, target_date: date | None = None) -> list[RankingEntry]:
 		entries: list[RankingEntry] = []
-		for agent in self.list_agents():
-			state = self.storage.load_agent_state(agent.agent_id, agent.initial_cash)
+		for agent_id, agent in self.list_agent_items():
+			state = self.storage.load_agent_state(agent_id, agent.initial_cash)
 			portfolio = self._build_portfolio(agent, state)
 			point = self._resolve_equity_point(state, target_date, portfolio)
 			return_pct = 0.0 if agent.initial_cash == 0 else ((point.total_equity - agent.initial_cash) / agent.initial_cash) * 100.0
 			entries.append(
 				RankingEntry(
 					date=point.date,
-					agent_id=agent.agent_id,
+					agent_id=agent_id,
 					display_name=agent.display_name,
 					total_equity=round(point.total_equity, 2),
 					return_pct=round(return_pct, 4),
@@ -251,38 +199,6 @@ class ArenaService:
 				)
 			)
 		return sorted(entries, key=lambda entry: (-entry.total_equity, entry.agent_id))
-
-	def get_market_status(self) -> MarketStatusResponse:
-		tracked_codes = self._tracked_codes()
-		codes = sorted(set(tracked_codes) | set(self.storage.list_market_codes()))
-		items: list[MarketCodeStatus] = []
-		for code in codes:
-			latest_daily_date = self.storage.latest_daily_bar_date(code)
-			latest_five_minute_date = self.storage.latest_five_minute_bar_date(code)
-			five_minute_bars: list[FiveMinuteBar] = []
-			if latest_five_minute_date is not None:
-				five_minute_bars = self.storage.load_five_minute_bars(code, latest_five_minute_date)
-			items.append(
-				MarketCodeStatus(
-					code=code,
-					latest_daily_bar_date=latest_daily_date,
-					latest_five_minute_bar_date=latest_five_minute_date,
-					five_minute_bar_count=len(five_minute_bars),
-					last_five_minute_bar_time=five_minute_bars[-1].bar_time if five_minute_bars else None,
-				)
-			)
-		return MarketStatusResponse(tracked_codes=tracked_codes, codes=items)
-
-	def get_market_bars(self, code: str, trade_date: date | None = None) -> MarketBarsResponse:
-		target_date = trade_date or self.storage.latest_five_minute_bar_date(code) or self.storage.latest_daily_bar_date(code)
-		if target_date is None:
-			raise HTTPException(status_code=404, detail=f"No market bars available for {code}")
-		return MarketBarsResponse(
-			code=code,
-			trade_date=target_date,
-			daily_bar=self.storage.load_daily_bar(code, target_date),
-			five_minute_bars=self.storage.load_five_minute_bars(code, target_date),
-		)
 
 	def _resolve_equity_point(self, state: AgentState, target_date: date | None, portfolio: PortfolioResponse) -> EquityPoint:
 		if target_date is not None:
@@ -342,23 +258,13 @@ class ArenaService:
 		order.filled_at = quote.as_of
 		state.fills.append(fill)
 
-	def _tracked_codes(self) -> list[str]:
+	def tracked_codes(self) -> list[str]:
 		codes: set[str] = set()
-		for agent in self.list_agents():
-			state = self.storage.load_agent_state(agent.agent_id, agent.initial_cash)
+		for agent_id, agent in self.list_agent_items():
+			state = self.storage.load_agent_state(agent_id, agent.initial_cash)
 			codes.update(state.positions.keys())
 			codes.update(order.code for order in state.orders if order.status == "pending")
 		return sorted(codes)
-
-	@staticmethod
-	def _is_market_open(moment: datetime) -> bool:
-		current = moment.timetz().replace(tzinfo=None)
-		return (time(9, 30) <= current < time(11, 30)) or (time(13, 0) <= current < time(15, 0))
-
-	@staticmethod
-	def _is_after_market_close(moment: datetime) -> bool:
-		current = moment.timetz().replace(tzinfo=None)
-		return current >= time(15, 0)
 
 	def _update_equity_snapshot(self, agent: AgentConfig, state: AgentState) -> None:
 		portfolio = self._build_portfolio(agent, state)
@@ -379,7 +285,7 @@ class ArenaService:
 			state.equity_history.append(point)
 
 	def _build_portfolio(self, agent: AgentConfig, state: AgentState) -> PortfolioResponse:
-		quotes = self.refresh_quotes(list(state.positions.keys())) if state.positions else {}
+		quotes = self.market.refresh_quotes(list(state.positions.keys())) if state.positions else {}
 		positions: list[PositionView] = []
 		market_value = 0.0
 		unrealized_pnl = 0.0
@@ -413,7 +319,7 @@ class ArenaService:
 		total_equity = state.cash + market_value
 		pending_orders = [order for order in state.orders if order.status == "pending"]
 		return PortfolioResponse(
-			agent_id=agent.agent_id,
+			agent_id=state.agent_id,
 			cash=round(state.cash, 2),
 			market_value=round(market_value, 2),
 			total_equity=round(total_equity, 2),

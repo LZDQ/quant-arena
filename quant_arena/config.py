@@ -43,6 +43,14 @@ class AppConfig(BaseModel):
 		default=str(Path.home() / ".quant-arena" / "market-data"),
 		description="Public root directory for shared market data files, usually configured to a shared directory.",
 	)
+	enable_code_name_refresh: bool = Field(
+		default=False,
+		description="Whether the server should automatically refresh the shared codes.csv reference file when it becomes stale.",
+	)
+	token_header_name: str = Field(
+		default="X-Agent-Token",
+		description="Global HTTP header name used for agent REST and MCP authentication.",
+	)
 	polling_interval_seconds: int = Field(
 		default=300,
 		description="Seconds between background market sync and order-matching cycles.",
@@ -60,15 +68,8 @@ class AppConfig(BaseModel):
 class AgentConfig(BaseModel):
 	"""One managed trading agent."""
 
-	agent_id: str = Field(
-		description="Stable unique identifier for the agent directory and API routes.",
-	)
 	display_name: str = Field(
 		description="Human-readable name shown in the UI and rankings.",
-	)
-	token_header_name: str = Field(
-		default="X-Agent-Token",
-		description="HTTP header name used for this agent's REST and MCP authentication.",
 	)
 	token_secret: str = Field(
 		description="Shared secret value expected in the configured authentication header.",
@@ -81,9 +82,9 @@ class AgentConfig(BaseModel):
 		default="t_plus_one",
 		description="Sell constraint policy enforced by the simulator.",
 	)
-	active: bool = Field(
+	enabled: bool = Field(
 		default=True,
-		description="Whether the agent is active and available for use.",
+		description="Whether the agent is enabled and available for use.",
 	)
 
 

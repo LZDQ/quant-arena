@@ -112,7 +112,7 @@ def wrap_mcp_with_agent_auth(mcp_app: ASGIApp, get_arena: Callable[[], ArenaServ
 			for key, value in raw_headers
 		}
 		try:
-			agent = get_arena().authenticate_agent(headers)
+			agent_id = get_arena().authenticate_agent(headers)
 		except HTTPException as exc:
 			response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 			await response(scope, receive, send)
@@ -125,7 +125,7 @@ def wrap_mcp_with_agent_auth(mcp_app: ASGIApp, get_arena: Callable[[], ArenaServ
 			scope = dict(scope)
 			scope["headers"] = raw_headers
 
-		token = _CURRENT_AGENT_ID.set(agent.agent_id)
+		token = _CURRENT_AGENT_ID.set(agent_id)
 		try:
 			await mcp_app(scope, receive, send)
 		finally:

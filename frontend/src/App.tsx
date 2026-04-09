@@ -9,11 +9,10 @@ type PathsResponse = {
 type Agent = {
   agent_id: string;
   display_name: string;
-  token_header_name: string;
   token_secret: string;
   initial_cash: number;
   sell_constraint: "t_plus_one";
-  active: boolean;
+  enabled: boolean;
 };
 
 type RankingEntry = {
@@ -37,6 +36,26 @@ type MarketCodeStatus = {
 type MarketStatusResponse = {
   tracked_codes: string[];
   codes: MarketCodeStatus[];
+};
+
+type CodeNameEntry = {
+  code: string;
+  name: string | null;
+};
+
+type CodeSearchResponse = {
+  query: string;
+  page: number;
+  page_size: number;
+  total: number;
+  items: CodeNameEntry[];
+  last_refreshed_at: string | null;
+  auto_refresh_enabled: boolean;
+};
+
+type CodeRefreshResponse = {
+  refreshed_at: string;
+  entry_count: number;
 };
 
 type DailyBar = {
@@ -133,16 +152,23 @@ export default function App() {
   const [rankings, setRankings] = useState<RankingEntry[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [marketStatus, setMarketStatus] = useState<MarketStatusResponse | null>(null);
+  const [codeSearch, setCodeSearch] = useState<CodeSearchResponse | null>(null);
+  const [codeQueryInput, setCodeQueryInput] = useState("");
+  const [submittedCodeQuery, setSubmittedCodeQuery] = useState("");
+  const [codePage, setCodePage] = useState(1);
+  const [codePageSize, setCodePageSize] = useState(20);
   const [selectedCode, setSelectedCode] = useState<string>("");
   const [marketBars, setMarketBars] = useState<MarketBarsResponse | null>(null);
   const [lastParse, setLastParse] = useState<MarketParseResponse | null>(null);
+  const [lastCodeRefresh, setLastCodeRefresh] = useState<CodeRefreshResponse | null>(null);
   const [draft, setDraft] = useState<AgentDraft>(EMPTY_DRAFT);
   const [error, setError] = useState<string>("");
   const [isSaving, setIsSaving] = useState(false);
   const [isParsingToday, setIsParsingToday] = useState(false);
+  const [isRefreshingCodes, setIsRefreshingCodes] = useState(false);
   const rankingDate = rankings[0]?.date ?? null;
 
-  async function load(): Promise<void> {
+  async function loadCore(): Promise<void> {
     const [nextPaths, nextRankings, nextAgents, nextMarketStatus] = await Promise.all([
       fetchJson<PathsResponse>(apiUrl("/api/paths")),
       fetchJson<RankingEntry[]>(apiUrl("/api/rankings")),
@@ -155,23 +181,39 @@ export default function App() {
     setMarketStatus(nextMarketStatus);
   }
 
+  async function loadCodeSearch(query: string, page: number, pageSize: number): Promise<void> {
+    const params = new URLSearchParams({
+      query,
+      page: String(page),
+      page_size: String(pageSize),
+    });
+    const payload = await fetchJson<CodeSearchResponse>(apiUrl(`/api/market/codes?${params.toString()}`));
+    setCodeSearch(payload);
+  }
+
   useEffect(() => {
-    void load().catch((loadError: Error) => {
+    void loadCore().catch((loadError: Error) => {
       setError(loadError.message);
     });
   }, []);
 
   useEffect(() => {
-    const codes = marketStatus?.codes ?? [];
-    if (!codes.length) {
+    void loadCodeSearch(submittedCodeQuery, codePage, codePageSize).catch((loadError: Error) => {
+      setError(loadError.message);
+    });
+  }, [submittedCodeQuery, codePage, codePageSize]);
+
+  useEffect(() => {
+    const items = codeSearch?.items ?? [];
+    if (!items.length) {
       setSelectedCode("");
       setMarketBars(null);
       return;
     }
-    if (!selectedCode || !codes.some((item) => item.code === selectedCode)) {
-      setSelectedCode(codes[0].code);
+    if (!selectedCode || !items.some((item) => item.code === selectedCode)) {
+      setSelectedCode(items[0].code);
     }
-  }, [marketStatus, selectedCode]);
+  }, [codeSearch, selectedCode]);
 
   useEffect(() => {
     if (!selectedCode) {
@@ -182,6 +224,7 @@ export default function App() {
         setMarketBars(payload);
       })
       .catch((loadError: Error) => {
+        setMarketBars(null);
         setError(loadError.message);
       });
   }, [selectedCode]);
@@ -190,9 +233,23 @@ export default function App() {
     setError("");
     try {
       await fetchJson<{ status: string }>(apiUrl("/api/market/refresh"), { method: "POST" });
-      await load();
+      await loadCore();
     } catch (refreshError) {
       setError((refreshError as Error).message);
+    }
+  }
+
+  async function handleRefreshCodes(): Promise<void> {
+    setIsRefreshingCodes(true);
+    setError("");
+    try {
+      const result = await fetchJson<CodeRefreshResponse>(apiUrl("/api/market/codes/refresh"), { method: "POST" });
+      setLastCodeRefresh(result);
+      await loadCodeSearch(submittedCodeQuery, codePage, codePageSize);
+    } catch (refreshError) {
+      setError((refreshError as Error).message);
+    } finally {
+      setIsRefreshingCodes(false);
     }
   }
 
@@ -202,7 +259,7 @@ export default function App() {
     try {
       const result = await fetchJson<MarketParseResponse>(apiUrl("/api/market/parse-today"), { method: "POST" });
       setLastParse(result);
-      await load();
+      await loadCore();
     } catch (parseError) {
       setError((parseError as Error).message);
     } finally {
@@ -226,7 +283,7 @@ export default function App() {
         }),
       });
       setDraft(EMPTY_DRAFT);
-      await load();
+      await loadCore();
     } catch (submitError) {
       setError((submitError as Error).message);
     } finally {
@@ -234,8 +291,16 @@ export default function App() {
     }
   }
 
+  function handleSearchSubmit(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+    setCodePage(1);
+    setSubmittedCodeQuery(codeQueryInput.trim());
+  }
+
   const codes = marketStatus?.codes ?? [];
   const selectedStatus = codes.find((item) => item.code === selectedCode) ?? null;
+  const selectedCodeEntry = codeSearch?.items.find((item) => item.code === selectedCode) ?? null;
+  const pageCount = codeSearch ? Math.max(1, Math.ceil(codeSearch.total / codeSearch.page_size)) : 1;
 
   return (
     <div className="app-shell">
@@ -244,8 +309,8 @@ export default function App() {
           <p className="eyebrow">Quant Arena</p>
           <h1>Agent trading monitor</h1>
           <p className="subhead">
-            Market refresh now exposes public market-data status directly in the UI, including daily-bar coverage and
-            live 5-minute bars for tracked codes.
+            Shared market data stays under one root, while code-directory search is paged so the frontend never pulls the
+            entire universe at once.
           </p>
         </div>
         <div className="hero-actions">
@@ -256,8 +321,11 @@ export default function App() {
             <button type="button" onClick={() => void handleParseToday()} disabled={isParsingToday}>
               {isParsingToday ? "Parsing..." : "Parse today if missing"}
             </button>
+            <button type="button" onClick={() => void handleRefreshCodes()} disabled={isRefreshingCodes}>
+              {isRefreshingCodes ? "Refreshing..." : "Refresh codes.csv"}
+            </button>
           </div>
-          <p className="action-hint">Refresh updates the public market-data root first, then runs order matching.</p>
+          <p className="action-hint">Code-name refresh stays separate from bar parsing and is always loaded page by page.</p>
         </div>
       </header>
 
@@ -270,7 +338,7 @@ export default function App() {
           </div>
           {paths ? (
             <div className="stack">
-              <div className="metric-strip">
+              <div className="metric-strip metric-strip-wide">
                 <article className="metric-card">
                   <span className="metric-label">Market data root</span>
                   <code>{paths.market_data_root}</code>
@@ -280,18 +348,34 @@ export default function App() {
                   <strong>{marketStatus?.tracked_codes.length ?? 0}</strong>
                 </article>
                 <article className="metric-card">
+                  <span className="metric-label">Code rows</span>
+                  <strong>{codeSearch?.total ?? 0}</strong>
+                </article>
+                <article className="metric-card">
                   <span className="metric-label">Ranking date</span>
                   <strong>{rankingDate ?? "No snapshot yet"}</strong>
                 </article>
               </div>
               <div className="path-grid">
                 <article className="path-card">
-                  <h3>Market data root</h3>
+                  <h3>Market data files</h3>
                   <ul className="compact-list">
-                    <li><code>{paths.market_data_root}/5min-bars</code></li>
-                    <li>Persisted 5-minute bars by code and trade date.</li>
-                    <li><code>{paths.market_data_root}/daily-bars</code></li>
-                    <li>Persisted daily OHLCV bars by code and trade date.</li>
+                    <li><code>{paths.market_data_root}/codes.csv</code></li>
+                    <li>Shared code-name reference file from baostock.</li>
+                    <li><code>{paths.market_data_root}/bars/&lt;date&gt;/daily.csv</code></li>
+                    <li>One daily row per code for that trade date.</li>
+                    <li><code>{paths.market_data_root}/bars/&lt;date&gt;/5min/&lt;minute&gt;.csv</code></li>
+                    <li>5-minute rows partitioned by date and minute under the same day root.</li>
+                  </ul>
+                </article>
+                <article className="path-card">
+                  <h3>Code index status</h3>
+                  <ul className="compact-list">
+                    <li>Auto refresh: <strong>{codeSearch?.auto_refresh_enabled ? "Enabled" : "Disabled"}</strong></li>
+                    <li>Last refreshed: <strong>{formatDateTime(codeSearch?.last_refreshed_at ?? null)}</strong></li>
+                    {lastCodeRefresh ? (
+                      <li>Last manual refresh: <strong>{lastCodeRefresh.entry_count} rows at {formatDateTime(lastCodeRefresh.refreshed_at)}</strong></li>
+                    ) : null}
                   </ul>
                 </article>
               </div>
@@ -309,6 +393,74 @@ export default function App() {
             </div>
           ) : (
             <p className="empty">Loading runtime paths...</p>
+          )}
+        </section>
+
+        <section className="panel span-2">
+          <div className="panel-head">
+            <h2>Code directory</h2>
+          </div>
+          <form className="search-row" onSubmit={handleSearchSubmit}>
+            <input
+              value={codeQueryInput}
+              onChange={(event) => setCodeQueryInput(event.target.value)}
+              placeholder="Search code or name"
+            />
+            <select
+              value={codePageSize}
+              onChange={(event) => {
+                setCodePage(1);
+                setCodePageSize(Number(event.target.value));
+              }}
+            >
+              <option value={20}>20 / page</option>
+              <option value={50}>50 / page</option>
+              <option value={100}>100 / page</option>
+            </select>
+            <button type="submit">Search</button>
+          </form>
+          {codeSearch?.items.length ? (
+            <>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Code</th>
+                    <th>Name</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {codeSearch.items.map((item) => (
+                    <tr
+                      key={item.code}
+                      className={item.code === selectedCode ? "selected-row" : undefined}
+                      onClick={() => setSelectedCode(item.code)}
+                    >
+                      <td><code>{item.code}</code></td>
+                      <td>{item.name ?? "Unknown"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="pager-row">
+                <span>
+                  Page <strong>{codeSearch.page}</strong> / <strong>{pageCount}</strong>, total <strong>{codeSearch.total}</strong>
+                </span>
+                <div className="button-row">
+                  <button type="button" onClick={() => setCodePage((current) => Math.max(1, current - 1))} disabled={codeSearch.page <= 1}>
+                    Prev
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCodePage((current) => current + 1)}
+                    disabled={codeSearch.page >= pageCount}
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <p className="empty">No code rows loaded yet. Refresh codes.csv or adjust the search.</p>
           )}
         </section>
 
@@ -344,7 +496,7 @@ export default function App() {
               </tbody>
             </table>
           ) : (
-            <p className="empty">No tracked or cached codes yet. Submit an order or hold a position first.</p>
+            <p className="empty">No tracked codes with stored bars yet.</p>
           )}
         </section>
 
@@ -352,13 +504,14 @@ export default function App() {
           <div className="panel-head">
             <h2>Selected code</h2>
           </div>
-          {selectedStatus ? (
+          {selectedCode ? (
             <div className="stack">
               <article className="path-card">
-                <h3><code>{selectedStatus.code}</code></h3>
+                <h3><code>{selectedCode}</code></h3>
                 <ul className="compact-list">
-                  <li>Latest daily bar: <strong>{selectedStatus.latest_daily_bar_date ?? "None"}</strong></li>
-                  <li>Latest 5m trade date: <strong>{selectedStatus.latest_five_minute_bar_date ?? "None"}</strong></li>
+                  <li>Name: <strong>{selectedCodeEntry?.name ?? "Unknown"}</strong></li>
+                  <li>Latest daily bar: <strong>{selectedStatus?.latest_daily_bar_date ?? "None"}</strong></li>
+                  <li>Latest 5m trade date: <strong>{selectedStatus?.latest_five_minute_bar_date ?? "None"}</strong></li>
                 </ul>
               </article>
               {marketBars?.daily_bar ? (
@@ -376,7 +529,7 @@ export default function App() {
               )}
             </div>
           ) : (
-            <p className="empty">Select a code to inspect public market data.</p>
+            <p className="empty">Search or select a code to inspect market data.</p>
           )}
         </section>
 
@@ -462,7 +615,7 @@ export default function App() {
                   <br />
                   Initial cash: {formatCurrency(agent.initial_cash)}
                   <br />
-                  Token header: <code>{agent.token_header_name}</code>
+                  Status: {agent.enabled ? "Enabled" : "Disabled"}
                 </li>
               ))
             ) : (
@@ -476,7 +629,7 @@ export default function App() {
             <h2>Create agent</h2>
           </div>
           <p className="empty">
-            Adding an agent creates private files under its own agent directory. Public market bars remain in the separate market-data root.
+            Adding an agent creates private files under its own agent directory. Shared code names and market bars stay under the separate market-data root.
           </p>
           <form className="form" onSubmit={(event) => void handleSubmit(event)}>
             <input

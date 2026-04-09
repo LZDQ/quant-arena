@@ -15,9 +15,9 @@ from fastapi.staticfiles import StaticFiles
 
 from quant_arena.arena import ArenaService
 from quant_arena.config import AgentConfig, AppConfig, load_app_config
-from quant_arena.market import BaoStockMarketDataProvider, MarketDataProvider
+from quant_arena.market import BaoStockMarketDataProvider, MarketDataProvider, MarketService
 from quant_arena.mcp_server import create_mcp_server, wrap_mcp_with_agent_auth
-from quant_arena.models import CreateAgentRequest, MarketBarsResponse, MarketParseResponse, MarketStatusResponse, PathsResponse, SubmitOrderRequest, UpdateAgentRequest
+from quant_arena.models import AgentResponse, CodeRefreshResponse, CodeSearchResponse, CreateAgentRequest, MarketBarsResponse, MarketParseResponse, MarketStatusResponse, PathsResponse, SubmitOrderRequest, UpdateAgentRequest
 from quant_arena.storage import ArenaStorage
 
 
@@ -27,10 +27,11 @@ DEFAULT_CONFIG_PATH = Path.home() / ".quant-arena" / "config.json"
 class AppState:
 	"""Typed app state."""
 
-	def __init__(self, config_path: Path, config: AppConfig, storage: ArenaStorage, arena: ArenaService):
+	def __init__(self, config_path: Path, config: AppConfig, storage: ArenaStorage, market: MarketService, arena: ArenaService):
 		self.config_path = config_path
 		self.config = config
 		self.storage = storage
+		self.market = market
 		self.arena = arena
 		self.background_task: asyncio.Task[None] | None = None
 
@@ -40,14 +41,15 @@ def _load_arena(config_path: Path, market_provider: MarketDataProvider | None = 
 	storage = ArenaStorage(Path(config.agents_root).resolve(), Path(config.market_data_root).resolve())
 	storage.ensure_layout()
 	agents = storage.load_agent_configs()
-	arena = ArenaService(config=config, storage=storage, market_data=market_provider or BaoStockMarketDataProvider())
+	market = MarketService(config=config, storage=storage, provider=market_provider or BaoStockMarketDataProvider())
+	arena = ArenaService(config=config, storage=storage, market=market)
 	arena.set_agents(agents)
-	return AppState(config_path=config_path, config=config, storage=storage, arena=arena)
+	return AppState(config_path=config_path, config=config, storage=storage, market=market, arena=arena)
 
 
 async def _poll_market(state: AppState) -> None:
 	while True:
-		state.arena.sync_market_data()
+		state.market.sync_market_data(state.arena.tracked_codes())
 		state.arena.match_pending_orders()
 		await asyncio.sleep(state.config.polling_interval_seconds)
 
@@ -90,6 +92,9 @@ def create_app(config_path: Path | None = None, market_provider: MarketDataProvi
 	def get_state() -> AppState:
 		return app.state.ctx
 
+	def to_agent_response(agent_id: str, agent: AgentConfig) -> AgentResponse:
+		return AgentResponse(agent_id=agent_id, **agent.model_dump())
+
 	@app.get("/health")
 	def health() -> dict[str, str]:
 		return {"status": "ok"}
@@ -104,20 +109,23 @@ def create_app(config_path: Path | None = None, market_provider: MarketDataProvi
 		)
 
 	@app.get("/api/agents")
-	def list_agents() -> list[AgentConfig]:
-		return get_state().arena.list_agents()
+	def list_agents() -> list[AgentResponse]:
+		return [to_agent_response(agent_id, agent) for agent_id, agent in get_state().arena.list_agent_items()]
 
-	@app.post("/api/agents", response_model=AgentConfig)
-	def create_agent(request: CreateAgentRequest) -> AgentConfig:
-		return get_state().arena.add_agent(AgentConfig.model_validate(request.model_dump()))
+	@app.post("/api/agents", response_model=AgentResponse)
+	def create_agent(request: CreateAgentRequest) -> AgentResponse:
+		agent = AgentConfig.model_validate(request.model_dump(exclude={"agent_id"}))
+		created = get_state().arena.add_agent(request.agent_id, agent)
+		return to_agent_response(request.agent_id, created)
 
-	@app.get("/api/agents/{agent_id}", response_model=AgentConfig)
-	def get_agent(agent_id: str) -> AgentConfig:
-		return get_state().arena.get_agent(agent_id)
+	@app.get("/api/agents/{agent_id}", response_model=AgentResponse)
+	def get_agent(agent_id: str) -> AgentResponse:
+		return to_agent_response(agent_id, get_state().arena.get_agent(agent_id))
 
-	@app.patch("/api/agents/{agent_id}", response_model=AgentConfig)
-	def update_agent(agent_id: str, request: UpdateAgentRequest) -> AgentConfig:
-		return get_state().arena.update_agent(agent_id, request.model_dump())
+	@app.patch("/api/agents/{agent_id}", response_model=AgentResponse)
+	def update_agent(agent_id: str, request: UpdateAgentRequest) -> AgentResponse:
+		updated = get_state().arena.update_agent(agent_id, request.model_dump())
+		return to_agent_response(agent_id, updated)
 
 	@app.delete("/api/agents/{agent_id}", status_code=204)
 	def delete_agent(agent_id: str) -> None:
@@ -149,22 +157,33 @@ def create_app(config_path: Path | None = None, market_provider: MarketDataProvi
 
 	@app.post("/api/market/refresh")
 	def refresh_market() -> dict[str, str]:
-		get_state().arena.sync_market_data()
+		state = get_state()
+		state.market.sync_market_data(state.arena.tracked_codes())
 		get_state().arena.match_pending_orders()
 		return {"status": "ok"}
 
+	@app.post("/api/market/codes/refresh", response_model=CodeRefreshResponse)
+	def refresh_market_codes() -> CodeRefreshResponse:
+		return get_state().market.refresh_code_names(force=True)
+
+	@app.get("/api/market/codes", response_model=CodeSearchResponse)
+	def search_market_codes(query: str = "", page: int = 1, page_size: int = 20) -> CodeSearchResponse:
+		return get_state().market.search_code_names(query=query, page=page, page_size=page_size)
+
 	@app.post("/api/market/parse-today", response_model=MarketParseResponse)
 	def parse_today_market() -> MarketParseResponse:
-		return get_state().arena.parse_today_market_data_if_missing()
+		state = get_state()
+		return state.market.parse_today_market_data_if_missing(state.arena.tracked_codes())
 
 	@app.get("/api/market/status", response_model=MarketStatusResponse)
 	def get_market_status() -> MarketStatusResponse:
-		return get_state().arena.get_market_status()
+		state = get_state()
+		return state.market.get_market_status(state.arena.tracked_codes())
 
 	@app.get("/api/market/bars", response_model=MarketBarsResponse)
 	def get_market_bars(code: str, trade_date: str | None = None) -> MarketBarsResponse:
 		parsed_trade_date = date.fromisoformat(trade_date) if trade_date else None
-		return get_state().arena.get_market_bars(code, parsed_trade_date)
+		return get_state().market.get_market_bars(code, parsed_trade_date)
 
 	@app.get("/api/rankings")
 	def get_rankings(date_value: str | None = None) -> Any:

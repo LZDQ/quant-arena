@@ -179,6 +179,33 @@ class MarketCodeStatus(BaseModel):
 	last_five_minute_bar_time: datetime | None = None
 
 
+class CodeNameEntry(BaseModel):
+	"""Reference row for one market code."""
+
+	code: str
+	name: str | None = None
+	trade_status: str | None = None
+
+
+class CodeSearchResponse(BaseModel):
+	"""Paged code-directory response."""
+
+	query: str
+	page: int
+	page_size: int
+	total: int
+	items: list[CodeNameEntry]
+	last_refreshed_at: datetime | None = None
+	auto_refresh_enabled: bool
+
+
+class CodeRefreshResponse(BaseModel):
+	"""Result of a code-directory refresh."""
+
+	refreshed_at: datetime
+	entry_count: int
+
+
 class MarketStatusResponse(BaseModel):
 	"""Public market-data overview."""
 
@@ -209,22 +236,31 @@ class CreateAgentRequest(BaseModel):
 
 	agent_id: str
 	display_name: str
-	token_header_name: str = "X-Agent-Token"
 	token_secret: str
 	initial_cash: float = Field(gt=0)
 	sell_constraint: Literal["t_plus_one"] = "t_plus_one"
-	active: bool = True
+	enabled: bool = True
 
 
 class UpdateAgentRequest(BaseModel):
 	"""Request to replace mutable agent config fields."""
 
 	display_name: str | None = None
-	token_header_name: str | None = None
 	token_secret: str | None = None
 	initial_cash: float | None = Field(default=None, gt=0)
 	sell_constraint: Literal["t_plus_one"] | None = None
-	active: bool | None = None
+	enabled: bool | None = None
+
+
+class AgentResponse(BaseModel):
+	"""API view of one agent plus its directory-based id."""
+
+	agent_id: str
+	display_name: str
+	token_secret: str
+	initial_cash: float
+	sell_constraint: Literal["t_plus_one"]
+	enabled: bool
 
 
 class SubmitOrderRequest(BaseModel):

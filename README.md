@@ -13,10 +13,11 @@ Standalone stock trading simulation and monitoring service. It is designed to ru
   - market data root: public/readable bar data
   - agents root: private agent config, orders, fills, positions, equity history
 - Background market sync:
+  - optional daily auto-refresh of `codes.csv`
   - latest quotes refresh for tracked codes
   - 5-minute bars during market hours
   - daily bars after the market close
-- Agent registration with initial cash, token header, token secret, and T+1 sell constraint.
+- Agent registration with initial cash, token secret, enabled flag, and T+1 sell constraint.
 - Portfolio, operations, equity-curve, ranking, order submission, and cancel APIs.
 - Matching rule: limit orders only fill on a later market refresh when the latest price crosses the submitted limit.
 - A-share constraints in v1:
@@ -33,15 +34,19 @@ By default, startup creates:
 ~/.quant-arena/
   config.json
   market-data/
-    daily-bars/
-    5min-bars/
+    codes.csv
+    bars/
+      <date>/
+        daily.csv
+        5min/
+          <minute>.csv
   agents/
     <agent_id>/
       config.json
       state.json
 ```
 
-`~/.quant-arena/market-data` is the root intended to be shared read-only with other users or agents. `~/.quant-arena/agents` is private application state and should stay unreadable to other users at the OS level.
+`~/.quant-arena/market-data` is the root intended to be shared read-only with other users or agents. Code names are written to `codes.csv`, while bars are unified under `bars/<date>/`: daily rows go to `daily.csv` and 5-minute rows go to `5min/<minute>.csv`. `~/.quant-arena/agents` is private application state and should stay unreadable to other users at the OS level.
 
 ## Running
 
@@ -97,6 +102,7 @@ This keeps `quant_arena/` as Python source only. Static assets are intentionally
 	"port": 18792,
 	"agents_root": "~/.quant-arena/agents",
 	"market_data_root": "~/.quant-arena/market-data",
+	"enable_code_name_refresh": false,
 	"polling_interval_seconds": 300,
 	"enable_background_polling": true,
 	"fees": {
@@ -125,11 +131,13 @@ The defaults place all runtime config and data under `~/.quant-arena/`. Override
 - `POST /api/agents/{agent_id}/orders/{order_id}/cancel`
 - `GET /api/rankings`
 - `POST /api/market/refresh`
+- `GET /api/market/codes`
+- `POST /api/market/codes/refresh`
 - `POST /mcp`
 
 ## MCP authentication
 
-Each agent authenticates with its own configured header name and token secret. Example:
+Each agent authenticates with the global configured header name and its own token secret. Example:
 
 ```bash
 curl http://127.0.0.1:18792/mcp \
@@ -157,6 +165,7 @@ Tools:
 ## Notes
 
 - `baostock` is a normal runtime dependency and is used directly by the market data provider.
+- Code names come from `baostock.query_all_stock(day=None)`, which returns tabular rows with `code`, `tradeStatus`, and `code_name`.
 - The current UI is intentionally thin and same-port. It exposes the key admin flows without introducing a separate reverse proxy.
 - Market-data sync only follows codes already referenced by pending orders or held positions. It is not a full-market ingestion job.
 
