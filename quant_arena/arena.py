@@ -1,20 +1,19 @@
-"""Trading simulation engine."""
+"""Trading simulation engine. A lot of code is deprecated and do not modify this."""
 
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, time
+from typing import Any
 
 from quant_arena.schemas import OperationListResponse, PortfolioResponse, PositionView, RankingEntry, SubmitOrderRequest
-from quant_arena.clock import now_shanghai
+from quant_arena.clock import SHANGHAI_TZ, now_shanghai
 from quant_arena.config import AgentConfig, AppConfig
 from quant_arena.errors import BadRequestError, ConflictError, NotFoundError, UnauthorizedError
-from quant_arena.market import MarketService
 from quant_arena.models import (
     AgentState,
     EquityPoint,
     FillRecord,
     OrderRecord,
     PositionLot,
-    QuoteSnapshot,
 )
 from quant_arena.storage import StorageService
 
@@ -22,7 +21,7 @@ from quant_arena.storage import StorageService
 class ArenaService:
     """Application service layer."""
 
-    def __init__(self, config: AppConfig, storage: StorageService, market: MarketService):
+    def __init__(self, config: AppConfig, storage: StorageService, market: Any):
         self.config = config
         self.storage = storage
         self.market = market
@@ -82,7 +81,9 @@ class ArenaService:
         now = submitted_at or now_shanghai()
         if request.side == "buy" and request.quantity % 100 != 0:
             raise BadRequestError("Buy order quantity must be a multiple of 100")
-        quote = self.market.get_latest_quote(request.code)
+        latest_price = self.market.get_latest_prices([request.code]).get(request.code)
+        if latest_price is None:
+            raise NotFoundError(f"No on-disk market bars available for {request.code}")
         state = self._load_or_init_agent_state(agent_id, agent)
         order = OrderRecord(
             agent_id=agent_id,
@@ -91,7 +92,7 @@ class ArenaService:
             quantity=request.quantity,
             limit_price=request.limit_price,
             submitted_at=now,
-            activate_after=quote.as_of,
+            activate_after=now,
         )
         state.orders.append(order)
         self.storage.save_agent_state(state)
@@ -118,26 +119,36 @@ class ArenaService:
             if not pending_codes:
                 self._update_equity_snapshot(agent, state)
                 continue
-            quotes = self.market.refresh_quotes(pending_codes)
+            latest_prices = self.market.get_latest_prices(pending_codes)
+            market_bars_by_code: dict[str, Any] = {}
             changed = False
             for order in state.orders:
                 if order.status != "pending":
                     continue
-                quote = quotes.get(order.code)
-                if quote is None:
+                latest_price = latest_prices.get(order.code)
+                if latest_price is None:
+                    continue
+                bars = market_bars_by_code.get(order.code)
+                if bars is None:
+                    bars = self.market.get_market_bars_or_none(order.code)
+                    market_bars_by_code[order.code] = bars
+                if bars is None:
+                    continue
+                executed_at, trade_date, limit_up, limit_down = self._market_execution_context(bars)
+                if executed_at is None or trade_date is None or limit_up is None or limit_down is None:
                     continue
                 order.last_checked_at = timestamp
-                if quote.as_of <= order.activate_after:
+                if executed_at <= order.activate_after:
                     continue
-                if not self._crosses(order.side, order.limit_price, quote.last_price):
+                if not self._crosses(order.side, order.limit_price, latest_price):
                     continue
-                if order.side == "buy" and quote.last_price >= quote.limit_up:
+                if order.side == "buy" and latest_price >= limit_up:
                     continue
-                if order.side == "sell" and quote.last_price <= quote.limit_down:
+                if order.side == "sell" and latest_price <= limit_down:
                     continue
-                if not self._can_fill(agent, state, order, quote):
+                if not self._can_fill(agent, state, order, latest_price, trade_date):
                     continue
-                self._fill_order(state, order, quote)
+                self._fill_order(state, order, latest_price, executed_at, trade_date)
                 changed = True
             self._update_equity_snapshot(agent, state)
             if changed:
@@ -218,16 +229,16 @@ class ArenaService:
             return market_price <= limit_price
         return market_price >= limit_price
 
-    def _can_fill(self, agent: AgentConfig, state: AgentState, order: OrderRecord, quote: QuoteSnapshot) -> bool:
-        notional = quote.last_price * order.quantity
+    def _can_fill(self, agent: AgentConfig, state: AgentState, order: OrderRecord, market_price: float, trade_date: date) -> bool:
+        notional = market_price * order.quantity
         commission = self._commission(notional)
         if order.side == "buy":
             return state.cash >= notional + commission
-        sellable = self._sellable_quantity(state, order.code, quote.trade_date)
+        sellable = self._sellable_quantity(state, order.code, trade_date)
         return sellable >= order.quantity
 
-    def _fill_order(self, state: AgentState, order: OrderRecord, quote: QuoteSnapshot) -> None:
-        notional = quote.last_price * order.quantity
+    def _fill_order(self, state: AgentState, order: OrderRecord, market_price: float, executed_at: datetime, trade_date: date) -> None:
+        notional = market_price * order.quantity
         commission = self._commission(notional)
         stamp_tax = self._stamp_tax(notional, order.side)
         fill = FillRecord(
@@ -236,22 +247,22 @@ class ArenaService:
             code=order.code,
             side=order.side,
             quantity=order.quantity,
-            executed_at=quote.as_of,
-            executed_price=quote.last_price,
+            executed_at=executed_at,
+            executed_price=market_price,
             commission=commission,
             stamp_tax=stamp_tax,
         )
         if order.side == "buy":
             state.cash -= notional + commission
             state.positions.setdefault(order.code, []).append(
-                PositionLot(quantity=order.quantity, acquired_date=quote.trade_date, cost_price=quote.last_price)
+                PositionLot(quantity=order.quantity, acquired_date=trade_date, cost_price=market_price)
             )
         else:
             state.cash += notional - commission - stamp_tax
-            consumed_cost = self._consume_sell_lots(state, order.code, order.quantity, quote.trade_date)
-            state.realized_pnl += (quote.last_price * order.quantity) - consumed_cost - commission - stamp_tax
+            consumed_cost = self._consume_sell_lots(state, order.code, order.quantity, trade_date)
+            state.realized_pnl += (market_price * order.quantity) - consumed_cost - commission - stamp_tax
         order.status = "filled"
-        order.filled_at = quote.as_of
+        order.filled_at = executed_at
         state.fills.append(fill)
 
     def _update_equity_snapshot(self, agent: AgentConfig, state: AgentState) -> None:
@@ -273,7 +284,8 @@ class ArenaService:
             state.equity_history.append(point)
 
     def _build_portfolio(self, agent: AgentConfig, state: AgentState) -> PortfolioResponse:
-        quotes = self.market.refresh_quotes(list(state.positions.keys())) if state.positions else {}
+        latest_prices = self.market.get_latest_prices(list(state.positions.keys())) if state.positions else {}
+        market_bars_by_code: dict[str, Any] = {}
         positions: list[PositionView] = []
         market_value = 0.0
         unrealized_pnl = 0.0
@@ -285,14 +297,20 @@ class ArenaService:
             quantity = sum(lot.quantity for lot in live_lots)
             sellable = self._sellable_quantity(state, code, now_shanghai().date())
             avg_cost = sum(lot.quantity * lot.cost_price for lot in live_lots) / quantity
-            quote = quotes.get(code)
-            market_price = quote.last_price if quote is not None else None
+            market_price = latest_prices.get(code)
             position_value = (market_price or 0.0) * quantity
             position_unrealized = ((market_price or avg_cost) - avg_cost) * quantity
             market_value += position_value
             unrealized_pnl += position_unrealized
-            if quote is not None:
-                as_of = quote.as_of if as_of is None else max(as_of, quote.as_of)
+            if market_price is not None:
+                bars = market_bars_by_code.get(code)
+                if bars is None:
+                    bars = self.market.get_market_bars_or_none(code)
+                    market_bars_by_code[code] = bars
+                if bars is not None:
+                    executed_at, _, _, _ = self._market_execution_context(bars)
+                    if executed_at is not None:
+                        as_of = executed_at if as_of is None else max(as_of, executed_at)
             positions.append(
                 PositionView(
                     code=code,
@@ -366,3 +384,26 @@ class ArenaService:
         if state is not None:
             return state
         return self._default_agent_state(agent_id, agent.initial_cash)
+
+    @staticmethod
+    def _market_execution_context(bars: Any) -> tuple[datetime | None, date | None, float | None, float | None]:
+        if bars.five_minute_bars:
+            latest_bar = bars.five_minute_bars[-1]
+            daily_bar = bars.daily_bar
+            if daily_bar is None:
+                return latest_bar.bar_time, latest_bar.trade_date, None, None
+            return (
+                latest_bar.bar_time,
+                latest_bar.trade_date,
+                round(daily_bar.prev_close * 1.1, 2),
+                round(daily_bar.prev_close * 0.9, 2),
+            )
+        if bars.daily_bar is not None:
+            daily_bar = bars.daily_bar
+            return (
+                datetime.combine(daily_bar.trade_date, time(15, 0), tzinfo=SHANGHAI_TZ),
+                daily_bar.trade_date,
+                round(daily_bar.prev_close * 1.1, 2),
+                round(daily_bar.prev_close * 0.9, 2),
+            )
+        return None, None, None, None

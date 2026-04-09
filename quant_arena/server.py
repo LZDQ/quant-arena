@@ -1,4 +1,4 @@
-"""FastAPI server for quant-arena."""
+"""FastAPI server for quant-arena. A lot of code is deprecated and do not modify this."""
 
 import asyncio
 from contextlib import AsyncExitStack
@@ -13,13 +13,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from quant_arena.schemas import AgentResponse, CodeRefreshResponse, CodeSearchResponse, CreateAgentRequest, MarketBarsResponse, MarketParseResponse, MarketStatusResponse, PathsResponse, SubmitOrderRequest, UpdateAgentRequest
+from quant_arena.clock import SHANGHAI_TZ, now_shanghai
+from quant_arena.schemas import AgentResponse, CodeRefreshResponse, CodeSearchResponse, CreateAgentRequest, MarketBarsResponse, MarketCodeStatus, MarketParseResponse, MarketStatusResponse, PathsResponse, SubmitOrderRequest, UpdateAgentRequest
 from quant_arena.arena import ArenaService
 from quant_arena.config import AgentConfig, AppConfig, load_app_config
 from quant_arena.errors import ServiceError
-from quant_arena.market import BaoStockMarketDataProvider, MarketDataProvider, MarketService
+from quant_arena.market import BaostockMarketService
 from quant_arena.mcp_server import create_mcp_server, wrap_mcp_with_agent_auth
-from quant_arena.models import DataParserJobConfig, DataParserJobEntry
+from quant_arena.models import CodeNameEntry, DataParserJobConfig, DataParserJobEntry
 from quant_arena.storage import StorageService
 
 
@@ -29,7 +30,7 @@ DEFAULT_CONFIG_PATH = Path.home() / ".quant-arena" / "config.json"
 class AppState:
     """Typed app state."""
 
-    def __init__(self, config_path: Path, config: AppConfig, storage: StorageService, market: MarketService, arena: ArenaService):
+    def __init__(self, config_path: Path, config: AppConfig, storage: StorageService, market: BaostockMarketService, arena: ArenaService):
         self.config_path = config_path
         self.config = config
         self.storage = storage
@@ -38,29 +39,65 @@ class AppState:
         self.background_task: asyncio.Task[None] | None = None
 
 
-def _load_arena(config_path: Path, market_provider: MarketDataProvider | None = None) -> AppState:
+def _load_arena(config_path: Path, market_provider: Any | None = None) -> AppState:
     config = load_app_config(config_path)
     storage = StorageService(Path(config.agents_root).resolve(), Path(config.market_data_root).resolve())
     storage.ensure_layout()
     agents = storage.load_agent_configs()
-    market = MarketService(
-        config=config,
-        storage=storage,
-        provider=market_provider or BaoStockMarketDataProvider(storage=storage),
-    )
+    market = market_provider or BaostockMarketService(config=config, storage=storage)
     arena = ArenaService(config=config, storage=storage, market=market)
     arena.set_agents(agents)
     return AppState(config_path=config_path, config=config, storage=storage, market=market, arena=arena)
 
 
+def _current_market_codes(market: Any) -> set[str]:
+    code_names = market.get_code_names_mapping() or {}
+    return set(code_names.keys())
+
+
+def _refresh_code_names_status(state: AppState, force: bool = False) -> CodeRefreshResponse:
+    timestamp = now_shanghai()
+    local_today = timestamp.astimezone(SHANGHAI_TZ).date()
+    last_refreshed_at = state.storage.code_names_last_refreshed_at()
+    if force or last_refreshed_at is None or last_refreshed_at.astimezone(SHANGHAI_TZ).date() < local_today:
+        state.market.refresh_code_names()
+        last_refreshed_at = state.storage.code_names_last_refreshed_at() or timestamp
+    return CodeRefreshResponse(
+        refreshed_at=last_refreshed_at,
+        entry_count=len(state.market.get_code_names_mapping() or {}),
+    )
+
+
+def _search_code_names(state: AppState, query: str = "", page: int = 1, page_size: int = 20) -> CodeSearchResponse:
+    normalized_page = max(page, 1)
+    normalized_page_size = min(max(page_size, 1), 100)
+    code_names = state.market.get_code_names_mapping() or {}
+    items = [CodeNameEntry(code=code, name=name) for code, name in code_names.items()]
+    needle = query.strip().lower()
+    if needle:
+        items = [item for item in items if needle in item.code.lower() or needle in item.name.lower()]
+    total = len(items)
+    start = (normalized_page - 1) * normalized_page_size
+    end = start + normalized_page_size
+    return CodeSearchResponse(
+        query=query,
+        page=normalized_page,
+        page_size=normalized_page_size,
+        total=total,
+        items=items[start:end],
+        last_refreshed_at=state.storage.code_names_last_refreshed_at(),
+        auto_refresh_enabled=state.config.enable_code_name_refresh,
+    )
+
+
 async def _poll_market(state: AppState) -> None:
     while True:
-        state.market.sync_market_data(state.market.tracked_codes())
+        state.market.sync_market_data(_current_market_codes(state.market))
         state.arena.match_pending_orders()
         await asyncio.sleep(state.config.polling_interval_seconds)
 
 
-def create_app(config_path: Path | None = None, market_provider: MarketDataProvider | None = None) -> FastAPI:
+def create_app(config_path: Path | None = None, market_provider: Any | None = None) -> FastAPI:
     """Create the FastAPI app."""
 
     resolved_config = (config_path or DEFAULT_CONFIG_PATH).resolve()
@@ -170,41 +207,46 @@ def create_app(config_path: Path | None = None, market_provider: MarketDataProvi
     @app.post("/api/market/refresh")
     def refresh_market() -> dict[str, str]:
         state = get_state()
-        state.market.sync_market_data(state.market.tracked_codes())
+        state.market.sync_market_data(_current_market_codes(state.market))
         get_state().arena.match_pending_orders()
         return {"status": "ok"}
 
     @app.post("/api/market/codes/refresh", response_model=CodeRefreshResponse)
     def refresh_market_codes() -> CodeRefreshResponse:
-        return get_state().market.refresh_code_names(force=True)
+        return _refresh_code_names_status(get_state(), force=True)
 
     @app.get("/api/market/codes", response_model=CodeSearchResponse)
     def search_market_codes(query: str = "", page: int = 1, page_size: int = 20) -> CodeSearchResponse:
-        return get_state().market.search_code_names(query=query, page=page, page_size=page_size)
+        return _search_code_names(get_state(), query=query, page=page, page_size=page_size)
 
     @app.post("/api/market/parse-today", response_model=MarketParseResponse)
     def parse_today_market() -> MarketParseResponse:
         state = get_state()
-        return state.market.parse_today_market_data_if_missing(state.market.tracked_codes())
+        result = state.market.parse_today_market_data_if_missing(_current_market_codes(state.market))
+        return MarketParseResponse(**result.model_dump())
 
     @app.post("/api/market/parse-jobs", response_model=DataParserJobEntry)
-    async def start_market_parse_job(request: DataParserJobConfig) -> DataParserJobEntry:
-        state = get_state()
-        return await state.market.start_data_parser_job(state.market.tracked_codes(), request)
+    def start_market_parse_job(request: DataParserJobConfig) -> DataParserJobEntry:
+        return get_state().market.create_data_parser_job(request)
 
     @app.get("/api/market/parse-jobs", response_model=list[DataParserJobEntry])
-    async def list_market_parse_jobs() -> list[DataParserJobEntry]:
-        return await get_state().market.list_data_parser_jobs()
+    def list_market_parse_jobs() -> list[DataParserJobEntry]:
+        return get_state().market.list_data_parser_jobs()
 
     @app.get("/api/market/status", response_model=MarketStatusResponse)
     def get_market_status() -> MarketStatusResponse:
         state = get_state()
-        return state.market.get_market_status(state.market.tracked_codes())
+        status = state.market.get_market_status(_current_market_codes(state.market))
+        return MarketStatusResponse(
+            tracked_codes=status.tracked_codes,
+            codes=[MarketCodeStatus(**item.model_dump()) for item in status.codes],
+        )
 
     @app.get("/api/market/bars", response_model=MarketBarsResponse)
     def get_market_bars(code: str, trade_date: str | None = None) -> MarketBarsResponse:
         parsed_trade_date = date.fromisoformat(trade_date) if trade_date else None
-        return get_state().market.get_market_bars(code, parsed_trade_date)
+        bars = get_state().market.get_market_bars(code, parsed_trade_date)
+        return MarketBarsResponse(**bars.model_dump())
 
     @app.get("/api/rankings")
     def get_rankings(date_value: str | None = None) -> Any:

@@ -4,3 +4,4 @@ Dev guide:
 - Do not `from __future__ import annotations` because it is deprecated.
 - It is okay to use busy waiting because it is easy to debug and this is a personal project without a need to scale up.
 - Sometimes I manually edit the code and you should not revert them.
+- The project is now in refactor mode. FastAPI and arena service is using deprecated endpoints, so do not modify them.

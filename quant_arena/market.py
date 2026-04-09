@@ -1,30 +1,27 @@
-"""Market provider primitives and market-data service."""
+"""Baostock-backed market data service."""
 
 import asyncio
-from datetime import date, datetime, time, timedelta
-from typing import Protocol
+from datetime import date, datetime, timedelta
 
 import baostock as bs
 
-from quant_arena.schemas import CodeRefreshResponse, CodeSearchResponse, MarketBarsResponse, MarketCodeStatus, MarketParseResponse, MarketStatusResponse
 from quant_arena.clock import SHANGHAI_TZ, now_shanghai
 from quant_arena.config import AppConfig
-from quant_arena.errors import BadRequestError, NotFoundError
+from quant_arena.errors import BadRequestError
 from quant_arena.models import (
     CodeNameEntry,
     DailyBar,
+    DataParserJobConfig,
     DataParserJobEntry,
     FiveMinuteBar,
-    DataParserJobConfig,
-    QuoteSnapshot,
+    MarketBarsData,
+    MarketParseResult,
 )
 from quant_arena.storage import StorageService
 
 
-class MarketDataProvider(Protocol):
+class BaostockMarketService:
     """
-    Protocol for market data providers.
-
     设计理念：
     - 前端用户需要浏览某支股票的 k 线图
     - 前端用户需要能爬取历史数据并查看进度，最好能断点恢复
@@ -41,37 +38,25 @@ class MarketDataProvider(Protocol):
     - 有些日期不开市，不会也不应该创建对应日期的数据目录
     """
 
-    def get_code_names(self) -> list[CodeNameEntry] | None:
+    def __init__(self, config: AppConfig, storage: StorageService):
+        self.config = config
+        self.storage = storage
+        self._code_names_map: dict[str, str] | None = None
+        self._parser_jobs: list[tuple[DataParserJobEntry, asyncio.Task[None]]] = []
+
+    def get_code_names_mapping(self) -> dict[str, str] | None:
         """Return the provider's current code-name snapshot without refreshing."""
+        if self._code_names_map is None:
+            stored_code_names = self.storage.load_code_names()
+            if stored_code_names is None:
+                self._code_names_map = {
+                    entry.code: entry.name
+                    for entry in stored_code_names
+                }
+        return self._code_names_map
 
     def refresh_code_names(self) -> None:
         """Refresh code names using current date with backward logic."""
-
-    def get_daily_bars(self, codes: list[str], trade_date: date) -> dict[str, DailyBar | None]:
-        """Return one daily bar per code for the requested date."""
-
-    def get_five_minute_bars(self, codes: list[str], trade_date: date) -> dict[str, list[FiveMinuteBar] | None]:
-        """Return 5-minute bars per code for the requested date."""
-
-    def create_data_parser_job(self, config: DataParserJobConfig) -> DataParserJobEntry:
-        """Create a data parser job and return its entry."""
-
-    def list_data_parser_jobs(self) -> list[DataParserJobEntry]:
-        """Return the list of all created data parser jobs."""
-
-
-class BaoStockMarketDataProvider:
-    """Thin baostock-backed provider."""
-
-    def __init__(self, storage: StorageService):
-        self.storage = storage
-        self._code_names_cache = storage.load_code_names()
-        self._parser_jobs: list[DataParserJobEntry] = []
-
-    def get_code_names(self) -> list[CodeNameEntry] | None:
-        return self._code_names_cache
-
-    def refresh_code_names(self) -> None:
         today = now_shanghai().date()
         login_result = bs.login()
         if login_result.error_code != "0":
@@ -93,40 +78,28 @@ class BaoStockMarketDataProvider:
                         )
                     )
                 if entries:
-                    self._code_names_cache = entries
                     self.storage.save_code_names(entries)
+                    self._code_names_map = {entry.code: entry.name for entry in entries}
                     return
         finally:
             bs.logout()
 
-    def list_trading_dates(self, start_date: date, end_date: date) -> list[date]:
-        login_result = bs.login()
-        if login_result.error_code != "0":
-            raise RuntimeError(f"baostock login failed: {login_result.error_msg}")
-        try:
-            result = bs.query_trade_dates(
-                start_date=start_date.isoformat(),
-                end_date=end_date.isoformat(),
-            )
-            if result.error_code != "0":
-                raise RuntimeError(f"baostock trade-date query failed: {result.error_msg}")
-
-            trade_dates: list[date] = []
-            while result.next():
-                row = result.get_row_data()
-                if row[1] != "1":
-                    continue
-                trade_dates.append(date.fromisoformat(row[0]))
-            return trade_dates
-        finally:
-            bs.logout()
-
-    def get_daily_bars(self, codes: list[str], trade_date: date) -> dict[str, DailyBar | None]:
+    def get_daily_bars(
+        self,
+        codes: list[str],
+        trade_date: date
+    ) -> dict[str, DailyBar | None]:
+        """Return one daily bar per code for the requested date."""
         stored_bars = self.storage.load_daily_bar(trade_date) or []
         bars_by_code = {bar.code: bar for bar in stored_bars}
         return {code: bars_by_code.get(code) for code in codes}
 
-    def get_five_minute_bars(self, codes: list[str], trade_date: date) -> dict[str, list[FiveMinuteBar] | None]:
+    def get_five_minute_bars(
+        self,
+        codes: list[str],
+        trade_date: date
+    ) -> dict[str, list[FiveMinuteBar] | None]:
+        """Return 5-minute bars per code for the requested date."""
         stored_bars = self.storage.load_five_minute_bars(trade_date) or []
         bars_by_code: dict[str, list[FiveMinuteBar]] = {}
         for bar in stored_bars:
@@ -134,6 +107,9 @@ class BaoStockMarketDataProvider:
         return {code: bars_by_code.get(code) for code in codes}
 
     def create_data_parser_job(self, config: DataParserJobConfig) -> DataParserJobEntry:
+        """Create a data parser job and return its entry."""
+        if config.end_date < config.start_date:
+            raise BadRequestError("end_date must be on or after start_date")
         job = DataParserJobEntry(
             config=config,
             skipped=0 if config.skip_existing else None,
@@ -142,244 +118,43 @@ class BaoStockMarketDataProvider:
             start_time=now_shanghai(),
             finish_time=None,
         )
-        self._parser_jobs.append(job)
-        asyncio.create_task(self._run_data_parser_job(job))
+        task = asyncio.create_task(self._run_data_parser_job(job))
+        self._parser_jobs.append((job, task))
         return job
 
     def list_data_parser_jobs(self) -> list[DataParserJobEntry]:
-        return [job.model_copy() for job in reversed(self._parser_jobs)]
+        """Return the list of all created data parser jobs."""
+        return [job.model_copy() for job, _ in self._parser_jobs]
 
-    async def _run_data_parser_job(self, job: DataParserJobEntry) -> None:
-        try:
-            code_names = self.get_code_names()
-            if code_names is None:
-                raise ValueError("No codes found")
-            codes = [entry.code for entry in code_names]
-
-            for code in sorted(set(codes)):
-                should_fetch_daily = job.config.mode in {"daily", "both"}
-                should_fetch_five_minute = job.config.mode in {"five_minute", "both"}
-
-                if job.config.skip_existing:
-                    if should_fetch_daily and not self._has_missing_daily_data(code, job.config):
-                        should_fetch_daily = False
-                    if should_fetch_five_minute and not self._has_missing_five_minute_data(code, job.config):
-                        should_fetch_five_minute = False
-                    if not should_fetch_daily and not should_fetch_five_minute and job.skipped is not None:
-                        job.skipped += 1
-
-                if should_fetch_daily:
-                    daily_bars = self._load_daily_bars_range(code, job.config.start_date, job.config.end_date)
-                    self.storage.save_daily_bar_rows(daily_bars)
-                if should_fetch_five_minute:
-                    five_minute_bars = self._load_five_minute_bars_range(code, job.config.start_date, job.config.end_date)
-                    self.storage.save_five_minute_bar_rows(five_minute_bars)
-
-                job.parsed += 1
-                await asyncio.sleep(0)
-
-            job.finish_time = now_shanghai()
-        except Exception as exc:
-            job.error = str(exc)
-            job.finish_time = now_shanghai()
-
-    def _load_daily_bars_range(self, code: str, start_date: date, end_date: date) -> list[DailyBar]:
-        login_result = bs.login()
-        if login_result.error_code != "0":
-            raise RuntimeError(f"baostock login failed: {login_result.error_msg}")
-        try:
-            result = bs.query_history_k_data_plus(
-                code,
-                "code,date,open,high,low,close,preclose,volume,amount",
-                start_date=start_date.isoformat(),
-                end_date=end_date.isoformat(),
-                frequency="d",
-                adjustflag="3",
-            )
-            if result.error_code != "0":
-                raise RuntimeError(f"baostock daily range query failed for {code}: {result.error_msg}")
-            bars: list[DailyBar] = []
-            while result.next():
-                row = result.get_row_data()
-                bars.append(
-                    DailyBar(
-                        code=row[0],
-                        trade_date=date.fromisoformat(row[1]),
-                        open_price=float(row[2] or 0),
-                        high_price=float(row[3] or 0),
-                        low_price=float(row[4] or 0),
-                        close_price=float(row[5] or 0),
-                        prev_close=float(row[6] or 0),
-                        volume=float(row[7] or 0),
-                        amount=float(row[8] or 0),
-                    )
-                )
-            return bars
-        finally:
-            bs.logout()
-
-    def _load_five_minute_bars_range(self, code: str, start_date: date, end_date: date) -> list[FiveMinuteBar]:
-        login_result = bs.login()
-        if login_result.error_code != "0":
-            raise RuntimeError(f"baostock login failed: {login_result.error_msg}")
-        try:
-            result = bs.query_history_k_data_plus(
-                code,
-                "code,date,time,open,high,low,close,volume,amount",
-                start_date=start_date.isoformat(),
-                end_date=end_date.isoformat(),
-                frequency="5",
-                adjustflag="3",
-            )
-            if result.error_code != "0":
-                raise RuntimeError(f"baostock 5-minute range query failed for {code}: {result.error_msg}")
-            bars: list[FiveMinuteBar] = []
-            while result.next():
-                row = result.get_row_data()
-                timestamp = row[2][:14]
-                bars.append(
-                    FiveMinuteBar(
-                        code=row[0],
-                        trade_date=date.fromisoformat(row[1]),
-                        bar_time=datetime.strptime(timestamp, "%Y%m%d%H%M%S").replace(tzinfo=SHANGHAI_TZ),
-                        open_price=float(row[3] or 0),
-                        high_price=float(row[4] or 0),
-                        low_price=float(row[5] or 0),
-                        close_price=float(row[6] or 0),
-                        volume=float(row[7] or 0),
-                        amount=float(row[8] or 0),
-                    )
-                )
-            return bars
-        finally:
-            bs.logout()
-
-    def _has_missing_daily_data(self, code: str, config: DataParserJobConfig) -> bool:
-        return any(
-            code not in {bar.code for bar in (self.storage.load_daily_bar(current_date) or [])}
-            for current_date in self._iter_dates(config.start_date, config.end_date)
-        )
-
-    def _has_missing_five_minute_data(self, code: str, config: DataParserJobConfig) -> bool:
-        return any(
-            code not in {bar.code for bar in (self.storage.load_five_minute_bars(current_date) or [])}
-            for current_date in self._iter_dates(config.start_date, config.end_date)
-        )
-
-    @staticmethod
-    def _iter_dates(start_date: date, end_date: date) -> list[date]:
-        total_days = (end_date - start_date).days
-        return [start_date + timedelta(days=offset) for offset in range(total_days + 1)]
-
-
-class MarketService:
-    """Owns market-data refresh, persistence, and read APIs."""
-
-    def __init__(self, config: AppConfig, storage: StorageService, provider: MarketDataProvider):
-        self.config = config
-        self.storage = storage
-        self.provider = provider
-        self._jobs: list[DataParserJobEntry] = []
-        self._jobs_lock = asyncio.Lock()
-        self._job_tasks: list[asyncio.Task[None]] = []
-        self._code_names_cache: dict[str, CodeNameEntry] = {}
-        self._code_names_cache_refreshed_at: datetime | None = None
-
-    def refresh_quotes(self, codes: list[str]) -> dict[str, QuoteSnapshot]:
-        normalized_codes = sorted(set(codes))
-        if not normalized_codes:
-            return {}
-        quotes: dict[str, QuoteSnapshot] = {}
-        for code in normalized_codes:
-            quote = self._load_latest_quote(code)
-            if quote is not None:
-                quotes[code] = quote
-        return quotes
-
-    def get_latest_quote(self, code: str) -> QuoteSnapshot:
-        quote = self._load_latest_quote(code)
-        if quote is None:
-            raise NotFoundError(f"No on-disk market bars available for {code}")
-        return quote
-
-    def tracked_codes(self) -> set[str]:
-        return set(self._load_code_names_map().keys())
-
-    def refresh_code_names_if_needed(self, now: datetime | None = None) -> CodeRefreshResponse | None:
-        if not self.config.enable_code_name_refresh:
-            return None
-        return self.refresh_code_names(force=False, now=now)
-
-    def refresh_code_names(self, force: bool = False, now: datetime | None = None) -> CodeRefreshResponse:
-        timestamp = now or now_shanghai()
-        local_today = timestamp.astimezone(SHANGHAI_TZ).date()
-        last_refreshed_at = self.storage.code_names_last_refreshed_at()
-        if not force and last_refreshed_at is not None and last_refreshed_at.astimezone(SHANGHAI_TZ).date() >= local_today:
-            return CodeRefreshResponse(
-                refreshed_at=last_refreshed_at,
-                entry_count=len(self._load_code_names_map()),
-            )
-
-        self.provider.refresh_code_names()
-        entries = self.provider.get_code_names()
-        if entries:
-            self.storage.save_code_names(entries)
-            self._replace_code_names_cache(entries)
-        refetched_at = self.storage.code_names_last_refreshed_at() or timestamp
-        return CodeRefreshResponse(
-            refreshed_at=refetched_at,
-            entry_count=len(entries),
-        )
-
-    def search_code_names(self, query: str = "", page: int = 1, page_size: int = 20) -> CodeSearchResponse:
-        normalized_page = max(page, 1)
-        normalized_page_size = min(max(page_size, 1), 100)
-        items = list(self._load_code_names_map().values())
-        needle = query.strip().lower()
-        if needle:
-            items = [
-                item
-                for item in items
-                if needle in item.code.lower() or needle in item.name.lower()
-            ]
-        total = len(items)
-        start = (normalized_page - 1) * normalized_page_size
-        end = start + normalized_page_size
-        return CodeSearchResponse(
-            query=query,
-            page=normalized_page,
-            page_size=normalized_page_size,
-            total=total,
-            items=items[start:end],
-            last_refreshed_at=self.storage.code_names_last_refreshed_at(),
-            auto_refresh_enabled=self.config.enable_code_name_refresh,
-        )
+    def get_latest_prices(self, codes: list[str]) -> dict[str, float | None]:
+        latest_trade_date, latest_bars = self._latest_five_minute_snapshot()
+        if latest_trade_date is None or latest_bars is None:
+            return {code: None for code in sorted(set(codes))}
+        latest_by_code = {bar.code: bar.close_price for bar in latest_bars}
+        prices: dict[str, float | None] = {}
+        for code in sorted(set(codes)):
+            prices[code] = latest_by_code.get(code)
+        return prices
 
     def sync_market_data(self, tracked_codes: set[str], now: datetime | None = None) -> None:
         timestamp = now or now_shanghai()
-        self.refresh_code_names_if_needed(now=timestamp)
+        self._refresh_code_names_if_needed(timestamp)
         if not tracked_codes:
             return
 
-        ordered_codes = sorted(tracked_codes)
         local_now = timestamp.astimezone(SHANGHAI_TZ)
-        quotes = self.refresh_quotes(ordered_codes)
-        trade_dates = {quote.trade_date for quote in quotes.values()}
-        if local_now.date() in trade_dates and self._is_market_open(local_now):
-            five_minute_bars_by_code = self.provider.get_five_minute_bars(ordered_codes, local_now.date())
-            self.storage.save_five_minute_bar_rows(
-                [bar for bars in five_minute_bars_by_code.values() if bars is not None for bar in bars]
-            )
-        if local_now.date() in trade_dates and self._is_after_market_close(local_now):
-            self.storage.save_daily_bar_rows(
-                [bar for bar in self.provider.get_daily_bars(ordered_codes, local_now.date()).values() if bar is not None]
-            )
+        if self._is_market_open(local_now):
+            five_minute_bars = self._load_all_five_minute_bars(local_now.date(), sorted(tracked_codes))
+            self.storage.save_five_minute_bar_rows(five_minute_bars)
+        if self._is_after_market_close(local_now):
+            daily_bars = self._load_all_daily_bars(local_now.date(), sorted(tracked_codes))
+            self.storage.save_daily_bar_rows(daily_bars)
 
-    def parse_today_market_data_if_missing(self, tracked_codes: set[str], now: datetime | None = None) -> MarketParseResponse:
+    def parse_today_market_data_if_missing(self, tracked_codes: set[str], now: datetime | None = None) -> MarketParseResult:
         timestamp = now or now_shanghai()
         local_today = timestamp.astimezone(SHANGHAI_TZ).date()
         if not tracked_codes:
-            return MarketParseResponse(
+            return MarketParseResult(
                 trade_date=local_today,
                 tracked_codes=[],
                 parsed_daily_codes=[],
@@ -395,187 +170,35 @@ class MarketService:
         missing_five_minute_codes = [code for code in today_codes if code not in five_minute_codes]
 
         if missing_daily_codes:
-            self.storage.save_daily_bar_rows(
-                [bar for bar in self.provider.get_daily_bars(missing_daily_codes, local_today).values() if bar is not None]
-            )
+            self.storage.save_daily_bar_rows(self._load_all_daily_bars(local_today, missing_daily_codes))
         if missing_five_minute_codes:
-            five_minute_bars_by_code = self.provider.get_five_minute_bars(missing_five_minute_codes, local_today)
-            self.storage.save_five_minute_bar_rows(
-                [bar for bars in five_minute_bars_by_code.values() if bars is not None for bar in bars]
-            )
+            self.storage.save_five_minute_bar_rows(self._load_all_five_minute_bars(local_today, missing_five_minute_codes))
 
-        return MarketParseResponse(
+        return MarketParseResult(
             trade_date=local_today,
             tracked_codes=today_codes,
             parsed_daily_codes=missing_daily_codes,
             parsed_five_minute_codes=missing_five_minute_codes,
         )
 
-    async def start_data_parser_job(self, tracked_codes: set[str], config: DataParserJobConfig) -> DataParserJobEntry:
-        if config.end_date < config.start_date:
-            raise BadRequestError("end_date must be on or after start_date")
-
-        normalized_codes = sorted(tracked_codes)
-        job = DataParserJobEntry(
-            config=config,
-            skipped=0 if config.skip_existing else None,
-            parsed=0,
-            error=None,
-            start_time=now_shanghai(),
-            finish_time=None,
-        )
-        async with self._jobs_lock:
-            self._jobs.insert(0, job)
-        task = asyncio.create_task(
-            self._run_data_parser_job(job, normalized_codes),
-            name=f"market-parse-{job.start_time.isoformat()}",
-        )
-        self._job_tasks.append(task)
-        task.add_done_callback(lambda completed: self._job_tasks.remove(completed) if completed in self._job_tasks else None)
-        return job.model_copy()
-
-    async def list_data_parser_jobs(self) -> list[DataParserJobEntry]:
-        async with self._jobs_lock:
-            return [job.model_copy() for job in self._jobs]
-
     async def shutdown(self) -> None:
-        tasks = list(self._job_tasks)
+        tasks = [task for _, task in self._parser_jobs]
         if not tasks:
             return
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        self._job_tasks = []
 
-    def get_market_status(self, tracked_codes: set[str]) -> MarketStatusResponse:
-        ordered_tracked_codes = sorted(tracked_codes)
-        codes = ordered_tracked_codes
-        items: list[MarketCodeStatus] = []
-        for code in codes:
-            latest_daily_date = self._latest_daily_bar_date(code)
-            latest_five_minute_date = self._latest_five_minute_bar_date(code)
-            five_minute_bars: list[FiveMinuteBar] = []
-            if latest_five_minute_date is not None:
-                day_bars = self.storage.load_five_minute_bars(latest_five_minute_date) or []
-                five_minute_bars = [bar for bar in day_bars if bar.code == code]
-            items.append(
-                MarketCodeStatus(
-                    code=code,
-                    latest_daily_bar_date=latest_daily_date,
-                    latest_five_minute_bar_date=latest_five_minute_date,
-                    five_minute_bar_count=len(five_minute_bars),
-                    last_five_minute_bar_time=five_minute_bars[-1].bar_time if five_minute_bars else None,
-                )
-            )
-        return MarketStatusResponse(tracked_codes=ordered_tracked_codes, codes=items)
-
-    def get_market_bars(self, code: str, trade_date: date | None = None) -> MarketBarsResponse:
-        target_date = trade_date or self._latest_five_minute_bar_date(code) or self._latest_daily_bar_date(code)
-        if target_date is None:
-            raise NotFoundError(f"No market bars available for {code}")
-        daily_bars = self.storage.load_daily_bar(target_date) or []
-        five_minute_bars = self.storage.load_five_minute_bars(target_date) or []
-        return MarketBarsResponse(
-            code=code,
-            trade_date=target_date,
-            daily_bar=next((bar for bar in daily_bars if bar.code == code), None),
-            five_minute_bars=[bar for bar in five_minute_bars if bar.code == code],
-        )
-
-    def _load_latest_quote(self, code: str) -> QuoteSnapshot | None:
-        latest_five_minute_date = self._latest_five_minute_bar_date(code)
-        latest_daily_date = self._latest_daily_bar_date(code)
-        if latest_five_minute_date is None and latest_daily_date is None:
-            return None
-
-        code_name = self._load_code_names_map().get(code)
-        if latest_five_minute_date is not None and (
-            latest_daily_date is None or latest_five_minute_date >= latest_daily_date
-        ):
-            day_bars = self.storage.load_five_minute_bars(latest_five_minute_date) or []
-            five_minute_bars = [bar for bar in day_bars if bar.code == code]
-            if not five_minute_bars:
-                return None
-            latest_bar = five_minute_bars[-1]
-            daily_bars = self.storage.load_daily_bar(latest_five_minute_date) or []
-            reference_daily_bar = next((bar for bar in daily_bars if bar.code == code), None)
-            if reference_daily_bar is None:
-                return None
-            return QuoteSnapshot(
-                code=code,
-                name=code_name.name if code_name is not None else code,
-                trade_date=latest_bar.trade_date,
-                as_of=latest_bar.bar_time,
-                last_price=latest_bar.close_price,
-                limit_up=round(reference_daily_bar.prev_close * 1.1, 2),
-                limit_down=round(reference_daily_bar.prev_close * 0.9, 2),
-            )
-
-        if latest_daily_date is None:
-            return None
-        day_bars = self.storage.load_daily_bar(latest_daily_date) or []
-        latest_daily_bar = next((bar for bar in day_bars if bar.code == code), None)
-        if latest_daily_bar is None:
-            return None
-        return QuoteSnapshot(
-            code=code,
-            name=code_name.name if code_name is not None else code,
-            trade_date=latest_daily_bar.trade_date,
-            as_of=datetime.combine(latest_daily_bar.trade_date, time(15, 0), tzinfo=SHANGHAI_TZ),
-            last_price=latest_daily_bar.close_price,
-            limit_up=round(latest_daily_bar.prev_close * 1.1, 2),
-            limit_down=round(latest_daily_bar.prev_close * 0.9, 2),
-        )
-
-    def _load_code_names_map(self) -> dict[str, CodeNameEntry]:
-        last_refreshed_at = self.storage.code_names_last_refreshed_at()
-        if last_refreshed_at is None:
-            self._code_names_cache = {}
-            self._code_names_cache_refreshed_at = None
-            return self._code_names_cache
-        if self._code_names_cache_refreshed_at == last_refreshed_at:
-            return self._code_names_cache
-        entries = self.storage.load_code_names() or []
-        self._code_names_cache = {entry.code: entry for entry in entries}
-        self._code_names_cache_refreshed_at = last_refreshed_at
-        return self._code_names_cache
-
-    def _replace_code_names_cache(self, entries: list[CodeNameEntry]) -> None:
-        self._code_names_cache = {entry.code: entry for entry in entries}
-        self._code_names_cache_refreshed_at = self.storage.code_names_last_refreshed_at()
-
-    def _latest_daily_bar_date(self, code: str) -> date | None:
-        candidates: list[date] = []
-        for trade_date in self._stored_trade_dates():
-            daily_bars = self.storage.load_daily_bar(trade_date)
-            if daily_bars is not None and any(bar.code == code for bar in daily_bars):
-                candidates.append(trade_date)
-        return candidates[-1] if candidates else None
-
-    def _latest_five_minute_bar_date(self, code: str) -> date | None:
-        candidates: list[date] = []
-        for trade_date in self._stored_trade_dates():
-            five_minute_bars = self.storage.load_five_minute_bars(trade_date)
-            if five_minute_bars is not None and any(bar.code == code for bar in five_minute_bars):
-                candidates.append(trade_date)
-        return candidates[-1] if candidates else None
-
-    def _stored_trade_dates(self) -> list[date]:
-        if not self.storage.market_bars_dir.exists():
-            return []
-        dates: list[date] = []
-        for path in sorted(self.storage.market_bars_dir.iterdir()):
-            if not path.is_dir():
-                continue
-            dates.append(date.fromisoformat(path.name))
-        return dates
-
-    async def _run_data_parser_job(self, job: DataParserJobEntry, tracked_codes: list[str]) -> None:
+    async def _run_data_parser_job(self, job: DataParserJobEntry) -> None:
         try:
-            for code in tracked_codes:
+            codes = sorted(self._code_names_map.keys()) if self._code_names_map is not None else []
+            if not codes:
+                self.refresh_code_names()
+                codes = sorted(self._code_names_map.keys()) if self._code_names_map is not None else []
+
+            for code in codes:
                 missing_daily_dates = self._missing_daily_dates(code, job.config)
                 missing_five_minute_dates = self._missing_five_minute_dates(code, job.config)
-
                 should_fetch_daily = job.config.mode in {"daily", "both"}
                 should_fetch_five_minute = job.config.mode in {"five_minute", "both"}
 
@@ -587,94 +210,79 @@ class MarketService:
 
                 if not should_fetch_daily and not should_fetch_five_minute:
                     if job.skipped is not None:
-                        await self._increment_job(job, skipped=1)
+                        job.skipped += 1
                     await asyncio.sleep(0)
                     continue
 
                 if should_fetch_daily:
-                    daily_bars: list[DailyBar] = []
-                    daily_dates_to_fetch = missing_daily_dates if job.config.skip_existing else self._iter_dates(job.config.start_date, job.config.end_date)
-                    for current_date in daily_dates_to_fetch:
-                        daily_bar = self.provider.get_daily_bars([code], current_date).get(code)
-                        if daily_bar is not None:
-                            daily_bars.append(daily_bar)
+                    daily_dates = missing_daily_dates if job.config.skip_existing else self._trading_dates(job.config.start_date, job.config.end_date)
+                    daily_bars = self._load_daily_bars_for_dates(code, daily_dates)
                     self.storage.save_daily_bar_rows(daily_bars)
 
                 if should_fetch_five_minute:
-                    five_minute_bars: list[FiveMinuteBar] = []
-                    five_minute_dates_to_fetch = missing_five_minute_dates if job.config.skip_existing else self._iter_dates(job.config.start_date, job.config.end_date)
-                    for current_date in five_minute_dates_to_fetch:
-                        day_bars = self.provider.get_five_minute_bars([code], current_date).get(code)
-                        if day_bars is not None:
-                            five_minute_bars.extend(day_bars)
+                    five_minute_dates = missing_five_minute_dates if job.config.skip_existing else self._trading_dates(job.config.start_date, job.config.end_date)
+                    five_minute_bars = self._load_five_minute_bars_for_dates(code, five_minute_dates)
                     self.storage.save_five_minute_bar_rows(five_minute_bars)
-                await self._increment_job(job, parsed=1)
-                await asyncio.sleep(0)
 
-        except asyncio.CancelledError:
-            await self._finish_job(job, error="cancelled")
-            raise
+                job.parsed += 1
+                await asyncio.sleep(0)
         except Exception as exc:
-            await self._finish_job(job, error=str(exc))
-            return
-        await self._finish_job(job)
+            job.error = str(exc)
+        finally:
+            job.finish_time = now_shanghai()
+
+    def _trading_dates(self, start_date: date, end_date: date) -> list[date]:
+        login_result = bs.login()
+        if login_result.error_code != "0":
+            raise RuntimeError(f"baostock login failed: {login_result.error_msg}")
+        try:
+            result = bs.query_trade_dates(start_date=start_date.isoformat(), end_date=end_date.isoformat())
+            if result.error_code != "0":
+                raise RuntimeError(f"baostock trade-date query failed: {result.error_msg}")
+            dates: list[date] = []
+            while result.next():
+                row = result.get_row_data()
+                if row[1] == "1":
+                    dates.append(date.fromisoformat(row[0]))
+            return dates
+        finally:
+            bs.logout()
 
     def _missing_daily_dates(self, code: str, config: DataParserJobConfig) -> list[date]:
+        """TODO: remove this and persist trading dates just like code names with caching"""
         return [
             current_date
-            for current_date in self._iter_expected_trade_dates(config.start_date, config.end_date)
+            for current_date in self._trading_dates(config.start_date, config.end_date)
             if code not in {bar.code for bar in (self.storage.load_daily_bar(current_date) or [])}
         ]
 
     def _missing_five_minute_dates(self, code: str, config: DataParserJobConfig) -> list[date]:
         return [
             current_date
-            for current_date in self._iter_expected_trade_dates(config.start_date, config.end_date)
+            for current_date in self._trading_dates(config.start_date, config.end_date)
             if code not in {bar.code for bar in (self.storage.load_five_minute_bars(current_date) or [])}
         ]
 
-    async def _finish_job(self, target_job: DataParserJobEntry, error: str | None = None) -> None:
-        async with self._jobs_lock:
-            for index, job in enumerate(self._jobs):
-                if not self._same_job(job, target_job):
-                    continue
-                self._jobs[index] = job.model_copy(
-                    update={
-                        "error": error,
-                        "finish_time": now_shanghai(),
-                    }
-                )
-                return
+    def get_market_bars_or_none(self, code: str) -> MarketBarsData | None:
+        trade_date, latest_bars = self._latest_five_minute_snapshot()
+        if trade_date is None or latest_bars is None:
+            return None
+        code_bars = [bar for bar in latest_bars if bar.code == code]
+        if not code_bars:
+            return None
+        daily_bars = self.storage.load_daily_bar(trade_date) or []
+        return MarketBarsData(
+            code=code,
+            trade_date=trade_date,
+            daily_bar=next((bar for bar in daily_bars if bar.code == code), None),
+            five_minute_bars=code_bars,
+        )
 
-    async def _increment_job(self, target_job: DataParserJobEntry, parsed: int = 0, skipped: int = 0) -> None:
-        async with self._jobs_lock:
-            for index, job in enumerate(self._jobs):
-                if not self._same_job(job, target_job):
-                    continue
-                next_skipped = None if job.skipped is None else job.skipped + skipped
-                self._jobs[index] = job.model_copy(update={"parsed": job.parsed + parsed, "skipped": next_skipped})
-                return
-
-    @staticmethod
-    def _same_job(left: DataParserJobEntry, right: DataParserJobEntry) -> bool:
-        return left.start_time == right.start_time and left.config == right.config
-
-    def _iter_expected_trade_dates(self, start_date: date, end_date: date) -> list[date]:
-        if isinstance(self.provider, BaoStockMarketDataProvider):
-            return self.provider.list_trading_dates(start_date, end_date)
-        return self._iter_dates(start_date, end_date)
-
-    @staticmethod
-    def _iter_dates(start_date: date, end_date: date) -> list[date]:
-        total_days = (end_date - start_date).days
-        return [start_date + timedelta(days=offset) for offset in range(total_days + 1)]
-
-    @staticmethod
-    def _is_market_open(moment: datetime) -> bool:
-        current = moment.timetz().replace(tzinfo=None)
-        return (time(9, 30) <= current < time(11, 30)) or (time(13, 0) <= current < time(15, 0))
-
-    @staticmethod
-    def _is_after_market_close(moment: datetime) -> bool:
-        current = moment.timetz().replace(tzinfo=None)
-        return current >= time(15, 0)
+    def _refresh_code_names_if_needed(self, timestamp: datetime) -> None:
+        if not self.config.enable_code_name_refresh:
+            return
+        local_today = timestamp.astimezone(SHANGHAI_TZ).date()
+        last_refreshed_at = self.storage.code_names_last_refreshed_at()
+        if last_refreshed_at is not None and last_refreshed_at.astimezone(SHANGHAI_TZ).date() >= local_today:
+            return
+        self.refresh_code_names()

@@ -17,6 +17,8 @@ class StorageService:
 
     Since we don't have database, this service aims to provide a bridge between
     logical services and filesystem persistence.
+
+    TODO: use pandas data frame to optimize lookup. Need to update both this and market service.
     """
 
     def __init__(self, agents_root: Path, market_data_root: Path):

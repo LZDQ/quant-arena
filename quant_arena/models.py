@@ -11,18 +11,6 @@ OrderSide = Literal["buy", "sell"]
 OrderStatus = Literal["pending", "filled", "canceled"]
 
 
-class QuoteSnapshot(BaseModel):
-    """Latest market quote for one code."""
-
-    code: str
-    name: str | None = None
-    trade_date: date
-    as_of: datetime
-    last_price: float = Field(gt=0)
-    limit_up: float = Field(gt=0)
-    limit_down: float = Field(gt=0)
-
-
 class DailyBar(BaseModel):
     """One daily OHLCV bar."""
 
