@@ -12,261 +12,261 @@ OrderStatus = Literal["pending", "filled", "canceled"]
 
 
 class QuoteSnapshot(BaseModel):
-	"""Latest market quote for one code."""
+    """Latest market quote for one code."""
 
-	code: str
-	name: str | None = None
-	trade_date: date
-	as_of: datetime
-	last_price: float = Field(gt=0)
-	prev_close: float = Field(gt=0)
-	limit_up: float = Field(gt=0)
-	limit_down: float = Field(gt=0)
+    code: str
+    name: str | None = None
+    trade_date: date
+    as_of: datetime
+    last_price: float = Field(gt=0)
+    prev_close: float = Field(gt=0)
+    limit_up: float = Field(gt=0)
+    limit_down: float = Field(gt=0)
 
 
 class DailyBar(BaseModel):
-	"""One daily OHLCV bar."""
+    """One daily OHLCV bar."""
 
-	code: str
-	trade_date: date
-	open_price: float = Field(ge=0)
-	high_price: float = Field(ge=0)
-	low_price: float = Field(ge=0)
-	close_price: float = Field(ge=0)
-	prev_close: float = Field(ge=0)
-	volume: float = Field(ge=0)
-	amount: float = Field(ge=0)
+    code: str
+    trade_date: date
+    open_price: float = Field(ge=0)
+    high_price: float = Field(ge=0)
+    low_price: float = Field(ge=0)
+    close_price: float = Field(ge=0)
+    prev_close: float = Field(ge=0)
+    volume: float = Field(ge=0)
+    amount: float = Field(ge=0)
 
 
 class FiveMinuteBar(BaseModel):
-	"""One 5-minute OHLCV bar."""
+    """One 5-minute OHLCV bar."""
 
-	code: str
-	trade_date: date
-	bar_time: datetime
-	open_price: float = Field(ge=0)
-	high_price: float = Field(ge=0)
-	low_price: float = Field(ge=0)
-	close_price: float = Field(ge=0)
-	volume: float = Field(ge=0)
-	amount: float = Field(ge=0)
+    code: str
+    trade_date: date
+    bar_time: datetime
+    open_price: float = Field(ge=0)
+    high_price: float = Field(ge=0)
+    low_price: float = Field(ge=0)
+    close_price: float = Field(ge=0)
+    volume: float = Field(ge=0)
+    amount: float = Field(ge=0)
 
 
 class PositionLot(BaseModel):
-	"""One acquired lot used for T+1 sellability tracking."""
+    """One acquired lot used for T+1 sellability tracking."""
 
-	quantity: int = Field(ge=0)
-	acquired_date: date
-	cost_price: float = Field(gt=0)
+    quantity: int = Field(ge=0)
+    acquired_date: date
+    cost_price: float = Field(gt=0)
 
 
 class OrderRecord(BaseModel):
-	"""One submitted order."""
+    """One submitted order."""
 
-	order_id: str = Field(default_factory=lambda: uuid4().hex)
-	agent_id: str
-	code: str
-	side: OrderSide
-	quantity: int = Field(gt=0)
-	limit_price: float = Field(gt=0)
-	status: OrderStatus = "pending"
-	submitted_at: datetime
-	activate_after: datetime
-	last_checked_at: datetime | None = None
-	filled_at: datetime | None = None
-	canceled_at: datetime | None = None
-	rejection_reason: str | None = None
+    order_id: str = Field(default_factory=lambda: uuid4().hex)
+    agent_id: str
+    code: str
+    side: OrderSide
+    quantity: int = Field(gt=0)
+    limit_price: float = Field(gt=0)
+    status: OrderStatus = "pending"
+    submitted_at: datetime
+    activate_after: datetime
+    last_checked_at: datetime | None = None
+    filled_at: datetime | None = None
+    canceled_at: datetime | None = None
+    rejection_reason: str | None = None
 
 
 class FillRecord(BaseModel):
-	"""One executed fill."""
+    """One executed fill."""
 
-	fill_id: str = Field(default_factory=lambda: uuid4().hex)
-	order_id: str
-	agent_id: str
-	code: str
-	side: OrderSide
-	quantity: int = Field(gt=0)
-	executed_at: datetime
-	executed_price: float = Field(gt=0)
-	commission: float = Field(ge=0)
-	stamp_tax: float = Field(ge=0)
+    fill_id: str = Field(default_factory=lambda: uuid4().hex)
+    order_id: str
+    agent_id: str
+    code: str
+    side: OrderSide
+    quantity: int = Field(gt=0)
+    executed_at: datetime
+    executed_price: float = Field(gt=0)
+    commission: float = Field(ge=0)
+    stamp_tax: float = Field(ge=0)
 
 
 class EquityPoint(BaseModel):
-	"""Daily equity snapshot."""
+    """Daily equity snapshot."""
 
-	date: date
-	cash: float
-	market_value: float
-	total_equity: float
-	realized_pnl: float
-	unrealized_pnl: float
+    date: date
+    cash: float
+    market_value: float
+    total_equity: float
+    realized_pnl: float
+    unrealized_pnl: float
 
 
 class AgentState(BaseModel):
-	"""Private persisted runtime state for one agent."""
+    """Private persisted runtime state for one agent."""
 
-	agent_id: str
-	cash: float
-	realized_pnl: float = 0.0
-	orders: list[OrderRecord] = Field(default_factory=list)
-	fills: list[FillRecord] = Field(default_factory=list)
-	positions: dict[str, list[PositionLot]] = Field(default_factory=dict)
-	equity_history: list[EquityPoint] = Field(default_factory=list)
+    agent_id: str
+    cash: float
+    realized_pnl: float = 0.0
+    orders: list[OrderRecord] = Field(default_factory=list)
+    fills: list[FillRecord] = Field(default_factory=list)
+    positions: dict[str, list[PositionLot]] = Field(default_factory=dict)
+    equity_history: list[EquityPoint] = Field(default_factory=list)
 
 
 class PositionView(BaseModel):
-	"""API view of one portfolio position."""
+    """API view of one portfolio position."""
 
-	code: str
-	quantity: int
-	sellable_quantity: int
-	avg_cost: float
-	market_price: float | None = None
-	market_value: float = 0.0
-	unrealized_pnl: float = 0.0
+    code: str
+    quantity: int
+    sellable_quantity: int
+    avg_cost: float
+    market_price: float | None = None
+    market_value: float = 0.0
+    unrealized_pnl: float = 0.0
 
 
 class PortfolioResponse(BaseModel):
-	"""Portfolio plus pending orders."""
+    """Portfolio plus pending orders."""
 
-	agent_id: str
-	cash: float
-	market_value: float
-	total_equity: float
-	realized_pnl: float
-	unrealized_pnl: float
-	positions: list[PositionView]
-	pending_orders: list[OrderRecord]
-	as_of: datetime | None = None
+    agent_id: str
+    cash: float
+    market_value: float
+    total_equity: float
+    realized_pnl: float
+    unrealized_pnl: float
+    positions: list[PositionView]
+    pending_orders: list[OrderRecord]
+    as_of: datetime | None = None
 
 
 class RankingEntry(BaseModel):
-	"""One ranking row."""
+    """One ranking row."""
 
-	date: date
-	agent_id: str
-	display_name: str
-	total_equity: float
-	return_pct: float
-	realized_pnl: float
-	unrealized_pnl: float
+    date: date
+    agent_id: str
+    display_name: str
+    total_equity: float
+    return_pct: float
+    realized_pnl: float
+    unrealized_pnl: float
 
 
 class OperationListResponse(BaseModel):
-	"""Combined operations payload."""
+    """Combined operations payload."""
 
-	orders: list[OrderRecord]
-	fills: list[FillRecord]
+    orders: list[OrderRecord]
+    fills: list[FillRecord]
 
 
 class PathsResponse(BaseModel):
-	"""Resolved runtime paths."""
+    """Resolved runtime paths."""
 
-	config_path: str
-	agents_root: str
-	market_data_root: str
+    config_path: str
+    agents_root: str
+    market_data_root: str
 
 
 class MarketCodeStatus(BaseModel):
-	"""Public market-data status for one code."""
+    """Public market-data status for one code."""
 
-	code: str
-	latest_daily_bar_date: date | None = None
-	latest_five_minute_bar_date: date | None = None
-	five_minute_bar_count: int = 0
-	last_five_minute_bar_time: datetime | None = None
+    code: str
+    latest_daily_bar_date: date | None = None
+    latest_five_minute_bar_date: date | None = None
+    five_minute_bar_count: int = 0
+    last_five_minute_bar_time: datetime | None = None
 
 
 class CodeNameEntry(BaseModel):
-	"""Reference row for one market code."""
+    """Reference row for one market code."""
 
-	code: str
-	name: str | None = None
-	trade_status: str | None = None
+    code: str
+    name: str | None = None
+    trade_status: str | None = None
 
 
 class CodeSearchResponse(BaseModel):
-	"""Paged code-directory response."""
+    """Paged code-directory response."""
 
-	query: str
-	page: int
-	page_size: int
-	total: int
-	items: list[CodeNameEntry]
-	last_refreshed_at: datetime | None = None
-	auto_refresh_enabled: bool
+    query: str
+    page: int
+    page_size: int
+    total: int
+    items: list[CodeNameEntry]
+    last_refreshed_at: datetime | None = None
+    auto_refresh_enabled: bool
 
 
 class CodeRefreshResponse(BaseModel):
-	"""Result of a code-directory refresh."""
+    """Result of a code-directory refresh."""
 
-	refreshed_at: datetime
-	entry_count: int
+    refreshed_at: datetime
+    entry_count: int
 
 
 class MarketStatusResponse(BaseModel):
-	"""Public market-data overview."""
+    """Public market-data overview."""
 
-	tracked_codes: list[str]
-	codes: list[MarketCodeStatus]
+    tracked_codes: list[str]
+    codes: list[MarketCodeStatus]
 
 
 class MarketBarsResponse(BaseModel):
-	"""Public market-data payload for one code/date."""
+    """Public market-data payload for one code/date."""
 
-	code: str
-	trade_date: date
-	daily_bar: DailyBar | None = None
-	five_minute_bars: list[FiveMinuteBar] = Field(default_factory=list)
+    code: str
+    trade_date: date
+    daily_bar: DailyBar | None = None
+    five_minute_bars: list[FiveMinuteBar] = Field(default_factory=list)
 
 
 class MarketParseResponse(BaseModel):
-	"""Result of a manual market-data parse attempt."""
+    """Result of a manual market-data parse attempt."""
 
-	trade_date: date
-	tracked_codes: list[str]
-	parsed_daily_codes: list[str]
-	parsed_five_minute_codes: list[str]
+    trade_date: date
+    tracked_codes: list[str]
+    parsed_daily_codes: list[str]
+    parsed_five_minute_codes: list[str]
 
 
 class CreateAgentRequest(BaseModel):
-	"""Request to create a new agent."""
+    """Request to create a new agent."""
 
-	agent_id: str
-	display_name: str
-	token_secret: str
-	initial_cash: float = Field(gt=0)
-	sell_constraint: Literal["t_plus_one"] = "t_plus_one"
-	enabled: bool = True
+    agent_id: str
+    display_name: str
+    token_secret: str
+    initial_cash: float = Field(gt=0)
+    sell_constraint: Literal["t_plus_one"] = "t_plus_one"
+    enabled: bool = True
 
 
 class UpdateAgentRequest(BaseModel):
-	"""Request to replace mutable agent config fields."""
+    """Request to replace mutable agent config fields."""
 
-	display_name: str | None = None
-	token_secret: str | None = None
-	initial_cash: float | None = Field(default=None, gt=0)
-	sell_constraint: Literal["t_plus_one"] | None = None
-	enabled: bool | None = None
+    display_name: str | None = None
+    token_secret: str | None = None
+    initial_cash: float | None = Field(default=None, gt=0)
+    sell_constraint: Literal["t_plus_one"] | None = None
+    enabled: bool | None = None
 
 
 class AgentResponse(BaseModel):
-	"""API view of one agent plus its directory-based id."""
+    """API view of one agent plus its directory-based id."""
 
-	agent_id: str
-	display_name: str
-	token_secret: str
-	initial_cash: float
-	sell_constraint: Literal["t_plus_one"]
-	enabled: bool
+    agent_id: str
+    display_name: str
+    token_secret: str
+    initial_cash: float
+    sell_constraint: Literal["t_plus_one"]
+    enabled: bool
 
 
 class SubmitOrderRequest(BaseModel):
-	"""Submit a pending order."""
+    """Submit a pending order."""
 
-	code: str
-	side: OrderSide
-	quantity: int = Field(gt=0)
-	limit_price: float = Field(gt=0)
+    code: str
+    side: OrderSide
+    quantity: int = Field(gt=0)
+    limit_price: float = Field(gt=0)
