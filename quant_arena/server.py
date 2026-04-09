@@ -13,12 +13,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from quant_arena.schemas import AgentResponse, CodeRefreshResponse, CodeSearchResponse, CreateAgentRequest, MarketBarsResponse, MarketParseJobResponse, MarketParseResponse, MarketRangeParseRequest, MarketStatusResponse, PathsResponse, SubmitOrderRequest, UpdateAgentRequest
+from quant_arena.schemas import AgentResponse, CodeRefreshResponse, CodeSearchResponse, CreateAgentRequest, MarketBarsResponse, MarketParseResponse, MarketStatusResponse, PathsResponse, SubmitOrderRequest, UpdateAgentRequest
 from quant_arena.arena import ArenaService
 from quant_arena.config import AgentConfig, AppConfig, load_app_config
 from quant_arena.errors import ServiceError
 from quant_arena.market import BaoStockMarketDataProvider, MarketDataProvider, MarketService
 from quant_arena.mcp_server import create_mcp_server, wrap_mcp_with_agent_auth
+from quant_arena.models import DataParserJobConfig, DataParserJobEntry
 from quant_arena.storage import StorageService
 
 
@@ -28,10 +29,10 @@ DEFAULT_CONFIG_PATH = Path.home() / ".quant-arena" / "config.json"
 class AppState:
     """Typed app state."""
 
-    def __init__(self, config_path: Path, config: AppConfig, storage_service: StorageService, market: MarketService, arena: ArenaService):
+    def __init__(self, config_path: Path, config: AppConfig, storage: StorageService, market: MarketService, arena: ArenaService):
         self.config_path = config_path
         self.config = config
-        self.storage_service = storage_service
+        self.storage = storage
         self.market = market
         self.arena = arena
         self.background_task: asyncio.Task[None] | None = None
@@ -39,13 +40,17 @@ class AppState:
 
 def _load_arena(config_path: Path, market_provider: MarketDataProvider | None = None) -> AppState:
     config = load_app_config(config_path)
-    storage_service = StorageService(Path(config.agents_root).resolve(), Path(config.market_data_root).resolve())
-    storage_service.ensure_layout()
-    agents = storage_service.load_agent_configs()
-    market = MarketService(config=config, storage_service=storage_service, provider=market_provider or BaoStockMarketDataProvider())
-    arena = ArenaService(config=config, storage_service=storage_service, market=market)
+    storage = StorageService(Path(config.agents_root).resolve(), Path(config.market_data_root).resolve())
+    storage.ensure_layout()
+    agents = storage.load_agent_configs()
+    market = MarketService(
+        config=config,
+        storage=storage,
+        provider=market_provider or BaoStockMarketDataProvider(storage=storage),
+    )
+    arena = ArenaService(config=config, storage=storage, market=market)
     arena.set_agents(agents)
-    return AppState(config_path=config_path, config=config, storage_service=storage_service, market=market, arena=arena)
+    return AppState(config_path=config_path, config=config, storage=storage, market=market, arena=arena)
 
 
 async def _poll_market(state: AppState) -> None:
@@ -111,8 +116,8 @@ def create_app(config_path: Path | None = None, market_provider: MarketDataProvi
         state = get_state()
         return PathsResponse(
             config_path=str(state.config_path),
-            agents_root=str(state.storage_service.agents_root),
-            market_data_root=str(state.storage_service.market_data_root),
+            agents_root=str(state.storage.agents_root),
+            market_data_root=str(state.storage.market_data_root),
         )
 
     @app.get("/api/agents")
@@ -182,14 +187,14 @@ def create_app(config_path: Path | None = None, market_provider: MarketDataProvi
         state = get_state()
         return state.market.parse_today_market_data_if_missing(state.market.tracked_codes())
 
-    @app.post("/api/market/parse-jobs", response_model=MarketParseJobResponse)
-    async def start_market_parse_job(request: MarketRangeParseRequest) -> MarketParseJobResponse:
+    @app.post("/api/market/parse-jobs", response_model=DataParserJobEntry)
+    async def start_market_parse_job(request: DataParserJobConfig) -> DataParserJobEntry:
         state = get_state()
-        return await state.market.start_range_parse_job(state.market.tracked_codes(), request)
+        return await state.market.start_data_parser_job(state.market.tracked_codes(), request)
 
-    @app.get("/api/market/parse-jobs", response_model=list[MarketParseJobResponse])
-    async def list_market_parse_jobs() -> list[MarketParseJobResponse]:
-        return await get_state().market.list_parse_jobs()
+    @app.get("/api/market/parse-jobs", response_model=list[DataParserJobEntry])
+    async def list_market_parse_jobs() -> list[DataParserJobEntry]:
+        return await get_state().market.list_data_parser_jobs()
 
     @app.get("/api/market/status", response_model=MarketStatusResponse)
     def get_market_status() -> MarketStatusResponse:

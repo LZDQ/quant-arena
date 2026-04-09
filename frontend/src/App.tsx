@@ -96,29 +96,20 @@ type MarketParseResponse = {
   parsed_five_minute_codes: string[];
 };
 
-type MarketParseJob = {
-  job_id: string;
-  status: "pending" | "running" | "completed" | "failed";
+type DataParserJobConfig = {
+  mode: "daily" | "five_minute" | "both";
   start_date: string;
   end_date: string;
-  tracked_codes_total: number;
-  tracked_codes_completed: number;
-  current_code: string | null;
-  current_step: string | null;
-  created_at: string;
-  started_at: string | null;
-  finished_at: string | null;
-  daily_rows_written: number;
-  five_minute_rows_written: number;
-  skipped_daily_codes: number;
-  skipped_five_minute_codes: number;
-  message: string | null;
-  error: string | null;
+  skip_existing: boolean;
 };
 
-type MarketRangeParseDraft = {
-  start_date: string;
-  end_date: string;
+type DataParserJobEntry = {
+  config: DataParserJobConfig;
+  skipped: number | null;
+  parsed: number;
+  error: string | null;
+  start_time: string;
+  finish_time: string | null;
 };
 
 type AgentDraft = {
@@ -135,9 +126,11 @@ const EMPTY_DRAFT: AgentDraft = {
   initial_cash: "",
 };
 
-const EMPTY_RANGE_PARSE_DRAFT: MarketRangeParseDraft = {
+const EMPTY_RANGE_PARSE_DRAFT: DataParserJobConfig = {
+  mode: "both",
   start_date: "",
   end_date: "",
+  skip_existing: true,
 };
 
 function getApiBase(): string {
@@ -177,6 +170,16 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function getParseJobStatus(job: DataParserJobEntry): string {
+  if (job.error) {
+    return "failed";
+  }
+  if (job.finish_time) {
+    return "completed";
+  }
+  return "running";
+}
+
 export default function App() {
   const [paths, setPaths] = useState<PathsResponse | null>(null);
   const [rankings, setRankings] = useState<RankingEntry[]>([]);
@@ -190,10 +193,10 @@ export default function App() {
   const [selectedCode, setSelectedCode] = useState<string>("");
   const [marketBars, setMarketBars] = useState<MarketBarsResponse | null>(null);
   const [lastParse, setLastParse] = useState<MarketParseResponse | null>(null);
-  const [parseJobs, setParseJobs] = useState<MarketParseJob[]>([]);
+  const [parseJobs, setParseJobs] = useState<DataParserJobEntry[]>([]);
   const [lastCodeRefresh, setLastCodeRefresh] = useState<CodeRefreshResponse | null>(null);
   const [draft, setDraft] = useState<AgentDraft>(EMPTY_DRAFT);
-  const [rangeParseDraft, setRangeParseDraft] = useState<MarketRangeParseDraft>(EMPTY_RANGE_PARSE_DRAFT);
+  const [rangeParseDraft, setRangeParseDraft] = useState<DataParserJobConfig>(EMPTY_RANGE_PARSE_DRAFT);
   const [error, setError] = useState<string>("");
   const [isSaving, setIsSaving] = useState(false);
   const [isParsingToday, setIsParsingToday] = useState(false);
@@ -225,7 +228,7 @@ export default function App() {
   }
 
   async function loadParseJobs(): Promise<void> {
-    const payload = await fetchJson<MarketParseJob[]>(apiUrl("/api/market/parse-jobs"));
+    const payload = await fetchJson<DataParserJobEntry[]>(apiUrl("/api/market/parse-jobs"));
     setParseJobs(payload);
   }
 
@@ -322,7 +325,7 @@ export default function App() {
     setIsStartingRangeParse(true);
     setError("");
     try {
-      await fetchJson<MarketParseJob>(apiUrl("/api/market/parse-jobs"), {
+      await fetchJson<DataParserJobEntry>(apiUrl("/api/market/parse-jobs"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(rangeParseDraft),
@@ -463,8 +466,8 @@ export default function App() {
                 <h3>Range parse jobs</h3>
                 <ul className="compact-list">
                   <li>Jobs in memory: <strong>{parseJobs.length}</strong></li>
-                  <li>Latest status: <strong>{latestParseJob?.status ?? "None"}</strong></li>
-                  <li>Latest progress: <strong>{latestParseJob ? `${latestParseJob.tracked_codes_completed} / ${latestParseJob.tracked_codes_total}` : "None"}</strong></li>
+                  <li>Latest status: <strong>{latestParseJob ? getParseJobStatus(latestParseJob) : "None"}</strong></li>
+                  <li>Latest parsed: <strong>{latestParseJob ? String(latestParseJob.parsed) : "None"}</strong></li>
                 </ul>
               </article>
             </div>
@@ -478,6 +481,14 @@ export default function App() {
             <h2>Range parse</h2>
           </div>
           <form className="range-parse-form" onSubmit={(event) => void handleStartRangeParse(event)}>
+            <select
+              value={rangeParseDraft.mode}
+              onChange={(event) => setRangeParseDraft((current) => ({ ...current, mode: event.target.value as DataParserJobConfig["mode"] }))}
+            >
+              <option value="both">Daily + 5m</option>
+              <option value="daily">Daily only</option>
+              <option value="five_minute">5m only</option>
+            </select>
             <input
               type="date"
               value={rangeParseDraft.start_date}
@@ -490,6 +501,14 @@ export default function App() {
               onChange={(event) => setRangeParseDraft((current) => ({ ...current, end_date: event.target.value }))}
               required
             />
+            <label>
+              <input
+                type="checkbox"
+                checked={rangeParseDraft.skip_existing}
+                onChange={(event) => setRangeParseDraft((current) => ({ ...current, skip_existing: event.target.checked }))}
+              />
+              Skip existing
+            </label>
             <button type="submit" disabled={isStartingRangeParse}>
               {isStartingRangeParse ? "Starting..." : "Start range parse"}
             </button>
@@ -500,25 +519,25 @@ export default function App() {
                 <thead>
                   <tr>
                     <th>Status</th>
+                    <th>Mode</th>
                     <th>Date range</th>
-                    <th>Progress</th>
-                    <th>Current code</th>
-                    <th>Rows written</th>
+                    <th>Parsed</th>
+                    <th>Skipped</th>
+                    <th>Started</th>
+                    <th>Finished</th>
                     <th>Error</th>
                   </tr>
                 </thead>
                 <tbody>
                   {parseJobs.map((job) => (
-                    <tr key={job.job_id}>
-                      <td>{job.status}</td>
-                      <td>{job.start_date} to {job.end_date}</td>
-                      <td>{job.tracked_codes_completed} / {job.tracked_codes_total}</td>
-                      <td>{job.current_code ?? "None"}{job.current_step ? ` (${job.current_step})` : ""}</td>
-                      <td>
-                        daily {job.daily_rows_written}, 5m {job.five_minute_rows_written}
-                        <br />
-                        skipped daily {job.skipped_daily_codes}, skipped 5m {job.skipped_five_minute_codes}
-                      </td>
+                    <tr key={job.start_time}>
+                      <td>{getParseJobStatus(job)}</td>
+                      <td>{job.config.mode}</td>
+                      <td>{job.config.start_date} to {job.config.end_date}</td>
+                      <td>{job.parsed}</td>
+                      <td>{job.skipped ?? "None"}</td>
+                      <td>{formatDateTime(job.start_time)}</td>
+                      <td>{formatDateTime(job.finish_time)}</td>
                       <td>
                         {job.error ? <span className="error-text">{job.error}</span> : "None"}
                       </td>

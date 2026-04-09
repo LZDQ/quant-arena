@@ -207,5 +207,6 @@ class DataParserJobEntry(BaseModel):
     config: DataParserJobConfig
     skipped: int | None = Field(description="Number of skipped code, if skip_existing is set")
     parsed: int = Field(description="Number of codes processed")
-    finished: bool = Field(description="Whether finished or errored")
     error: str | None
+    start_time: datetime = Field(description="The time this job started")
+    finish_time: datetime | None = Field(description="If this job finished or errored, the time it finished")

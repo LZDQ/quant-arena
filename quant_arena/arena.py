@@ -22,9 +22,9 @@ from quant_arena.storage import StorageService
 class ArenaService:
     """Application service layer."""
 
-    def __init__(self, config: AppConfig, storage_service: StorageService, market: MarketService):
+    def __init__(self, config: AppConfig, storage: StorageService, market: MarketService):
         self.config = config
-        self.storage_service = storage_service
+        self.storage = storage
         self.market = market
         self._agents: dict[str, AgentConfig] = {}
 
@@ -44,26 +44,26 @@ class ArenaService:
         if agent_id in self._agents:
             raise ConflictError(f"Agent already exists: {agent_id}")
         self._agents[agent_id] = agent
-        self.storage_service.save_agent_config(agent_id, agent)
+        self.storage.save_agent_config(agent_id, agent)
         state = self._load_or_init_agent_state(agent_id, agent)
-        self.storage_service.save_agent_state(state)
+        self.storage.save_agent_state(state)
         return agent
 
     def update_agent(self, agent_id: str, updates: dict) -> AgentConfig:
         current = self.get_agent(agent_id)
         replaced = current.model_copy(update={key: value for key, value in updates.items() if value is not None})
         self._agents[agent_id] = replaced
-        self.storage_service.save_agent_config(agent_id, replaced)
+        self.storage.save_agent_config(agent_id, replaced)
         state = self._load_or_init_agent_state(agent_id, current)
         if updates.get("initial_cash") is not None and not state.orders and not state.fills:
             state.cash = replaced.initial_cash
-            self.storage_service.save_agent_state(state)
+            self.storage.save_agent_state(state)
         return replaced
 
     def delete_agent(self, agent_id: str) -> None:
         self.get_agent(agent_id)
         del self._agents[agent_id]
-        self.storage_service.delete_agent_dir(agent_id)
+        self.storage.delete_agent_dir(agent_id)
 
     def authenticate_agent(self, headers: dict[str, str]) -> str:
         header_value = headers.get(self.config.token_header_name.lower())
@@ -94,7 +94,7 @@ class ArenaService:
             activate_after=quote.as_of,
         )
         state.orders.append(order)
-        self.storage_service.save_agent_state(state)
+        self.storage.save_agent_state(state)
         return order
 
     def cancel_order(self, agent_id: str, order_id: str) -> OrderRecord:
@@ -106,7 +106,7 @@ class ArenaService:
                     raise ConflictError("Only pending orders can be canceled")
                 order.status = "canceled"
                 order.canceled_at = now_shanghai()
-                self.storage_service.save_agent_state(state)
+                self.storage.save_agent_state(state)
                 return order
         raise NotFoundError(f"Unknown order: {order_id}")
 
@@ -141,9 +141,9 @@ class ArenaService:
                 changed = True
             self._update_equity_snapshot(agent, state)
             if changed:
-                self.storage_service.save_agent_state(state)
+                self.storage.save_agent_state(state)
             else:
-                self.storage_service.save_agent_state(state)
+                self.storage.save_agent_state(state)
 
     def get_portfolio(self, agent_id: str) -> PortfolioResponse:
         agent = self.get_agent(agent_id)
@@ -362,7 +362,7 @@ class ArenaService:
         return AgentState(agent_id=agent_id, cash=initial_cash)
 
     def _load_or_init_agent_state(self, agent_id: str, agent: AgentConfig) -> AgentState:
-        state = self.storage_service.load_agent_state(agent_id)
+        state = self.storage.load_agent_state(agent_id)
         if state is not None:
             return state
         return self._default_agent_state(agent_id, agent.initial_cash)

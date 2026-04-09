@@ -1,6 +1,6 @@
 from datetime import date
 
-from quant_arena.models import CodeNameEntry, DailyBar, FiveMinuteBar, QuoteSnapshot
+from quant_arena.models import CodeNameEntry, DailyBar, DataParserJobConfig, DataParserJobEntry, FiveMinuteBar, QuoteSnapshot
 
 
 class StaticMarketDataProvider:
@@ -17,42 +17,39 @@ class StaticMarketDataProvider:
         self._code_names = code_names or []
         self._daily_bars = daily_bars or {}
         self._five_minute_bars = five_minute_bars or {}
-        self.daily_range_call_count = 0
-        self.five_minute_range_call_count = 0
+        self.history_parse_call_count = 0
 
-    def get_code_names(self, day: date) -> list[CodeNameEntry]:
+    def get_code_names(self) -> list[CodeNameEntry]:
         return list(self._code_names)
+
+    def refresh_code_names(self) -> None:
+        return None
 
     def get_latest_quotes(self, codes: list[str]) -> dict[str, QuoteSnapshot]:
         return {code: self._quotes[code] for code in codes if code in self._quotes}
 
-    def get_daily_bars(self, codes: list[str], trade_date: date) -> dict[str, DailyBar]:
+    def get_daily_bars(self, codes: list[str], trade_date: date) -> dict[str, DailyBar | None]:
         return {
-            code: self._daily_bars[(code, trade_date)]
+            code: self._daily_bars[(code, trade_date)] if (code, trade_date) in self._daily_bars else None
             for code in codes
-            if (code, trade_date) in self._daily_bars
         }
 
-    def get_five_minute_bars(self, codes: list[str], trade_date: date) -> dict[str, list[FiveMinuteBar]]:
+    def get_five_minute_bars(self, codes: list[str], trade_date: date) -> dict[str, list[FiveMinuteBar] | None]:
         return {
-            code: self._five_minute_bars[(code, trade_date)]
+            code: self._five_minute_bars[(code, trade_date)] if (code, trade_date) in self._five_minute_bars else None
             for code in codes
-            if (code, trade_date) in self._five_minute_bars
         }
 
-    def get_daily_bars_range(self, code: str, start_date: date, end_date: date) -> list[DailyBar]:
-        self.daily_range_call_count += 1
-        return [
-            bar
-            for (bar_code, trade_date), bar in sorted(self._daily_bars.items(), key=lambda item: item[0][1])
-            if bar_code == code and start_date <= trade_date <= end_date
-        ]
+    def create_data_parser_job(self, config: DataParserJobConfig) -> DataParserJobEntry:
+        self.history_parse_call_count += 1
+        return DataParserJobEntry(
+            config=config,
+            skipped=0 if config.skip_existing else None,
+            parsed=0,
+            error=None,
+            start_time=self._quotes[next(iter(self._quotes))].as_of,
+            finish_time=self._quotes[next(iter(self._quotes))].as_of,
+        )
 
-    def get_five_minute_bars_range(self, code: str, start_date: date, end_date: date) -> list[FiveMinuteBar]:
-        self.five_minute_range_call_count += 1
-        rows: list[FiveMinuteBar] = []
-        for (bar_code, trade_date), bars in sorted(self._five_minute_bars.items(), key=lambda item: item[0][1]):
-            if bar_code != code or not (start_date <= trade_date <= end_date):
-                continue
-            rows.extend(bars)
-        return rows
+    def list_data_parser_jobs(self) -> list[DataParserJobEntry]:
+        return []

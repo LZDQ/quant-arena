@@ -26,14 +26,14 @@ def _seed_market_storage(
     daily_bars: list[DailyBar],
     five_minute_bars: list[FiveMinuteBar],
 ) -> None:
-    storage_service = StorageService(
+    storage = StorageService(
         (tmp_path / "private-agents").resolve(),
         (tmp_path / "public-market").resolve(),
     )
-    storage_service.ensure_layout()
-    storage_service.save_code_names(code_names)
-    storage_service.save_daily_bar_rows(daily_bars)
-    storage_service.save_five_minute_bar_rows(five_minute_bars)
+    storage.ensure_layout()
+    storage.save_code_names(code_names)
+    storage.save_daily_bar_rows(daily_bars)
+    storage.save_five_minute_bar_rows(five_minute_bars)
 
 
 def _make_app(
@@ -115,18 +115,18 @@ def _make_app(
     return TestClient(app)
 
 
-def _wait_for_job_completion(client: TestClient, job_id: str) -> dict:
+def _wait_for_job_completion(client: TestClient, start_time: str) -> dict:
     for _ in range(50):
         response = client.get("/api/market/parse-jobs")
         assert response.status_code == 200
         jobs = response.json()
         for job in jobs:
-            if job["job_id"] != job_id:
+            if job["start_time"] != start_time:
                 continue
-            if job["status"] in {"completed", "failed"}:
+            if job["finish_time"] is not None:
                 return job
         sleep(0.02)
-    raise AssertionError(f"job {job_id} did not finish in time")
+    raise AssertionError(f"job {start_time} did not finish in time")
 
 
 def test_paths_and_agent_lifecycle(tmp_path: Path) -> None:
@@ -453,7 +453,7 @@ def test_sync_market_data_writes_daily_bar_after_close(tmp_path: Path) -> None:
             )
         },
     ) as client:
-        client.app.state.ctx.storage_service.save_code_names(
+        client.app.state.ctx.storage.save_code_names(
             [CodeNameEntry(code="sh.600000", name="demo")]
         )
         client.post(
@@ -512,7 +512,7 @@ def test_sync_market_data_writes_five_minute_bars_during_session(tmp_path: Path)
             ]
         },
     ) as client:
-        client.app.state.ctx.storage_service.save_code_names(
+        client.app.state.ctx.storage.save_code_names(
             [CodeNameEntry(code="sh.600000", name="demo")]
         )
         client.post(
@@ -591,7 +591,7 @@ def test_parse_today_market_data_if_missing(tmp_path: Path) -> None:
             ]
         },
     ) as client:
-        client.app.state.ctx.storage_service.save_code_names(
+        client.app.state.ctx.storage.save_code_names(
             [CodeNameEntry(code="sh.600000", name="demo")]
         )
         daily_path = tmp_path / "public-market" / "bars" / "2026-04-09" / "daily.csv"
@@ -763,17 +763,24 @@ def test_parse_range_job_writes_ranged_market_data(tmp_path: Path) -> None:
         started = client.post(
             "/api/market/parse-jobs",
             json={
+                "mode": "both",
                 "start_date": "2026-04-08",
                 "end_date": "2026-04-09",
+                "skip_existing": True,
             },
         )
         assert started.status_code == 200
-        job = _wait_for_job_completion(client, started.json()["job_id"])
-        assert job["status"] == "completed"
-        assert job["tracked_codes_total"] == 1
-        assert job["tracked_codes_completed"] == 1
-        assert job["daily_rows_written"] == 2
-        assert job["five_minute_rows_written"] == 2
+        job = _wait_for_job_completion(client, started.json()["start_time"])
+        assert job["config"] == {
+            "mode": "both",
+            "start_date": "2026-04-08",
+            "end_date": "2026-04-09",
+            "skip_existing": True,
+        }
+        assert job["parsed"] == 1
+        assert job["skipped"] == 0
+        assert job["error"] is None
+        assert job["finish_time"] is not None
 
         first_daily_path = tmp_path / "public-market" / "bars" / "2026-04-08" / "daily.csv"
         second_daily_path = tmp_path / "public-market" / "bars" / "2026-04-09" / "daily.csv"
@@ -860,22 +867,20 @@ def test_parse_range_job_skips_existing(tmp_path: Path) -> None:
             "/api/agents/alpha/orders",
             json={"code": "sh.600000", "side": "buy", "quantity": 100, "limit_price": 10.0},
         )
-        client.app.state.ctx.storage_service.save_daily_bar_rows(list(provider._daily_bars.values()))
-        client.app.state.ctx.storage_service.save_five_minute_bar_rows(provider._five_minute_bars[("sh.600000", trade_date)])
+        client.app.state.ctx.storage.save_daily_bar_rows(list(provider._daily_bars.values()))
+        client.app.state.ctx.storage.save_five_minute_bar_rows(provider._five_minute_bars[("sh.600000", trade_date)])
 
         started = client.post(
             "/api/market/parse-jobs",
             json={
+                "mode": "both",
                 "start_date": "2026-04-08",
                 "end_date": "2026-04-08",
+                "skip_existing": True,
             },
         )
         assert started.status_code == 200
-        job = _wait_for_job_completion(client, started.json()["job_id"])
-        assert job["status"] == "completed"
-        assert job["daily_rows_written"] == 0
-        assert job["five_minute_rows_written"] == 0
-        assert job["skipped_daily_codes"] == 1
-        assert job["skipped_five_minute_codes"] == 1
-        assert provider.daily_range_call_count == 0
-        assert provider.five_minute_range_call_count == 0
+        job = _wait_for_job_completion(client, started.json()["start_time"])
+        assert job["parsed"] == 0
+        assert job["skipped"] == 1
+        assert job["error"] is None

@@ -115,35 +115,6 @@ class MarketParseResponse(BaseModel):
     parsed_five_minute_codes: list[str]
 
 
-class MarketRangeParseRequest(BaseModel):
-    """Request to parse market data across a date range for tracked codes."""
-
-    start_date: date
-    end_date: date
-
-
-class MarketParseJobResponse(BaseModel):
-    """In-memory long-running market parse job state."""
-
-    job_id: str
-    status: Literal["pending", "running", "completed", "failed"]
-    start_date: date
-    end_date: date
-    tracked_codes_total: int
-    tracked_codes_completed: int
-    current_code: str | None = None
-    current_step: str | None = None
-    created_at: datetime
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
-    daily_rows_written: int = 0
-    five_minute_rows_written: int = 0
-    skipped_daily_codes: int = 0
-    skipped_five_minute_codes: int = 0
-    message: str | None = None
-    error: str | None = None
-
-
 class CreateAgentRequest(BaseModel):
     """Request to create a new agent."""
 
