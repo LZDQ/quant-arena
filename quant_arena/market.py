@@ -14,53 +14,87 @@ from quant_arena.errors import BadRequestError, NotFoundError
 from quant_arena.models import (
     CodeNameEntry,
     DailyBar,
+    DataParserJobEntry,
     FiveMinuteBar,
+    DataParserJobConfig,
     QuoteSnapshot,
 )
 from quant_arena.storage import StorageService
 
 
 class MarketDataProvider(Protocol):
-    """Protocol for market data providers."""
+    """
+    Protocol for market data providers.
 
-    def get_code_names(self, day: date) -> list[CodeNameEntry]:
-        """Return code-name rows for the given day."""
+    设计理念：
+    - 前端用户需要浏览某支股票的 k 线图
+    - 前端用户需要能爬取历史数据并查看进度，最好能断点恢复
+    - 另一种爬取数据模式是每天实时更新 5min 数据，等股市关门后更新当天 daily 数据
+    - 实时更新 5min 数据的逻辑应该由服务器启动完成，这里只暴露接口显式爬取
+    - 实时更新和历史爬取都应该使用相同的接口创建任务，因为非常需要查看进度的功能，并且实现几乎一样
+    - 目前数据爬取不能指定股票代码，如果 5min 爬取任务无法按时完成，会加入更小的名单的功能
+    - Arena 需要能查询最新 5min 价格来判断是否成交
+    - 不应该把数据都存在内存里，否则会炸
 
-    def get_daily_bars(self, codes: list[str], trade_date: date) -> dict[str, DailyBar]:
+    重要细节：
+    - baostock 接口只支持返回某一支股票的一段时间，不支持返回某一些股票的一天
+    - 所以爬取数据应该枚举股票代码而不是日期
+    - 有些日期不开市，不会也不应该创建对应日期的数据目录
+    """
+
+    def get_code_names(self) -> list[CodeNameEntry]:
+        """Return the provider's current code-name snapshot without refreshing."""
+
+    def refresh_code_names(self) -> None:
+        """Refresh code names using current date with backward logic."""
+
+    def get_daily_bars(self, codes: list[str], trade_date: date) -> dict[str, DailyBar | None]:
         """Return one daily bar per code for the requested date."""
 
-    def get_five_minute_bars(self, codes: list[str], trade_date: date) -> dict[str, list[FiveMinuteBar]]:
+    def get_five_minute_bars(self, codes: list[str], trade_date: date) -> dict[str, list[FiveMinuteBar] | None]:
         """Return 5-minute bars per code for the requested date."""
 
-    def get_daily_bars_range(self, code: str, start_date: date, end_date: date) -> list[DailyBar]:
-        """Return daily bars for one code across a date range."""
+    def create_data_parser_job(self, config: DataParserJobConfig) -> DataParserJobEntry:
+        """Create a data parser job and return its entry."""
 
-    def get_five_minute_bars_range(self, code: str, start_date: date, end_date: date) -> list[FiveMinuteBar]:
-        """Return 5-minute bars for one code across a date range."""
+    def list_data_parser_jobs(self) -> list[DataParserJobEntry]:
+        """Return the list of all created data parser jobs."""
 
 
 class BaoStockMarketDataProvider:
     """Thin baostock-backed provider."""
 
-    def get_code_names(self, day: date) -> list[CodeNameEntry]:
+    def __init__(self):
+        self._code_names_cache: list[CodeNameEntry] = []
+
+    def get_code_names(self) -> list[CodeNameEntry]:
+        return list(self._code_names_cache)
+
+    def refresh_code_names(self) -> list[CodeNameEntry]:
+        today = now_shanghai().astimezone(SHANGHAI_TZ).date()
         login_result = bs.login()
         if login_result.error_code != "0":
             raise RuntimeError(f"baostock login failed: {login_result.error_msg}")
         try:
-            result = bs.query_all_stock(day.isoformat())
-            if result.error_code != "0":
-                raise RuntimeError(f"baostock all-stock query failed: {result.error_msg}")
+            for offset in range(0, 8):
+                target_date = today - timedelta(days=offset)
+                result = bs.query_all_stock(target_date.isoformat())
+                if result.error_code != "0":
+                    raise RuntimeError(f"baostock all-stock query failed: {result.error_msg}")
 
-            entries: list[CodeNameEntry] = []
-            while result.next():
-                row = result.get_row_data()
-                entries.append(
-                    CodeNameEntry(
-                        code=row[0],
-                        name=row[2] or row[0],
+                entries: list[CodeNameEntry] = []
+                while result.next():
+                    row = result.get_row_data()
+                    entries.append(
+                        CodeNameEntry(
+                            code=row[0],
+                            name=row[2] or row[0],
+                        )
                     )
-                )
-            return entries
+                if entries:
+                    self._code_names_cache = entries
+                    return list(entries)
+            return []
         finally:
             bs.logout()
 
@@ -144,74 +178,77 @@ class BaoStockMarketDataProvider:
         finally:
             bs.logout()
 
-    def get_daily_bars_range(self, code: str, start_date: date, end_date: date) -> list[DailyBar]:
-        login_result = bs.login()
-        if login_result.error_code != "0":
-            raise RuntimeError(f"baostock login failed: {login_result.error_msg}")
-        try:
-            result = bs.query_history_k_data_plus(
-                code,
-                "code,date,open,high,low,close,preclose,volume,amount",
-                start_date=start_date.isoformat(),
-                end_date=end_date.isoformat(),
-                frequency="d",
-                adjustflag="3",
-            )
-            if result.error_code != "0":
-                raise RuntimeError(f"baostock daily range query failed for {code}: {result.error_msg}")
-            bars: list[DailyBar] = []
-            while result.next():
-                row = result.get_row_data()
-                bars.append(
-                    DailyBar(
-                        code=row[0],
-                        trade_date=date.fromisoformat(row[1]),
-                        open_price=float(row[2] or 0),
-                        high_price=float(row[3] or 0),
-                        low_price=float(row[4] or 0),
-                        close_price=float(row[5] or 0),
-                        prev_close=float(row[6] or 0),
-                        volume=float(row[7] or 0),
-                        amount=float(row[8] or 0),
-                    )
-                )
-            return bars
-        finally:
-            bs.logout()
+    def parse_historical_data(self, request: HistoricalMarketDataRequest) -> HistoricalMarketData:
+        daily_codes = sorted(set(request.daily_codes))
+        five_minute_codes = sorted(set(request.five_minute_codes))
+        if not daily_codes and not five_minute_codes:
+            return HistoricalMarketData(daily_bars=[], five_minute_bars=[])
 
-    def get_five_minute_bars_range(self, code: str, start_date: date, end_date: date) -> list[FiveMinuteBar]:
         login_result = bs.login()
         if login_result.error_code != "0":
             raise RuntimeError(f"baostock login failed: {login_result.error_msg}")
         try:
-            result = bs.query_history_k_data_plus(
-                code,
-                "code,date,time,open,high,low,close,volume,amount",
-                start_date=start_date.isoformat(),
-                end_date=end_date.isoformat(),
-                frequency="5",
-                adjustflag="3",
-            )
-            if result.error_code != "0":
-                raise RuntimeError(f"baostock 5-minute range query failed for {code}: {result.error_msg}")
-            bars: list[FiveMinuteBar] = []
-            while result.next():
-                row = result.get_row_data()
-                timestamp = row[2][:14]
-                bars.append(
-                    FiveMinuteBar(
-                        code=row[0],
-                        trade_date=date.fromisoformat(row[1]),
-                        bar_time=datetime.strptime(timestamp, "%Y%m%d%H%M%S").replace(tzinfo=SHANGHAI_TZ),
-                        open_price=float(row[3] or 0),
-                        high_price=float(row[4] or 0),
-                        low_price=float(row[5] or 0),
-                        close_price=float(row[6] or 0),
-                        volume=float(row[7] or 0),
-                        amount=float(row[8] or 0),
-                    )
+            daily_bars: list[DailyBar] = []
+            for code in daily_codes:
+                result = bs.query_history_k_data_plus(
+                    code,
+                    "code,date,open,high,low,close,preclose,volume,amount",
+                    start_date=request.start_date.isoformat(),
+                    end_date=request.end_date.isoformat(),
+                    frequency="d",
+                    adjustflag="3",
                 )
-            return bars
+                if result.error_code != "0":
+                    raise RuntimeError(f"baostock daily range query failed for {code}: {result.error_msg}")
+                while result.next():
+                    row = result.get_row_data()
+                    daily_bars.append(
+                        DailyBar(
+                            code=row[0],
+                            trade_date=date.fromisoformat(row[1]),
+                            open_price=float(row[2] or 0),
+                            high_price=float(row[3] or 0),
+                            low_price=float(row[4] or 0),
+                            close_price=float(row[5] or 0),
+                            prev_close=float(row[6] or 0),
+                            volume=float(row[7] or 0),
+                            amount=float(row[8] or 0),
+                        )
+                    )
+
+            five_minute_bars: list[FiveMinuteBar] = []
+            for code in five_minute_codes:
+                result = bs.query_history_k_data_plus(
+                    code,
+                    "code,date,time,open,high,low,close,volume,amount",
+                    start_date=request.start_date.isoformat(),
+                    end_date=request.end_date.isoformat(),
+                    frequency="5",
+                    adjustflag="3",
+                )
+                if result.error_code != "0":
+                    raise RuntimeError(f"baostock 5-minute range query failed for {code}: {result.error_msg}")
+                while result.next():
+                    row = result.get_row_data()
+                    timestamp = row[2][:14]
+                    five_minute_bars.append(
+                        FiveMinuteBar(
+                            code=row[0],
+                            trade_date=date.fromisoformat(row[1]),
+                            bar_time=datetime.strptime(timestamp, "%Y%m%d%H%M%S").replace(tzinfo=SHANGHAI_TZ),
+                            open_price=float(row[3] or 0),
+                            high_price=float(row[4] or 0),
+                            low_price=float(row[5] or 0),
+                            close_price=float(row[6] or 0),
+                            volume=float(row[7] or 0),
+                            amount=float(row[8] or 0),
+                        )
+                    )
+
+            return HistoricalMarketData(
+                daily_bars=daily_bars,
+                five_minute_bars=five_minute_bars,
+            )
         finally:
             bs.logout()
 
@@ -264,7 +301,7 @@ class MarketService:
                 entry_count=len(self._load_code_names_map()),
             )
 
-        entries = self._fetch_latest_non_empty_code_names(local_today)
+        entries = self.provider.refresh_code_names()
         if entries:
             self.storage_service.save_code_names(entries)
             self._replace_code_names_cache(entries)
@@ -436,14 +473,6 @@ class MarketService:
             five_minute_bars=[bar for bar in five_minute_bars if bar.code == code],
         )
 
-    def _fetch_latest_non_empty_code_names(self, start_date: date) -> list[CodeNameEntry]:
-        for offset in range(0, 8):
-            target_date = start_date - timedelta(days=offset)
-            entries = self.provider.get_code_names(target_date)
-            if entries:
-                return entries
-        return list(self._load_code_names_map().values())
-
     def _load_latest_quote(self, code: str) -> QuoteSnapshot | None:
         latest_five_minute_date = self._latest_five_minute_bar_date(code)
         latest_daily_date = self._latest_daily_bar_date(code)
@@ -551,24 +580,36 @@ class MarketService:
                     message=f"processing {code}",
                 )
 
-                fetch_daily = self._should_fetch_daily(code, job)
-                fetch_five_minute = self._should_fetch_five_minute(code, job)
+                missing_daily_dates = self._missing_daily_dates(code, job)
+                missing_five_minute_dates = self._missing_five_minute_dates(code, job)
 
-                if fetch_daily:
-                    await self._update_job(job_id, current_step="fetching daily")
-                    daily_bars = self.provider.get_daily_bars_range(code, job.start_date, job.end_date)
-                    self.storage_service.save_daily_bar_rows(daily_bars)
-                    await self._increment_job(job_id, daily_rows_written=len(daily_bars))
-                else:
+                if not missing_daily_dates:
                     await self._increment_job(job_id, skipped_daily_codes=1)
-
-                if fetch_five_minute:
-                    await self._update_job(job_id, current_step="fetching 5min")
-                    five_minute_bars = self.provider.get_five_minute_bars_range(code, job.start_date, job.end_date)
-                    self.storage_service.save_five_minute_bar_rows(five_minute_bars)
-                    await self._increment_job(job_id, five_minute_rows_written=len(five_minute_bars))
-                else:
+                if not missing_five_minute_dates:
                     await self._increment_job(job_id, skipped_five_minute_codes=1)
+
+                if missing_daily_dates or missing_five_minute_dates:
+                    current_step = "fetching history"
+                    if missing_daily_dates and not missing_five_minute_dates:
+                        current_step = "fetching daily"
+                    if missing_five_minute_dates and not missing_daily_dates:
+                        current_step = "fetching 5min"
+                    await self._update_job(job_id, current_step=current_step)
+                    parsed = self.provider.parse_historical_data(
+                        HistoricalMarketDataRequest(
+                            start_date=job.start_date,
+                            end_date=job.end_date,
+                            daily_codes=[code] if missing_daily_dates else [],
+                            five_minute_codes=[code] if missing_five_minute_dates else [],
+                        )
+                    )
+                    self.storage_service.save_daily_bar_rows(parsed.daily_bars)
+                    self.storage_service.save_five_minute_bar_rows(parsed.five_minute_bars)
+                    await self._increment_job(
+                        job_id,
+                        daily_rows_written=len(parsed.daily_bars),
+                        five_minute_rows_written=len(parsed.five_minute_bars),
+                    )
 
                 await self._update_job(
                     job_id,
@@ -605,17 +646,19 @@ class MarketService:
                 error=str(exc),
             )
 
-    def _should_fetch_daily(self, code: str, job: MarketParseJobResponse) -> bool:
-        return any(
-            code not in {bar.code for bar in (self.storage_service.load_daily_bar(current_date) or [])}
+    def _missing_daily_dates(self, code: str, job: MarketParseJobResponse) -> list[date]:
+        return [
+            current_date
             for current_date in self._iter_dates(job.start_date, job.end_date)
-        )
+            if code not in {bar.code for bar in (self.storage_service.load_daily_bar(current_date) or [])}
+        ]
 
-    def _should_fetch_five_minute(self, code: str, job: MarketParseJobResponse) -> bool:
-        return any(
-            code not in {bar.code for bar in (self.storage_service.load_five_minute_bars(current_date) or [])}
+    def _missing_five_minute_dates(self, code: str, job: MarketParseJobResponse) -> list[date]:
+        return [
+            current_date
             for current_date in self._iter_dates(job.start_date, job.end_date)
-        )
+            if code not in {bar.code for bar in (self.storage_service.load_five_minute_bars(current_date) or [])}
+        ]
 
     async def _update_job(self, job_id: str, **updates: object) -> None:
         async with self._jobs_lock:

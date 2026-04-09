@@ -192,3 +192,20 @@ class CodeNameEntry(BaseModel):
 
     code: str
     name: str
+
+class DataParserJobConfig(BaseModel):
+    """Config of a data parser job for a date range."""
+
+    mode: Literal["daily", "five_minute", "both"]
+    start_date: date
+    end_date: date
+    skip_existing: bool
+
+class DataParserJobEntry(BaseModel):
+    """An entry to a data parser job."""
+
+    config: DataParserJobConfig
+    skipped: int | None = Field(description="Number of skipped code, if skip_existing is set")
+    parsed: int = Field(description="Number of codes processed")
+    finished: bool = Field(description="Whether finished or errored")
+    error: str | None
