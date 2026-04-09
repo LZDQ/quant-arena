@@ -8,17 +8,18 @@ from pathlib import Path
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from quant_arena.schemas import AgentResponse, CodeRefreshResponse, CodeSearchResponse, CreateAgentRequest, MarketBarsResponse, MarketParseJobResponse, MarketParseResponse, MarketRangeParseRequest, MarketStatusResponse, PathsResponse, SubmitOrderRequest, UpdateAgentRequest
 from quant_arena.arena import ArenaService
 from quant_arena.config import AgentConfig, AppConfig, load_app_config
+from quant_arena.errors import ServiceError
 from quant_arena.market import BaoStockMarketDataProvider, MarketDataProvider, MarketService
 from quant_arena.mcp_server import create_mcp_server, wrap_mcp_with_agent_auth
-from quant_arena.models import AgentResponse, CodeRefreshResponse, CodeSearchResponse, CreateAgentRequest, MarketBarsResponse, MarketParseResponse, MarketStatusResponse, PathsResponse, SubmitOrderRequest, UpdateAgentRequest
-from quant_arena.storage import ArenaStorage
+from quant_arena.storage import StorageService
 
 
 DEFAULT_CONFIG_PATH = Path.home() / ".quant-arena" / "config.json"
@@ -27,10 +28,10 @@ DEFAULT_CONFIG_PATH = Path.home() / ".quant-arena" / "config.json"
 class AppState:
     """Typed app state."""
 
-    def __init__(self, config_path: Path, config: AppConfig, storage: ArenaStorage, market: MarketService, arena: ArenaService):
+    def __init__(self, config_path: Path, config: AppConfig, storage_service: StorageService, market: MarketService, arena: ArenaService):
         self.config_path = config_path
         self.config = config
-        self.storage = storage
+        self.storage_service = storage_service
         self.market = market
         self.arena = arena
         self.background_task: asyncio.Task[None] | None = None
@@ -38,18 +39,18 @@ class AppState:
 
 def _load_arena(config_path: Path, market_provider: MarketDataProvider | None = None) -> AppState:
     config = load_app_config(config_path)
-    storage = ArenaStorage(Path(config.agents_root).resolve(), Path(config.market_data_root).resolve())
-    storage.ensure_layout()
-    agents = storage.load_agent_configs()
-    market = MarketService(config=config, storage=storage, provider=market_provider or BaoStockMarketDataProvider())
-    arena = ArenaService(config=config, storage=storage, market=market)
+    storage_service = StorageService(Path(config.agents_root).resolve(), Path(config.market_data_root).resolve())
+    storage_service.ensure_layout()
+    agents = storage_service.load_agent_configs()
+    market = MarketService(config=config, storage_service=storage_service, provider=market_provider or BaoStockMarketDataProvider())
+    arena = ArenaService(config=config, storage_service=storage_service, market=market)
     arena.set_agents(agents)
-    return AppState(config_path=config_path, config=config, storage=storage, market=market, arena=arena)
+    return AppState(config_path=config_path, config=config, storage_service=storage_service, market=market, arena=arena)
 
 
 async def _poll_market(state: AppState) -> None:
     while True:
-        state.market.sync_market_data(state.arena.tracked_codes())
+        state.market.sync_market_data(state.market.tracked_codes())
         state.arena.match_pending_orders()
         await asyncio.sleep(state.config.polling_interval_seconds)
 
@@ -71,6 +72,7 @@ def create_app(config_path: Path | None = None, market_provider: MarketDataProvi
             try:
                 yield
             finally:
+                await state.market.shutdown()
                 if state.background_task is not None:
                     state.background_task.cancel()
                     try:
@@ -79,6 +81,11 @@ def create_app(config_path: Path | None = None, market_provider: MarketDataProvi
                         pass
 
     app = FastAPI(title="quant-arena", lifespan=lifespan)
+
+    @app.exception_handler(ServiceError)
+    async def handle_service_error(_: Request, exc: ServiceError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -104,8 +111,8 @@ def create_app(config_path: Path | None = None, market_provider: MarketDataProvi
         state = get_state()
         return PathsResponse(
             config_path=str(state.config_path),
-            agents_root=str(state.storage.agents_root),
-            market_data_root=str(state.storage.market_data_root),
+            agents_root=str(state.storage_service.agents_root),
+            market_data_root=str(state.storage_service.market_data_root),
         )
 
     @app.get("/api/agents")
@@ -158,7 +165,7 @@ def create_app(config_path: Path | None = None, market_provider: MarketDataProvi
     @app.post("/api/market/refresh")
     def refresh_market() -> dict[str, str]:
         state = get_state()
-        state.market.sync_market_data(state.arena.tracked_codes())
+        state.market.sync_market_data(state.market.tracked_codes())
         get_state().arena.match_pending_orders()
         return {"status": "ok"}
 
@@ -173,12 +180,21 @@ def create_app(config_path: Path | None = None, market_provider: MarketDataProvi
     @app.post("/api/market/parse-today", response_model=MarketParseResponse)
     def parse_today_market() -> MarketParseResponse:
         state = get_state()
-        return state.market.parse_today_market_data_if_missing(state.arena.tracked_codes())
+        return state.market.parse_today_market_data_if_missing(state.market.tracked_codes())
+
+    @app.post("/api/market/parse-jobs", response_model=MarketParseJobResponse)
+    async def start_market_parse_job(request: MarketRangeParseRequest) -> MarketParseJobResponse:
+        state = get_state()
+        return await state.market.start_range_parse_job(state.market.tracked_codes(), request)
+
+    @app.get("/api/market/parse-jobs", response_model=list[MarketParseJobResponse])
+    async def list_market_parse_jobs() -> list[MarketParseJobResponse]:
+        return await get_state().market.list_parse_jobs()
 
     @app.get("/api/market/status", response_model=MarketStatusResponse)
     def get_market_status() -> MarketStatusResponse:
         state = get_state()
-        return state.market.get_market_status(state.arena.tracked_codes())
+        return state.market.get_market_status(state.market.tracked_codes())
 
     @app.get("/api/market/bars", response_model=MarketBarsResponse)
     def get_market_bars(code: str, trade_date: str | None = None) -> MarketBarsResponse:

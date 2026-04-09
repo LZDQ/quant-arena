@@ -2,12 +2,14 @@ import csv
 import json
 from datetime import date, datetime, timezone
 from pathlib import Path
+from time import sleep
 
 from fastapi.testclient import TestClient
 from mcp import types
 
 from quant_arena.models import CodeNameEntry, DailyBar, FiveMinuteBar, QuoteSnapshot
 from quant_arena.server import create_app
+from quant_arena.storage import StorageService
 from tests.support_market import StaticMarketDataProvider
 
 
@@ -16,6 +18,22 @@ def _write_json(path: Path, data: dict) -> None:
     with path.open("w", encoding="utf-8") as handle:
         json.dump(data, handle, ensure_ascii=False, indent="\t")
         handle.write("\n")
+
+
+def _seed_market_storage(
+    tmp_path: Path,
+    code_names: list[CodeNameEntry],
+    daily_bars: list[DailyBar],
+    five_minute_bars: list[FiveMinuteBar],
+) -> None:
+    storage_service = StorageService(
+        (tmp_path / "private-agents").resolve(),
+        (tmp_path / "public-market").resolve(),
+    )
+    storage_service.ensure_layout()
+    storage_service.save_code_names(code_names)
+    storage_service.save_daily_bar_rows(daily_bars)
+    storage_service.save_five_minute_bar_rows(five_minute_bars)
 
 
 def _make_app(
@@ -33,10 +51,40 @@ def _make_app(
         trade_date=resolved_quote_time.date(),
         as_of=resolved_quote_time,
         last_price=quote_price,
-        prev_close=10.0,
         limit_up=11.0,
         limit_down=9.0,
     )
+    resolved_code_names = code_names or [
+        CodeNameEntry(code="sh.600000", name="demo")
+    ]
+    resolved_daily_bars = daily_bars or {
+        (quote.code, quote.trade_date): DailyBar(
+            code=quote.code,
+            trade_date=quote.trade_date,
+            open_price=quote.last_price,
+            high_price=quote.last_price,
+            low_price=quote.last_price,
+            close_price=quote.last_price,
+            prev_close=quote.last_price,
+            volume=0,
+            amount=0,
+        )
+    }
+    resolved_five_minute_bars = five_minute_bars or {
+        (quote.code, quote.trade_date): [
+            FiveMinuteBar(
+                code=quote.code,
+                trade_date=quote.trade_date,
+                bar_time=quote.as_of,
+                open_price=quote.last_price,
+                high_price=quote.last_price,
+                low_price=quote.last_price,
+                close_price=quote.last_price,
+                volume=0,
+                amount=0,
+            )
+        ]
+    }
     config_path = tmp_path / "config" / "app.json"
     _write_json(
         config_path,
@@ -49,16 +97,36 @@ def _make_app(
             "fees": {"commission_bps": 3.0, "min_commission": 5.0, "stamp_tax_bps": 10.0},
         },
     )
+    _seed_market_storage(
+        tmp_path,
+        resolved_code_names,
+        list(resolved_daily_bars.values()),
+        [bar for bars in resolved_five_minute_bars.values() for bar in bars],
+    )
     app = create_app(
         config_path=config_path,
         market_provider=StaticMarketDataProvider(
             {"sh.600000": quote},
-            code_names=code_names,
-            daily_bars=daily_bars,
-            five_minute_bars=five_minute_bars,
+            code_names=resolved_code_names,
+            daily_bars=resolved_daily_bars,
+            five_minute_bars=resolved_five_minute_bars,
         ),
     )
     return TestClient(app)
+
+
+def _wait_for_job_completion(client: TestClient, job_id: str) -> dict:
+    for _ in range(50):
+        response = client.get("/api/market/parse-jobs")
+        assert response.status_code == 200
+        jobs = response.json()
+        for job in jobs:
+            if job["job_id"] != job_id:
+                continue
+            if job["status"] in {"completed", "failed"}:
+                return job
+        sleep(0.02)
+    raise AssertionError(f"job {job_id} did not finish in time")
 
 
 def test_paths_and_agent_lifecycle(tmp_path: Path) -> None:
@@ -131,12 +199,41 @@ def test_submit_buy_then_fill_on_next_refresh(tmp_path: Path) -> None:
                         trade_date=date(2026, 4, 7),
                         as_of=datetime(2026, 4, 7, 1, 0, tzinfo=timezone.utc),
                         last_price=9.8,
-                        prev_close=10.0,
-                        limit_up=11.0,
+                                        limit_up=11.0,
                         limit_down=9.0,
                     )
                 }
             ),
+        )
+        _seed_market_storage(
+            tmp_path,
+            [CodeNameEntry(code="sh.600000", name="demo")],
+            [
+                DailyBar(
+                    code="sh.600000",
+                    trade_date=date(2026, 4, 7),
+                    open_price=9.8,
+                    high_price=9.8,
+                    low_price=9.8,
+                    close_price=9.8,
+                    prev_close=10.0,
+                    volume=0,
+                    amount=0,
+                )
+            ],
+            [
+                FiveMinuteBar(
+                    code="sh.600000",
+                    trade_date=date(2026, 4, 7),
+                    bar_time=datetime(2026, 4, 7, 1, 0, tzinfo=timezone.utc),
+                    open_price=9.8,
+                    high_price=9.8,
+                    low_price=9.8,
+                    close_price=9.8,
+                    volume=0,
+                    amount=0,
+                )
+            ],
         )
         with TestClient(app) as next_client:
             next_client.post("/api/market/refresh")
@@ -146,6 +243,26 @@ def test_submit_buy_then_fill_on_next_refresh(tmp_path: Path) -> None:
             portfolio = next_client.get("/api/agents/alpha/portfolio")
             assert portfolio.status_code == 200
             assert portfolio.json()["positions"][0]["quantity"] == 100
+
+
+def test_buy_order_quantity_must_be_multiple_of_100(tmp_path: Path) -> None:
+    with _make_app(tmp_path, quote_price=10.0, quote_time=datetime(2026, 4, 6, 9, 30, tzinfo=timezone.utc)) as client:
+        client.post(
+            "/api/agents",
+            json={
+                "agent_id": "alpha",
+                "display_name": "Alpha",
+                "token_secret": "secret",
+                "initial_cash": 100000,
+            },
+        )
+
+        order = client.post(
+            "/api/agents/alpha/orders",
+            json={"code": "sh.600000", "side": "buy", "quantity": 150, "limit_price": 10.0},
+        )
+        assert order.status_code == 400
+        assert order.json()["detail"] == "Buy order quantity must be a multiple of 100"
 
 
 def test_t_plus_one_blocks_same_day_sell_until_next_day(tmp_path: Path) -> None:
@@ -174,12 +291,41 @@ def test_t_plus_one_blocks_same_day_sell_until_next_day(tmp_path: Path) -> None:
                     trade_date=date(2026, 4, 7),
                     as_of=datetime(2026, 4, 7, 1, 0, tzinfo=timezone.utc),
                     last_price=9.8,
-                    prev_close=10.0,
-                    limit_up=11.0,
+                                limit_up=11.0,
                     limit_down=9.0,
                 )
             }
         ),
+    )
+    _seed_market_storage(
+        tmp_path,
+        [CodeNameEntry(code="sh.600000", name="demo")],
+        [
+            DailyBar(
+                code="sh.600000",
+                trade_date=date(2026, 4, 7),
+                open_price=9.8,
+                high_price=9.8,
+                low_price=9.8,
+                close_price=9.8,
+                prev_close=10.0,
+                volume=0,
+                amount=0,
+            )
+        ],
+        [
+            FiveMinuteBar(
+                code="sh.600000",
+                trade_date=date(2026, 4, 7),
+                bar_time=datetime(2026, 4, 7, 1, 0, tzinfo=timezone.utc),
+                open_price=9.8,
+                high_price=9.8,
+                low_price=9.8,
+                close_price=9.8,
+                volume=0,
+                amount=0,
+            )
+        ],
     )
     with TestClient(app_fill) as fill_client:
         fill_client.post("/api/market/refresh")
@@ -204,12 +350,41 @@ def test_t_plus_one_blocks_same_day_sell_until_next_day(tmp_path: Path) -> None:
                     trade_date=date(2026, 4, 8),
                     as_of=datetime(2026, 4, 8, 1, 0, tzinfo=timezone.utc),
                     last_price=9.8,
-                    prev_close=9.8,
-                    limit_up=10.78,
+                                limit_up=10.78,
                     limit_down=8.82,
                 )
             }
         ),
+    )
+    _seed_market_storage(
+        tmp_path,
+        [CodeNameEntry(code="sh.600000", name="demo")],
+        [
+            DailyBar(
+                code="sh.600000",
+                trade_date=date(2026, 4, 8),
+                open_price=9.8,
+                high_price=9.8,
+                low_price=9.8,
+                close_price=9.8,
+                prev_close=9.8,
+                volume=0,
+                amount=0,
+            )
+        ],
+        [
+            FiveMinuteBar(
+                code="sh.600000",
+                trade_date=date(2026, 4, 8),
+                bar_time=datetime(2026, 4, 8, 1, 0, tzinfo=timezone.utc),
+                open_price=9.8,
+                high_price=9.8,
+                low_price=9.8,
+                close_price=9.8,
+                volume=0,
+                amount=0,
+            )
+        ],
     )
     with TestClient(app_sell) as sell_client:
         sell_client.post("/api/market/refresh")
@@ -278,6 +453,9 @@ def test_sync_market_data_writes_daily_bar_after_close(tmp_path: Path) -> None:
             )
         },
     ) as client:
+        client.app.state.ctx.storage_service.save_code_names(
+            [CodeNameEntry(code="sh.600000", name="demo")]
+        )
         client.post(
             "/api/agents",
             json={
@@ -334,6 +512,9 @@ def test_sync_market_data_writes_five_minute_bars_during_session(tmp_path: Path)
             ]
         },
     ) as client:
+        client.app.state.ctx.storage_service.save_code_names(
+            [CodeNameEntry(code="sh.600000", name="demo")]
+        )
         client.post(
             "/api/agents",
             json={
@@ -410,6 +591,13 @@ def test_parse_today_market_data_if_missing(tmp_path: Path) -> None:
             ]
         },
     ) as client:
+        client.app.state.ctx.storage_service.save_code_names(
+            [CodeNameEntry(code="sh.600000", name="demo")]
+        )
+        daily_path = tmp_path / "public-market" / "bars" / "2026-04-09" / "daily.csv"
+        five_minute_path = tmp_path / "public-market" / "bars" / "2026-04-09" / "5min" / "10-00.csv"
+        daily_path.unlink()
+        five_minute_path.unlink()
         client.post(
             "/api/agents",
             json={
@@ -432,8 +620,6 @@ def test_parse_today_market_data_if_missing(tmp_path: Path) -> None:
         assert payload["parsed_daily_codes"] == ["sh.600000"]
         assert payload["parsed_five_minute_codes"] == ["sh.600000"]
 
-        daily_path = tmp_path / "public-market" / "bars" / "2026-04-09" / "daily.csv"
-        five_minute_path = tmp_path / "public-market" / "bars" / "2026-04-09" / "5min" / "10-00.csv"
         assert daily_path.exists()
         assert five_minute_path.exists()
 
@@ -445,7 +631,7 @@ def test_parse_today_market_data_if_missing(tmp_path: Path) -> None:
 
 def test_refresh_and_search_code_names_with_paging(tmp_path: Path) -> None:
     code_names = [
-        CodeNameEntry(code=f"sh.6000{i:02d}", name=f"Name {i}", trade_status="1")
+        CodeNameEntry(code=f"sh.6000{i:02d}", name=f"Name {i}")
         for i in range(25)
     ]
     with _make_app(tmp_path, code_names=code_names) as client:
@@ -472,3 +658,224 @@ def test_refresh_and_search_code_names_with_paging(tmp_path: Path) -> None:
         filtered_payload = filtered.json()
         assert filtered_payload["total"] == 6
         assert filtered_payload["items"][0]["code"] == "sh.600002"
+
+
+def test_parse_range_job_writes_ranged_market_data(tmp_path: Path) -> None:
+    first_trade_date = date(2026, 4, 8)
+    second_trade_date = date(2026, 4, 9)
+    provider = StaticMarketDataProvider(
+        {
+            "sh.600000": QuoteSnapshot(
+                code="sh.600000",
+                name="demo",
+                trade_date=second_trade_date,
+                as_of=datetime(2026, 4, 9, 10, 0, tzinfo=timezone.utc),
+                last_price=10.0,
+                        limit_up=10.89,
+                limit_down=8.91,
+            )
+        },
+        daily_bars={
+            ("sh.600000", first_trade_date): DailyBar(
+                code="sh.600000",
+                trade_date=first_trade_date,
+                open_price=9.8,
+                high_price=10.0,
+                low_price=9.7,
+                close_price=9.9,
+                prev_close=9.8,
+                volume=1000,
+                amount=9800,
+            ),
+            ("sh.600000", second_trade_date): DailyBar(
+                code="sh.600000",
+                trade_date=second_trade_date,
+                open_price=9.9,
+                high_price=10.1,
+                low_price=9.85,
+                close_price=10.0,
+                prev_close=9.9,
+                volume=1100,
+                amount=11000,
+            ),
+        },
+        five_minute_bars={
+            ("sh.600000", first_trade_date): [
+                FiveMinuteBar(
+                    code="sh.600000",
+                    trade_date=first_trade_date,
+                    bar_time=datetime(2026, 4, 8, 10, 0, tzinfo=timezone.utc),
+                    open_price=9.8,
+                    high_price=9.9,
+                    low_price=9.79,
+                    close_price=9.85,
+                    volume=500,
+                    amount=4925,
+                )
+            ],
+            ("sh.600000", second_trade_date): [
+                FiveMinuteBar(
+                    code="sh.600000",
+                    trade_date=second_trade_date,
+                    bar_time=datetime(2026, 4, 9, 10, 0, tzinfo=timezone.utc),
+                    open_price=9.95,
+                    high_price=10.02,
+                    low_price=9.94,
+                    close_price=10.0,
+                    volume=550,
+                    amount=5500,
+                )
+            ],
+        },
+    )
+    config_path = tmp_path / "config" / "app.json"
+    _write_json(
+        config_path,
+        {
+            "agents_root": str((tmp_path / "private-agents").resolve()),
+            "market_data_root": str((tmp_path / "public-market").resolve()),
+            "enable_background_polling": False,
+            "enable_code_name_refresh": False,
+            "polling_interval_seconds": 0,
+            "fees": {"commission_bps": 3.0, "min_commission": 5.0, "stamp_tax_bps": 10.0},
+        },
+    )
+    with TestClient(create_app(config_path=config_path, market_provider=provider)) as client:
+        _seed_market_storage(
+            tmp_path,
+            [CodeNameEntry(code="sh.600000", name="demo")],
+            [],
+            [],
+        )
+        client.post(
+            "/api/agents",
+            json={
+                "agent_id": "alpha",
+                "display_name": "Alpha",
+                "token_secret": "secret",
+                "initial_cash": 100000,
+            },
+        )
+        client.post(
+            "/api/agents/alpha/orders",
+            json={"code": "sh.600000", "side": "buy", "quantity": 100, "limit_price": 10.0},
+        )
+        started = client.post(
+            "/api/market/parse-jobs",
+            json={
+                "start_date": "2026-04-08",
+                "end_date": "2026-04-09",
+            },
+        )
+        assert started.status_code == 200
+        job = _wait_for_job_completion(client, started.json()["job_id"])
+        assert job["status"] == "completed"
+        assert job["tracked_codes_total"] == 1
+        assert job["tracked_codes_completed"] == 1
+        assert job["daily_rows_written"] == 2
+        assert job["five_minute_rows_written"] == 2
+
+        first_daily_path = tmp_path / "public-market" / "bars" / "2026-04-08" / "daily.csv"
+        second_daily_path = tmp_path / "public-market" / "bars" / "2026-04-09" / "daily.csv"
+        first_five_path = tmp_path / "public-market" / "bars" / "2026-04-08" / "5min" / "10-00.csv"
+        second_five_path = tmp_path / "public-market" / "bars" / "2026-04-09" / "5min" / "10-00.csv"
+        assert first_daily_path.exists()
+        assert second_daily_path.exists()
+        assert first_five_path.exists()
+        assert second_five_path.exists()
+
+
+def test_parse_range_job_skips_existing(tmp_path: Path) -> None:
+    trade_date = date(2026, 4, 8)
+    provider = StaticMarketDataProvider(
+        {
+            "sh.600000": QuoteSnapshot(
+                code="sh.600000",
+                name="demo",
+                trade_date=trade_date,
+                as_of=datetime(2026, 4, 8, 10, 0, tzinfo=timezone.utc),
+                last_price=10.0,
+                        limit_up=10.89,
+                limit_down=8.91,
+            )
+        },
+        daily_bars={
+            ("sh.600000", trade_date): DailyBar(
+                code="sh.600000",
+                trade_date=trade_date,
+                open_price=9.8,
+                high_price=10.0,
+                low_price=9.7,
+                close_price=9.9,
+                prev_close=9.8,
+                volume=1000,
+                amount=9800,
+            )
+        },
+        five_minute_bars={
+            ("sh.600000", trade_date): [
+                FiveMinuteBar(
+                    code="sh.600000",
+                    trade_date=trade_date,
+                    bar_time=datetime(2026, 4, 8, 10, 0, tzinfo=timezone.utc),
+                    open_price=9.8,
+                    high_price=9.9,
+                    low_price=9.79,
+                    close_price=9.85,
+                    volume=500,
+                    amount=4925,
+                )
+            ]
+        },
+    )
+    config_path = tmp_path / "config" / "app.json"
+    _write_json(
+        config_path,
+        {
+            "agents_root": str((tmp_path / "private-agents").resolve()),
+            "market_data_root": str((tmp_path / "public-market").resolve()),
+            "enable_background_polling": False,
+            "enable_code_name_refresh": False,
+            "polling_interval_seconds": 0,
+            "fees": {"commission_bps": 3.0, "min_commission": 5.0, "stamp_tax_bps": 10.0},
+        },
+    )
+    with TestClient(create_app(config_path=config_path, market_provider=provider)) as client:
+        _seed_market_storage(
+            tmp_path,
+            [CodeNameEntry(code="sh.600000", name="demo")],
+            list(provider._daily_bars.values()),
+            [bar for bars in provider._five_minute_bars.values() for bar in bars],
+        )
+        client.post(
+            "/api/agents",
+            json={
+                "agent_id": "alpha",
+                "display_name": "Alpha",
+                "token_secret": "secret",
+                "initial_cash": 100000,
+            },
+        )
+        client.post(
+            "/api/agents/alpha/orders",
+            json={"code": "sh.600000", "side": "buy", "quantity": 100, "limit_price": 10.0},
+        )
+        client.app.state.ctx.storage_service.save_daily_bar_rows(list(provider._daily_bars.values()))
+        client.app.state.ctx.storage_service.save_five_minute_bar_rows(provider._five_minute_bars[("sh.600000", trade_date)])
+
+        started = client.post(
+            "/api/market/parse-jobs",
+            json={
+                "start_date": "2026-04-08",
+                "end_date": "2026-04-08",
+            },
+        )
+        assert started.status_code == 200
+        job = _wait_for_job_completion(client, started.json()["job_id"])
+        assert job["status"] == "completed"
+        assert job["daily_rows_written"] == 0
+        assert job["five_minute_rows_written"] == 0
+        assert job["skipped_daily_codes"] == 1
+        assert job["skipped_five_minute_codes"] == 1
+        assert provider.daily_range_call_count == 0
+        assert provider.five_minute_range_call_count == 0

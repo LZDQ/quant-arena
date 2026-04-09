@@ -16,7 +16,7 @@ type Agent = {
 };
 
 type RankingEntry = {
-  date: string;
+  trade_date: string;
   agent_id: string;
   display_name: string;
   total_equity: number;
@@ -40,7 +40,7 @@ type MarketStatusResponse = {
 
 type CodeNameEntry = {
   code: string;
-  name: string | null;
+  name: string;
 };
 
 type CodeSearchResponse = {
@@ -96,6 +96,31 @@ type MarketParseResponse = {
   parsed_five_minute_codes: string[];
 };
 
+type MarketParseJob = {
+  job_id: string;
+  status: "pending" | "running" | "completed" | "failed";
+  start_date: string;
+  end_date: string;
+  tracked_codes_total: number;
+  tracked_codes_completed: number;
+  current_code: string | null;
+  current_step: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  daily_rows_written: number;
+  five_minute_rows_written: number;
+  skipped_daily_codes: number;
+  skipped_five_minute_codes: number;
+  message: string | null;
+  error: string | null;
+};
+
+type MarketRangeParseDraft = {
+  start_date: string;
+  end_date: string;
+};
+
 type AgentDraft = {
   agent_id: string;
   display_name: string;
@@ -108,6 +133,11 @@ const EMPTY_DRAFT: AgentDraft = {
   display_name: "",
   token_secret: "",
   initial_cash: "",
+};
+
+const EMPTY_RANGE_PARSE_DRAFT: MarketRangeParseDraft = {
+  start_date: "",
+  end_date: "",
 };
 
 function getApiBase(): string {
@@ -160,13 +190,16 @@ export default function App() {
   const [selectedCode, setSelectedCode] = useState<string>("");
   const [marketBars, setMarketBars] = useState<MarketBarsResponse | null>(null);
   const [lastParse, setLastParse] = useState<MarketParseResponse | null>(null);
+  const [parseJobs, setParseJobs] = useState<MarketParseJob[]>([]);
   const [lastCodeRefresh, setLastCodeRefresh] = useState<CodeRefreshResponse | null>(null);
   const [draft, setDraft] = useState<AgentDraft>(EMPTY_DRAFT);
+  const [rangeParseDraft, setRangeParseDraft] = useState<MarketRangeParseDraft>(EMPTY_RANGE_PARSE_DRAFT);
   const [error, setError] = useState<string>("");
   const [isSaving, setIsSaving] = useState(false);
   const [isParsingToday, setIsParsingToday] = useState(false);
+  const [isStartingRangeParse, setIsStartingRangeParse] = useState(false);
   const [isRefreshingCodes, setIsRefreshingCodes] = useState(false);
-  const rankingDate = rankings[0]?.date ?? null;
+  const rankingDate = rankings[0]?.trade_date ?? null;
 
   async function loadCore(): Promise<void> {
     const [nextPaths, nextRankings, nextAgents, nextMarketStatus] = await Promise.all([
@@ -191,10 +224,27 @@ export default function App() {
     setCodeSearch(payload);
   }
 
+  async function loadParseJobs(): Promise<void> {
+    const payload = await fetchJson<MarketParseJob[]>(apiUrl("/api/market/parse-jobs"));
+    setParseJobs(payload);
+  }
+
   useEffect(() => {
     void loadCore().catch((loadError: Error) => {
       setError(loadError.message);
     });
+  }, []);
+
+  useEffect(() => {
+    void loadParseJobs().catch((loadError: Error) => {
+      setError(loadError.message);
+    });
+    const interval = window.setInterval(() => {
+      void loadParseJobs().catch((loadError: Error) => {
+        setError(loadError.message);
+      });
+    }, 2000);
+    return () => window.clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -267,6 +317,24 @@ export default function App() {
     }
   }
 
+  async function handleStartRangeParse(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    setIsStartingRangeParse(true);
+    setError("");
+    try {
+      await fetchJson<MarketParseJob>(apiUrl("/api/market/parse-jobs"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(rangeParseDraft),
+      });
+      await loadParseJobs();
+    } catch (parseError) {
+      setError((parseError as Error).message);
+    } finally {
+      setIsStartingRangeParse(false);
+    }
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     setIsSaving(true);
@@ -301,6 +369,7 @@ export default function App() {
   const selectedStatus = codes.find((item) => item.code === selectedCode) ?? null;
   const selectedCodeEntry = codeSearch?.items.find((item) => item.code === selectedCode) ?? null;
   const pageCount = codeSearch ? Math.max(1, Math.ceil(codeSearch.total / codeSearch.page_size)) : 1;
+  const latestParseJob = parseJobs[0] ?? null;
 
   return (
     <div className="app-shell">
@@ -390,9 +459,76 @@ export default function App() {
                   </ul>
                 </article>
               ) : null}
+              <article className="path-card">
+                <h3>Range parse jobs</h3>
+                <ul className="compact-list">
+                  <li>Jobs in memory: <strong>{parseJobs.length}</strong></li>
+                  <li>Latest status: <strong>{latestParseJob?.status ?? "None"}</strong></li>
+                  <li>Latest progress: <strong>{latestParseJob ? `${latestParseJob.tracked_codes_completed} / ${latestParseJob.tracked_codes_total}` : "None"}</strong></li>
+                </ul>
+              </article>
             </div>
           ) : (
             <p className="empty">Loading runtime paths...</p>
+          )}
+        </section>
+
+        <section className="panel span-2">
+          <div className="panel-head">
+            <h2>Range parse</h2>
+          </div>
+          <form className="range-parse-form" onSubmit={(event) => void handleStartRangeParse(event)}>
+            <input
+              type="date"
+              value={rangeParseDraft.start_date}
+              onChange={(event) => setRangeParseDraft((current) => ({ ...current, start_date: event.target.value }))}
+              required
+            />
+            <input
+              type="date"
+              value={rangeParseDraft.end_date}
+              onChange={(event) => setRangeParseDraft((current) => ({ ...current, end_date: event.target.value }))}
+              required
+            />
+            <button type="submit" disabled={isStartingRangeParse}>
+              {isStartingRangeParse ? "Starting..." : "Start range parse"}
+            </button>
+          </form>
+          {parseJobs.length ? (
+            <div className="bars-table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Status</th>
+                    <th>Date range</th>
+                    <th>Progress</th>
+                    <th>Current code</th>
+                    <th>Rows written</th>
+                    <th>Error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {parseJobs.map((job) => (
+                    <tr key={job.job_id}>
+                      <td>{job.status}</td>
+                      <td>{job.start_date} to {job.end_date}</td>
+                      <td>{job.tracked_codes_completed} / {job.tracked_codes_total}</td>
+                      <td>{job.current_code ?? "None"}{job.current_step ? ` (${job.current_step})` : ""}</td>
+                      <td>
+                        daily {job.daily_rows_written}, 5m {job.five_minute_rows_written}
+                        <br />
+                        skipped daily {job.skipped_daily_codes}, skipped 5m {job.skipped_five_minute_codes}
+                      </td>
+                      <td>
+                        {job.error ? <span className="error-text">{job.error}</span> : "None"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="empty">No parse jobs yet.</p>
           )}
         </section>
 
@@ -436,7 +572,7 @@ export default function App() {
                       onClick={() => setSelectedCode(item.code)}
                     >
                       <td><code>{item.code}</code></td>
-                      <td>{item.name ?? "Unknown"}</td>
+                      <td>{item.name}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -578,6 +714,7 @@ export default function App() {
               <thead>
                 <tr>
                   <th>Agent</th>
+                  <th>Date</th>
                   <th>Equity</th>
                   <th>Return</th>
                   <th>Realized</th>
@@ -588,6 +725,7 @@ export default function App() {
                 {rankings.map((entry) => (
                   <tr key={entry.agent_id}>
                     <td>{entry.display_name}</td>
+                    <td>{entry.trade_date}</td>
                     <td>{formatCurrency(entry.total_equity)}</td>
                     <td>{entry.return_pct.toFixed(2)}%</td>
                     <td>{formatCurrency(entry.realized_pnl)}</td>

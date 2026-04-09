@@ -19,7 +19,6 @@ class QuoteSnapshot(BaseModel):
     trade_date: date
     as_of: datetime
     last_price: float = Field(gt=0)
-    prev_close: float = Field(gt=0)
     limit_up: float = Field(gt=0)
     limit_down: float = Field(gt=0)
 
@@ -65,17 +64,46 @@ class OrderRecord(BaseModel):
 
     order_id: str = Field(default_factory=lambda: uuid4().hex)
     agent_id: str
-    code: str
-    side: OrderSide
-    quantity: int = Field(gt=0)
-    limit_price: float = Field(gt=0)
-    status: OrderStatus = "pending"
-    submitted_at: datetime
-    activate_after: datetime
-    last_checked_at: datetime | None = None
-    filled_at: datetime | None = None
-    canceled_at: datetime | None = None
-    rejection_reason: str | None = None
+    code: str = Field(
+        description="股票代码"
+    )
+    side: OrderSide = Field(
+        description="买卖方向，buy 是买入，sell 是卖出"
+    )
+    quantity: int = Field(
+        gt=0,
+        description="委托数量"
+    )
+    limit_price: float = Field(
+        gt=0,
+        description="限价单价格，只有市场价格达到这个条件才会成交"
+    )
+    status: OrderStatus = Field(
+        default="pending",
+        description="订单状态，pending 是待成交，filled 是已成交，canceled 是已撤销"
+    )
+    submitted_at: datetime = Field(
+        description="下单时间"
+    )
+    activate_after: datetime = Field(
+        description="订单最早可被撮合检查的时间，用来避免刚提交就被同一时刻的数据立刻成交"
+    )
+    last_checked_at: datetime | None = Field(
+        default=None,
+        description="最近一次用市场数据检查这笔订单是否可成交的时间"
+    )
+    filled_at: datetime | None = Field(
+        default=None,
+        description="订单实际成交时间"
+    )
+    canceled_at: datetime | None = Field(
+        default=None,
+        description="订单撤销时间"
+    )
+    rejection_reason: str | None = Field(
+        default=None,
+        description="如果因为交易规则或资金仓位限制导致不能成交，这里记录原因"
+    )
 
 
 class FillRecord(BaseModel):
@@ -84,24 +112,54 @@ class FillRecord(BaseModel):
     fill_id: str = Field(default_factory=lambda: uuid4().hex)
     order_id: str
     agent_id: str
-    code: str
-    side: OrderSide
-    quantity: int = Field(gt=0)
-    executed_at: datetime
-    executed_price: float = Field(gt=0)
-    commission: float = Field(ge=0)
-    stamp_tax: float = Field(ge=0)
+    code: str = Field(
+        description="成交对应的股票代码"
+    )
+    side: OrderSide = Field(
+        description="成交方向，buy 是买入，sell 是卖出"
+    )
+    quantity: int = Field(
+        gt=0,
+        description="实际成交数量"
+    )
+    executed_at: datetime = Field(
+        description="成交时间"
+    )
+    executed_price: float = Field(
+        gt=0,
+        description="实际成交价格"
+    )
+    commission: float = Field(
+        ge=0,
+        description="这笔成交收取的手续费"
+    )
+    stamp_tax: float = Field(
+        ge=0,
+        description="这笔成交收取的印花税，通常只在卖出时有"
+    )
 
 
 class EquityPoint(BaseModel):
     """Daily equity snapshot."""
 
-    date: date
-    cash: float
-    market_value: float
-    total_equity: float
-    realized_pnl: float
-    unrealized_pnl: float
+    trade_date: date = Field(
+        description="这条权益快照对应的交易日期"
+    )
+    cash: float = Field(
+        description="当天快照时账户里的现金"
+    )
+    market_value: float = Field(
+        description="当天持仓按市场价格计算出来的市值"
+    )
+    total_equity: float = Field(
+        description="总权益，等于现金加持仓市值"
+    )
+    realized_pnl: float = Field(
+        description="截至当天已经真正实现的盈亏"
+    )
+    unrealized_pnl: float = Field(
+        description="截至当天按最新市场价格计算但尚未卖出兑现的浮动盈亏"
+    )
 
 
 class AgentState(BaseModel):
@@ -109,164 +167,28 @@ class AgentState(BaseModel):
 
     agent_id: str
     cash: float
-    realized_pnl: float = 0.0
-    orders: list[OrderRecord] = Field(default_factory=list)
-    fills: list[FillRecord] = Field(default_factory=list)
-    positions: dict[str, list[PositionLot]] = Field(default_factory=dict)
-    equity_history: list[EquityPoint] = Field(default_factory=list)
-
-
-class PositionView(BaseModel):
-    """API view of one portfolio position."""
-
-    code: str
-    quantity: int
-    sellable_quantity: int
-    avg_cost: float
-    market_price: float | None = None
-    market_value: float = 0.0
-    unrealized_pnl: float = 0.0
-
-
-class PortfolioResponse(BaseModel):
-    """Portfolio plus pending orders."""
-
-    agent_id: str
-    cash: float
-    market_value: float
-    total_equity: float
-    realized_pnl: float
-    unrealized_pnl: float
-    positions: list[PositionView]
-    pending_orders: list[OrderRecord]
-    as_of: datetime | None = None
-
-
-class RankingEntry(BaseModel):
-    """One ranking row."""
-
-    date: date
-    agent_id: str
-    display_name: str
-    total_equity: float
-    return_pct: float
-    realized_pnl: float
-    unrealized_pnl: float
-
-
-class OperationListResponse(BaseModel):
-    """Combined operations payload."""
-
-    orders: list[OrderRecord]
-    fills: list[FillRecord]
-
-
-class PathsResponse(BaseModel):
-    """Resolved runtime paths."""
-
-    config_path: str
-    agents_root: str
-    market_data_root: str
-
-
-class MarketCodeStatus(BaseModel):
-    """Public market-data status for one code."""
-
-    code: str
-    latest_daily_bar_date: date | None = None
-    latest_five_minute_bar_date: date | None = None
-    five_minute_bar_count: int = 0
-    last_five_minute_bar_time: datetime | None = None
-
+    realized_pnl: float = Field(
+        0.0, description="盈亏"
+    )
+    orders: list[OrderRecord] = Field(
+        default_factory=list,
+        description="挂单，可能成交也可能还没"
+    )
+    fills: list[FillRecord] = Field(
+        default_factory=list,
+        description="成交的挂单"
+    )
+    positions: dict[str, list[PositionLot]] = Field(
+        default_factory=dict,
+        description="持仓"
+    )
+    equity_history: list[EquityPoint] = Field(
+        default_factory=list,
+        description="历史盈亏记录"
+    )
 
 class CodeNameEntry(BaseModel):
     """Reference row for one market code."""
 
     code: str
-    name: str | None = None
-    trade_status: str | None = None
-
-
-class CodeSearchResponse(BaseModel):
-    """Paged code-directory response."""
-
-    query: str
-    page: int
-    page_size: int
-    total: int
-    items: list[CodeNameEntry]
-    last_refreshed_at: datetime | None = None
-    auto_refresh_enabled: bool
-
-
-class CodeRefreshResponse(BaseModel):
-    """Result of a code-directory refresh."""
-
-    refreshed_at: datetime
-    entry_count: int
-
-
-class MarketStatusResponse(BaseModel):
-    """Public market-data overview."""
-
-    tracked_codes: list[str]
-    codes: list[MarketCodeStatus]
-
-
-class MarketBarsResponse(BaseModel):
-    """Public market-data payload for one code/date."""
-
-    code: str
-    trade_date: date
-    daily_bar: DailyBar | None = None
-    five_minute_bars: list[FiveMinuteBar] = Field(default_factory=list)
-
-
-class MarketParseResponse(BaseModel):
-    """Result of a manual market-data parse attempt."""
-
-    trade_date: date
-    tracked_codes: list[str]
-    parsed_daily_codes: list[str]
-    parsed_five_minute_codes: list[str]
-
-
-class CreateAgentRequest(BaseModel):
-    """Request to create a new agent."""
-
-    agent_id: str
-    display_name: str
-    token_secret: str
-    initial_cash: float = Field(gt=0)
-    sell_constraint: Literal["t_plus_one"] = "t_plus_one"
-    enabled: bool = True
-
-
-class UpdateAgentRequest(BaseModel):
-    """Request to replace mutable agent config fields."""
-
-    display_name: str | None = None
-    token_secret: str | None = None
-    initial_cash: float | None = Field(default=None, gt=0)
-    sell_constraint: Literal["t_plus_one"] | None = None
-    enabled: bool | None = None
-
-
-class AgentResponse(BaseModel):
-    """API view of one agent plus its directory-based id."""
-
-    agent_id: str
-    display_name: str
-    token_secret: str
-    initial_cash: float
-    sell_constraint: Literal["t_plus_one"]
-    enabled: bool
-
-
-class SubmitOrderRequest(BaseModel):
-    """Submit a pending order."""
-
-    code: str
-    side: OrderSide
-    quantity: int = Field(gt=0)
-    limit_price: float = Field(gt=0)
+    name: str

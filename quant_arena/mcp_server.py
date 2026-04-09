@@ -5,14 +5,14 @@ from contextvars import ContextVar
 from datetime import datetime
 from typing import Any, Awaitable, Callable
 
-from fastapi import HTTPException
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from quant_arena.schemas import SubmitOrderRequest
 from quant_arena.arena import ArenaService
-from quant_arena.models import SubmitOrderRequest
+from quant_arena.errors import ServiceError
 
 
 _CURRENT_AGENT_ID: ContextVar[str | None] = ContextVar("quant_arena_current_agent_id", default=None)
@@ -113,7 +113,7 @@ def wrap_mcp_with_agent_auth(mcp_app: ASGIApp, get_arena: Callable[[], ArenaServ
         }
         try:
             agent_id = get_arena().authenticate_agent(headers)
-        except HTTPException as exc:
+        except ServiceError as exc:
             response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
             await response(scope, receive, send)
             return
