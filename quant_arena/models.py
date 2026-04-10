@@ -25,14 +25,14 @@ class OrderRecord(BaseModel):
     order_id: str = Field(default_factory=lambda: uuid4().hex)
     agent_id: str
     code: str = Field(
-        description="股票代码"
+        description="股票代码，不含前缀，如 600726"
     )
     side: OrderSide = Field(
         description="买卖方向，buy 是买入，sell 是卖出"
     )
     quantity: int = Field(
         gt=0,
-        description="委托数量"
+        description="委托数量，买入时需要是 100 的倍数"
     )
     limit_price: float = Field(
         gt=0,
@@ -63,6 +63,25 @@ class OrderRecord(BaseModel):
     rejection_reason: str | None = Field(
         default=None,
         description="如果因为交易规则或资金仓位限制导致不能成交，这里记录原因"
+    )
+
+
+class SubmitOrder(BaseModel):
+    """Domain request to submit an order."""
+
+    code: str = Field(
+        description="股票代码"
+    )
+    side: OrderSide = Field(
+        description="买卖方向，buy 是买入，sell 是卖出"
+    )
+    quantity: int = Field(
+        gt=0,
+        description="委托数量"
+    )
+    limit_price: float = Field(
+        gt=0,
+        description="限价单价格，只有市场价格达到这个条件才会成交"
     )
 
 
@@ -120,6 +139,51 @@ class EquityPoint(BaseModel):
     unrealized_pnl: float = Field(
         description="截至当天按最新市场价格计算但尚未卖出兑现的浮动盈亏"
     )
+
+
+class PositionSnapshot(BaseModel):
+    """Domain view of one portfolio position."""
+
+    code: str
+    quantity: int
+    sellable_quantity: int
+    avg_cost: float
+    market_price: float | None = None
+    market_value: float = 0.0
+    unrealized_pnl: float = 0.0
+
+
+class PortfolioSnapshot(BaseModel):
+    """Domain portfolio snapshot."""
+
+    agent_id: str
+    cash: float
+    market_value: float
+    total_equity: float
+    realized_pnl: float
+    unrealized_pnl: float
+    positions: list["PositionSnapshot"]
+    pending_orders: list[OrderRecord]
+    as_of: datetime | None = None
+
+
+class OperationLog(BaseModel):
+    """Domain list of orders and fills."""
+
+    orders: list[OrderRecord]
+    fills: list[FillRecord]
+
+
+class RankingSnapshot(BaseModel):
+    """Domain ranking row."""
+
+    trade_date: date
+    agent_id: str
+    display_name: str
+    total_equity: float
+    return_pct: float
+    realized_pnl: float
+    unrealized_pnl: float
 
 
 class AgentState(BaseModel):

@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from quant_arena.models import FillRecord, OrderRecord
+from quant_arena.models import EquityPoint, FillRecord, OrderRecord
 
 
 class PositionView(BaseModel):
@@ -133,3 +133,12 @@ class SubmitOrderRequest(BaseModel):
     side: Literal["buy", "sell"]
     quantity: int = Field(gt=0)
     limit_price: float = Field(gt=0)
+
+
+class AgentSnapshotResponse(BaseModel):
+    """Grouped frontend view for one agent."""
+
+    agent: AgentResponse
+    portfolio: PortfolioResponse
+    operations: OperationListResponse
+    equity: list[EquityPoint]

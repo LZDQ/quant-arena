@@ -13,14 +13,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from quant_arena.clock import SHANGHAI_TZ, now_shanghai
-from quant_arena.schemas import AgentResponse, CodeRefreshResponse, CodeSearchItem, CodeSearchResponse, CreateAgentRequest, MarketParseResponse, PathsResponse, SubmitOrderRequest, UpdateAgentRequest
+from quant_arena.schemas import AgentResponse, AgentSnapshotResponse, CodeRefreshResponse, CodeSearchItem, CodeSearchResponse, CreateAgentRequest, MarketParseResponse, OperationListResponse, PathsResponse, PortfolioResponse
 from quant_arena.arena import ArenaService
 from quant_arena.config import AgentConfig, AppConfig, load_app_config
 from quant_arena.errors import ServiceError
 from quant_arena.market import MarketService
 from quant_arena.mcp_server import create_mcp_server, wrap_mcp_with_agent_auth
-from quant_arena.storage import StorageService
+from quant_arena.clock import now_shanghai
 
 
 DEFAULT_CONFIG_PATH = Path.home() / ".quant-arena" / "config.json"
@@ -45,13 +44,13 @@ class AppState:
 
 def _load_arena(config_path: Path, market_provider: Any | None = None) -> AppState:
     config = load_app_config(config_path)
-    storage = StorageService(Path(config.agents_root).resolve(), Path(config.market_data_root).resolve())
-    storage.ensure_layout()
-    agents = storage.load_agent_configs()
     market = market_provider or MarketService(Path(config.market_data_root).resolve())
-    arena = ArenaService(config=config, storage=storage, market=market)
-    arena.set_agents(agents)
-    return AppState(config_path=config_path, config=config, storage=storage, market=market, arena=arena)
+    arena = ArenaService(
+        agents_root=Path(config.agents_root).resolve(),
+        market=market,
+        fees=config.fees,
+    )
+    return AppState(config_path=config_path, config=config, market=market, arena=arena)
 
 
 def _search_code_names(
@@ -76,14 +75,14 @@ def _search_code_names(
         page_size=normalized_page_size,
         total=total,
         items=items[start:end],
-        last_refreshed_at=state.market.code_names_last_refreshed_at(),
+        last_refreshed_at=None,
         auto_refresh_enabled=state.config.enable_code_name_refresh,
     )
 
 
 async def _poll_market(state: AppState) -> None:
     while True:
-        state.arena.step_and_match_pending_orders()  # this inheritently parses market data
+        state.arena.match_pending_orders()
         await asyncio.sleep(state.config.polling_interval_seconds)
 
 
@@ -125,13 +124,23 @@ def create_app(config_path: Path | None = None, market_provider: Any | None = No
     )
     static_dir = Path(__file__).resolve().parent.parent / "static"
     app.mount("/assets", StaticFiles(directory=static_dir / "assets", check_dir=False), name="assets")
-    app.mount("/mcp/", wrap_mcp_with_agent_auth(mcp_server.streamable_http_app(), lambda: app.state.ctx.arena))
+    app.mount(
+        "/mcp/",
+        wrap_mcp_with_agent_auth(
+            mcp_server.streamable_http_app(),
+            lambda: app.state.ctx.arena,
+            token_header_name=lambda: app.state.ctx.config.token_header_name,
+        ),
+    )
 
     def get_state() -> AppState:
         return app.state.ctx
 
     def to_agent_response(agent_id: str, agent: AgentConfig) -> AgentResponse:
         return AgentResponse(agent_id=agent_id, **agent.model_dump())
+
+    def to_portfolio_response(agent_id: str) -> PortfolioResponse:
+        return PortfolioResponse.model_validate(get_state().arena.get_portfolio(agent_id).model_dump(mode="json"))
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -142,13 +151,13 @@ def create_app(config_path: Path | None = None, market_provider: Any | None = No
         state = get_state()
         return PathsResponse(
             config_path=str(state.config_path),
-            agents_root=str(state.storage.agents_root),
-            market_data_root=str(state.storage.market_data_root),
+            agents_root=state.config.agents_root,
+            market_data_root=state.config.market_data_root,
         )
 
     @app.get("/api/agents")
     def list_agents() -> list[AgentResponse]:
-        return [to_agent_response(agent_id, agent) for agent_id, agent in get_state().arena.list_agent_items()]
+        return [to_agent_response(agent_id, agent) for agent_id, agent in get_state().arena.list_agents()]
 
     @app.post("/api/agents", response_model=AgentResponse)
     def create_agent(request: CreateAgentRequest) -> AgentResponse:
@@ -156,41 +165,29 @@ def create_app(config_path: Path | None = None, market_provider: Any | None = No
         created = get_state().arena.add_agent(request.agent_id, agent)
         return to_agent_response(request.agent_id, created)
 
-    @app.get("/api/agents/{agent_id}", response_model=AgentResponse)
-    def get_agent(agent_id: str) -> AgentResponse:
-        return to_agent_response(agent_id, get_state().arena.get_agent(agent_id))
+    @app.get("/api/agents/{agent_id}", response_model=AgentSnapshotResponse)
+    def get_agent(agent_id: str) -> AgentSnapshotResponse:
+        arena = get_state().arena
+        return AgentSnapshotResponse(
+            agent=to_agent_response(agent_id, arena.get_agent(agent_id)),
+            portfolio=PortfolioResponse.model_validate(arena.get_portfolio(agent_id).model_dump(mode="json")),
+            operations=OperationListResponse.model_validate(arena.list_operations(agent_id).model_dump(mode="json")),
+            equity=arena.get_equity_curve(agent_id),
+        )
 
     @app.delete("/api/agents/{agent_id}", status_code=204)
     def delete_agent(agent_id: str) -> None:
         get_state().arena.delete_agent(agent_id)
 
-    @app.get("/api/agents/{agent_id}/portfolio")
-    def get_portfolio(agent_id: str) -> Any:
-        return get_state().arena.get_portfolio(agent_id)
-
-    @app.get("/api/agents/{agent_id}/operations")
-    def get_operations(agent_id: str, start: str | None = None, end: str | None = None, limit: int | None = None) -> Any:
-        parsed_start = datetime.fromisoformat(start) if start else None
-        parsed_end = datetime.fromisoformat(end) if end else None
-        return get_state().arena.list_operations(agent_id, start=parsed_start, end=parsed_end, limit=limit)
-
-    @app.get("/api/agents/{agent_id}/equity")
-    def get_equity(agent_id: str, start: str | None = None, end: str | None = None) -> Any:
-        parsed_start = date.fromisoformat(start) if start else None
-        parsed_end = date.fromisoformat(end) if end else None
-        return get_state().arena.get_equity_curve(agent_id, start=parsed_start, end=parsed_end)
-
-    @app.post("/api/agents/{agent_id}/orders")
-    def submit_order(agent_id: str, request: SubmitOrderRequest) -> Any:
-        return get_state().arena.submit_order(agent_id, request)
-
-    @app.post("/api/agents/{agent_id}/orders/{order_id}/cancel")
-    def cancel_order(agent_id: str, order_id: str) -> Any:
-        return get_state().arena.cancel_order(agent_id, order_id)
-
     @app.post("/api/market/codes/refresh", response_model=CodeRefreshResponse)
     def refresh_market_codes() -> CodeRefreshResponse:
-        return _refresh_code_names_status(get_state(), force=True)
+        state = get_state()
+        state.market.refresh_code_names()
+        code_names = state.market.get_code_names()
+        return CodeRefreshResponse(
+            refreshed_at=now_shanghai(),
+            entry_count=0 if code_names is None else len(code_names),
+        )
 
     @app.get("/api/market/codes", response_model=CodeSearchResponse)
     def search_market_codes(query: str = "", page: int = 1, page_size: int = 20) -> CodeSearchResponse:
@@ -199,8 +196,16 @@ def create_app(config_path: Path | None = None, market_provider: Any | None = No
     @app.post("/api/market/parse-today", response_model=MarketParseResponse)
     def parse_today_market() -> MarketParseResponse:
         state = get_state()
-        result = state.market.finalize_market_data_for_codes_if_market_closed(_current_market_codes(state.market))
-        return MarketParseResponse(**result.model_dump())
+        today = now_shanghai().date()
+        state.market.finalize_market_data_after_market_closed(today=today)
+        code_names = state.market.get_code_names()
+        tracked_codes = [] if code_names is None else list(code_names["code"].astype(str))
+        return MarketParseResponse(
+            trade_date=today,
+            tracked_codes=tracked_codes,
+            parsed_daily_codes=tracked_codes,
+            parsed_five_minute_codes=tracked_codes,
+        )
 
     @app.get("/api/rankings")
     def get_rankings(date_value: str | None = None) -> Any:

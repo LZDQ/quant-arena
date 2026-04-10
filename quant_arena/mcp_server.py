@@ -3,16 +3,15 @@
 import json
 from contextvars import ContextVar
 from datetime import datetime
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from quant_arena.schemas import SubmitOrderRequest
 from quant_arena.arena import ArenaService
-from quant_arena.errors import ServiceError
+from quant_arena.models import SubmitOrder
 
 
 _CURRENT_AGENT_ID: ContextVar[str | None] = ContextVar("quant_arena_current_agent_id", default=None)
@@ -79,7 +78,7 @@ def create_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
 
         order = get_arena().submit_order(
             _get_current_agent_id(),
-            SubmitOrderRequest(
+            SubmitOrder(
                 code=code,
                 side=side,
                 quantity=quantity,
@@ -98,7 +97,11 @@ def create_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
     return mcp
 
 
-def wrap_mcp_with_agent_auth(mcp_app: ASGIApp, get_arena: Callable[[], ArenaService]) -> ASGIApp:
+def wrap_mcp_with_agent_auth(
+    mcp_app: ASGIApp,
+    get_arena: Callable[[], ArenaService],
+    token_header_name: Callable[[], str],
+) -> ASGIApp:
     """Guard the mounted MCP app with agent token auth."""
 
     async def authenticated_app(scope: Scope, receive: Receive, send: Send) -> None:
@@ -111,10 +114,16 @@ def wrap_mcp_with_agent_auth(mcp_app: ASGIApp, get_arena: Callable[[], ArenaServ
             key.decode("latin-1").lower(): value.decode("latin-1")
             for key, value in raw_headers
         }
-        try:
-            agent_id = get_arena().authenticate_agent(headers)
-        except ServiceError as exc:
-            response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        header_name = token_header_name().lower()
+        token_value = headers.get(header_name)
+        agent_id = None
+        if token_value is not None:
+            for candidate_id, agent in get_arena().list_agents():
+                if agent.token_secret == token_value:
+                    agent_id = candidate_id
+                    break
+        if agent_id is None:
+            response = JSONResponse(status_code=401, content={"detail": "Invalid agent token"})
             await response(scope, receive, send)
             return
 

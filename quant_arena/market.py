@@ -60,6 +60,23 @@ class MarketService:
             return pd.read_csv(path)
         return None
 
+    def get_latest_daily_bar(self) -> pd.DataFrame | None:
+        """Return the latest daily bar. Useful for calculating daily limit."""
+        for day_dir in sorted(
+            (path for path in self.market_bars_dir.iterdir() if path.is_dir()),
+            key=lambda path: path.name,
+            reverse=True,
+        ):
+            path = day_dir / "daily.csv"
+            if not path.exists():
+                continue
+            frame = pd.read_csv(path)
+            if frame.empty:
+                continue
+            return frame
+
+        return None
+
     def get_five_minute_bars(self, day: date) -> pd.DataFrame | None:
         path = self.market_bars_dir / day.isoformat() / "5min.csv"
         if not path.exists():
@@ -199,3 +216,21 @@ class MarketService:
                 daily_frame = pd.DataFrame()
                 five_minute_frame = pd.DataFrame()
         return
+
+    def fetch_trade_dates(
+        self,
+        start_date: date | None,
+        end_date: date | None
+    ) -> pd.DataFrame:
+        """
+        Fetch whether each day is trading day (thin wrapper for `bs.query_trade_dates`).
+
+        Example:
+            calendar_date   is_trading_day
+            2026-04-09              1
+            2026-04-10              1
+        """
+        result = bs.query_trade_dates(start_date, end_date)
+        if result.error_code != "0":
+            raise RuntimeError(f"baostock trade-dates query failed: {result.error_msg}")
+        return result.get_data()
