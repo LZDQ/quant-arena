@@ -47,10 +47,6 @@ class AppConfig(BaseModel):
         default=False,
         description="Whether the server should automatically refresh the shared codes.csv reference file when it becomes stale.",
     )
-    token_header_name: str = Field(
-        default="X-Agent-Token",
-        description="Global HTTP header name used for agent REST and MCP authentication.",
-    )
     polling_interval_seconds: int = Field(
         default=300,
         description="Seconds between background market sync and order-matching cycles.",

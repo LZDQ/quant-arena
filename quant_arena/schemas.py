@@ -1,6 +1,6 @@
 """FastAPI request and response models."""
 
-from datetime import date, datetime
+from datetime import datetime, date
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -32,18 +32,6 @@ class PortfolioResponse(BaseModel):
     positions: list[PositionView]
     pending_orders: list[OrderRecord]
     as_of: datetime | None = None
-
-
-class RankingEntry(BaseModel):
-    """One ranking row."""
-
-    trade_date: date
-    agent_id: str
-    display_name: str
-    total_equity: float
-    return_pct: float
-    realized_pnl: float
-    unrealized_pnl: float
 
 
 class OperationListResponse(BaseModel):
@@ -85,54 +73,30 @@ class CodeRefreshResponse(BaseModel):
     entry_count: int
 
 
-class MarketParseResponse(BaseModel):
-    """Result of a manual market-data parse attempt."""
-
-    trade_date: date
-    tracked_codes: list[str]
-    parsed_daily_codes: list[str]
-    parsed_five_minute_codes: list[str]
-
-
 class CreateAgentRequest(BaseModel):
     """Request to create a new agent."""
 
     agent_id: str
     display_name: str
-    token_secret: str
     initial_cash: float = Field(gt=0)
     sell_constraint: Literal["t_plus_one"] = "t_plus_one"
     enabled: bool = True
-
-
-class UpdateAgentRequest(BaseModel):
-    """Request to replace mutable agent config fields."""
-
-    display_name: str | None = None
-    token_secret: str | None = None
-    initial_cash: float | None = Field(default=None, gt=0)
-    sell_constraint: Literal["t_plus_one"] | None = None
-    enabled: bool | None = None
-
 
 class AgentResponse(BaseModel):
     """API view of one agent plus its directory-based id."""
 
     agent_id: str
     display_name: str
-    token_secret: str
     initial_cash: float
     sell_constraint: Literal["t_plus_one"]
     enabled: bool
 
 
-class SubmitOrderRequest(BaseModel):
-    """Submit a pending order."""
+class AgentCreatedResponse(BaseModel):
+    """Create-agent response with one-time token display."""
 
-    code: str
-    side: Literal["buy", "sell"]
-    quantity: int = Field(gt=0)
-    limit_price: float = Field(gt=0)
+    agent: AgentResponse
+    token_secret: str
 
 
 class AgentSnapshotResponse(BaseModel):

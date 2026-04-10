@@ -1,9 +1,10 @@
 """FastAPI server for quant-arena. A lot of code is deprecated and do not modify this."""
 
 import asyncio
+import secrets
 from contextlib import AsyncExitStack
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from quant_arena.schemas import AgentResponse, AgentSnapshotResponse, CodeRefreshResponse, CodeSearchItem, CodeSearchResponse, CreateAgentRequest, MarketParseResponse, OperationListResponse, PathsResponse, PortfolioResponse
+from quant_arena.schemas import AgentCreatedResponse, AgentResponse, AgentSnapshotResponse, CodeRefreshResponse, CodeSearchItem, CodeSearchResponse, CreateAgentRequest, OperationListResponse, PathsResponse, PortfolioResponse
 from quant_arena.arena import ArenaService
 from quant_arena.config import AgentConfig, AppConfig, load_app_config
 from quant_arena.errors import ServiceError
@@ -129,7 +130,6 @@ def create_app(config_path: Path | None = None, market_provider: Any | None = No
         wrap_mcp_with_agent_auth(
             mcp_server.streamable_http_app(),
             lambda: app.state.ctx.arena,
-            token_header_name=lambda: app.state.ctx.config.token_header_name,
         ),
     )
 
@@ -137,7 +137,13 @@ def create_app(config_path: Path | None = None, market_provider: Any | None = No
         return app.state.ctx
 
     def to_agent_response(agent_id: str, agent: AgentConfig) -> AgentResponse:
-        return AgentResponse(agent_id=agent_id, **agent.model_dump())
+        return AgentResponse(
+            agent_id=agent_id,
+            display_name=agent.display_name,
+            initial_cash=agent.initial_cash,
+            sell_constraint=agent.sell_constraint,
+            enabled=agent.enabled,
+        )
 
     def to_portfolio_response(agent_id: str) -> PortfolioResponse:
         return PortfolioResponse.model_validate(get_state().arena.get_portfolio(agent_id).model_dump(mode="json"))
@@ -159,11 +165,20 @@ def create_app(config_path: Path | None = None, market_provider: Any | None = No
     def list_agents() -> list[AgentResponse]:
         return [to_agent_response(agent_id, agent) for agent_id, agent in get_state().arena.list_agents()]
 
-    @app.post("/api/agents", response_model=AgentResponse)
-    def create_agent(request: CreateAgentRequest) -> AgentResponse:
-        agent = AgentConfig.model_validate(request.model_dump(exclude={"agent_id"}))
+    @app.post("/api/agents", response_model=AgentCreatedResponse)
+    def create_agent(request: CreateAgentRequest) -> AgentCreatedResponse:
+        token_secret = secrets.token_urlsafe(24)
+        agent = AgentConfig.model_validate(
+            {
+                **request.model_dump(exclude={"agent_id"}),
+                "token_secret": token_secret,
+            }
+        )
         created = get_state().arena.add_agent(request.agent_id, agent)
-        return to_agent_response(request.agent_id, created)
+        return AgentCreatedResponse(
+            agent=to_agent_response(request.agent_id, created),
+            token_secret=token_secret,
+        )
 
     @app.get("/api/agents/{agent_id}", response_model=AgentSnapshotResponse)
     def get_agent(agent_id: str) -> AgentSnapshotResponse:
@@ -192,20 +207,6 @@ def create_app(config_path: Path | None = None, market_provider: Any | None = No
     @app.get("/api/market/codes", response_model=CodeSearchResponse)
     def search_market_codes(query: str = "", page: int = 1, page_size: int = 20) -> CodeSearchResponse:
         return _search_code_names(get_state(), query=query, page=page, page_size=page_size)
-
-    @app.post("/api/market/parse-today", response_model=MarketParseResponse)
-    def parse_today_market() -> MarketParseResponse:
-        state = get_state()
-        today = now_shanghai().date()
-        state.market.finalize_market_data_after_market_closed(today=today)
-        code_names = state.market.get_code_names()
-        tracked_codes = [] if code_names is None else list(code_names["code"].astype(str))
-        return MarketParseResponse(
-            trade_date=today,
-            tracked_codes=tracked_codes,
-            parsed_daily_codes=tracked_codes,
-            parsed_five_minute_codes=tracked_codes,
-        )
 
     @app.get("/api/rankings")
     def get_rankings(date_value: str | None = None) -> Any:

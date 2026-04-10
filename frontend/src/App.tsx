@@ -3,10 +3,14 @@ import { startTransition, useEffect, useState } from "react";
 type AgentResponse = {
   agent_id: string;
   display_name: string;
-  token_secret: string;
   initial_cash: number;
   sell_constraint: string;
   enabled: boolean;
+};
+
+type AgentCreatedResponse = {
+  agent: AgentResponse;
+  token_secret: string;
 };
 
 type PositionView = {
@@ -94,7 +98,6 @@ type CodeSearchResponse = {
 type CreateAgentForm = {
   agent_id: string;
   display_name: string;
-  token_secret: string;
   initial_cash: string;
 };
 
@@ -103,7 +106,6 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 const defaultCreateAgentForm: CreateAgentForm = {
   agent_id: "",
   display_name: "",
-  token_secret: "",
   initial_cash: "100000",
 };
 
@@ -195,6 +197,8 @@ export function App() {
   const [loadingRankings, setLoadingRankings] = useState(true);
   const [message, setMessage] = useState<string>("");
   const [error, setError] = useState<string>("");
+  const [createdToken, setCreatedToken] = useState<string>("");
+  const [createdAgentId, setCreatedAgentId] = useState<string>("");
 
   useEffect(() => {
     void refreshAgents();
@@ -273,25 +277,14 @@ export function App() {
   async function handleRefreshCodes() {
     setMessage("");
     setError("");
+    setCreatedToken("");
+    setCreatedAgentId("");
     try {
       const result = await apiFetch<{ entry_count: number }>("/api/market/codes/refresh", {
         method: "POST",
       });
-      setMessage(`代码表已刷新，共 ${result.entry_count} 条。`);
+      setMessage(`Code list refreshed. ${result.entry_count} entries loaded.`);
       await searchCodes(codeQuery);
-    } catch (fetchError) {
-      setError((fetchError as Error).message);
-    }
-  }
-
-  async function handleParseToday() {
-    setMessage("");
-    setError("");
-    try {
-      const result = await apiFetch<{ trade_date: string; tracked_codes: string[] }>("/api/market/parse-today", {
-        method: "POST",
-      });
-      setMessage(`已执行 ${result.trade_date} 收盘解析，覆盖 ${result.tracked_codes.length} 只股票。`);
     } catch (fetchError) {
       setError((fetchError as Error).message);
     }
@@ -301,17 +294,21 @@ export function App() {
     event.preventDefault();
     setMessage("");
     setError("");
+    setCreatedToken("");
+    setCreatedAgentId("");
     try {
-      await apiFetch<AgentResponse>("/api/agents", {
+      const created = await apiFetch<AgentCreatedResponse>("/api/agents", {
         method: "POST",
         body: JSON.stringify({
           ...createAgentForm,
           initial_cash: Number(createAgentForm.initial_cash),
         }),
       });
+      setCreatedToken(created.token_secret);
+      setCreatedAgentId(created.agent.agent_id);
       setCreateAgentForm(defaultCreateAgentForm);
-      setMessage(`Agent ${createAgentForm.agent_id} 已创建。`);
-      await refreshAgents(createAgentForm.agent_id);
+      setMessage(`Agent ${created.agent.agent_id} created.`);
+      await refreshAgents(created.agent.agent_id);
       await refreshRankings();
     } catch (fetchError) {
       setError((fetchError as Error).message);
@@ -319,15 +316,17 @@ export function App() {
   }
 
   async function handleDeleteAgent(agentId: string) {
-    const confirmed = window.confirm(`删除 Agent ${agentId}？`);
+    const confirmed = window.confirm(`Delete agent ${agentId}?`);
     if (!confirmed) {
       return;
     }
     setMessage("");
     setError("");
+    setCreatedToken("");
+    setCreatedAgentId("");
     try {
       await apiFetch<void>(`/api/agents/${agentId}`, { method: "DELETE" });
-      setMessage(`Agent ${agentId} 已删除。`);
+      setMessage(`Agent ${agentId} deleted.`);
       await refreshAgents();
       await refreshRankings();
     } catch (fetchError) {
@@ -351,9 +350,6 @@ export function App() {
         <div className="hero-actions">
           <button className="action-button" onClick={() => void handleRefreshCodes()}>
             Refresh Codes
-          </button>
-          <button className="action-button action-button-solid" onClick={() => void handleParseToday()}>
-            Finalize Market
           </button>
         </div>
       </header>
@@ -416,12 +412,6 @@ export function App() {
               required
             />
             <input
-              value={createAgentForm.token_secret}
-              onChange={(event) => setCreateAgentForm((prev) => ({ ...prev, token_secret: event.target.value }))}
-              placeholder="Token secret"
-              required
-            />
-            <input
               value={createAgentForm.initial_cash}
               onChange={(event) => setCreateAgentForm((prev) => ({ ...prev, initial_cash: event.target.value }))}
               placeholder="Initial cash"
@@ -432,6 +422,19 @@ export function App() {
             <button className="action-button action-button-solid" type="submit">
               Create Agent
             </button>
+            {createdToken && (
+              <div className="token-card">
+                <div className="token-card-label">Copy This Token For {createdAgentId}</div>
+                <div className="token-card-value">{createdToken}</div>
+                <button
+                  className="action-button"
+                  type="button"
+                  onClick={() => void navigator.clipboard.writeText(createdToken)}
+                >
+                  Copy Token
+                </button>
+              </div>
+            )}
           </form>
         </section>
 

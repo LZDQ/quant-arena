@@ -100,9 +100,8 @@ def create_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
 def wrap_mcp_with_agent_auth(
     mcp_app: ASGIApp,
     get_arena: Callable[[], ArenaService],
-    token_header_name: Callable[[], str],
 ) -> ASGIApp:
-    """Guard the mounted MCP app with agent token auth."""
+    """Guard the mounted MCP app with Bearer token auth."""
 
     async def authenticated_app(scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -114,8 +113,10 @@ def wrap_mcp_with_agent_auth(
             key.decode("latin-1").lower(): value.decode("latin-1")
             for key, value in raw_headers
         }
-        header_name = token_header_name().lower()
-        token_value = headers.get(header_name)
+        authorization = headers.get("authorization", "")
+        token_value = None
+        if authorization.startswith("Bearer "):
+            token_value = authorization[len("Bearer "):]
         agent_id = None
         if token_value is not None:
             for candidate_id, agent in get_arena().list_agents():
