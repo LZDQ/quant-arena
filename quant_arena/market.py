@@ -43,7 +43,7 @@ class MarketService:
     def get_code_names(self) -> pd.DataFrame | None:
         """Return the raw AKShare code-name table."""
         if self._code_names is None and self._code_names_path.exists():
-            self._code_names = pd.read_csv(self._code_names_path, dtype={"code": str})
+            self._code_names = self._read_csv(self._code_names_path)
         return self._code_names
 
     def refresh_code_names(self) -> None:
@@ -57,7 +57,7 @@ class MarketService:
     def get_daily_bars(self, day: date) -> pd.DataFrame | None:
         path = self.market_bars_dir / day.isoformat() / "daily.csv"
         if path.exists():
-            return pd.read_csv(path)
+            return self._read_csv(path)
         return None
 
     def get_latest_daily_bar(self) -> pd.DataFrame | None:
@@ -70,7 +70,7 @@ class MarketService:
             path = day_dir / "daily.csv"
             if not path.exists():
                 continue
-            frame = pd.read_csv(path)
+            frame = self._read_csv(path)
             if frame.empty:
                 continue
             return frame
@@ -81,7 +81,7 @@ class MarketService:
         path = self.market_bars_dir / day.isoformat() / "5min.csv"
         if not path.exists():
             return None
-        return pd.read_csv(path)
+        return self._read_csv(path)
 
     def fetch_daily_bar(
         self,
@@ -105,7 +105,7 @@ class MarketService:
         frame = self._result_to_frame(result)
         if not frame.empty:
             frame = frame.copy()
-            frame["code"] = code  # overwrite baostock format code back to ours without sh. or sz. prefix
+            frame["code"] = str(code)  # overwrite baostock format code back to ours without sh. or sz. prefix
         return frame
 
     def fetch_five_minute_bars(
@@ -127,7 +127,7 @@ class MarketService:
         frame = self._result_to_frame(result)
         if not frame.empty:
             frame = frame.copy()
-            frame["code"] = code  # overwrite baostock format code back to ours without sh. or sz. prefix
+            frame["code"] = str(code)  # overwrite baostock format code back to ours without sh. or sz. prefix
         return frame
 
     def persist_daily_frame(self, frame: pd.DataFrame) -> None:
@@ -137,8 +137,11 @@ class MarketService:
         for day_iso, date_frame in frame.groupby("date"):
             path = self.market_bars_dir / day_iso / "daily.csv"
             path.parent.mkdir(parents=True, exist_ok=True)
-            existing = pd.read_csv(path) if path.exists() else pd.DataFrame()
-            merged = pd.concat([existing, date_frame], ignore_index=True)
+            existing = self._read_csv(path) if path.exists() else pd.DataFrame()
+            writable = date_frame.copy()
+            writable["code"] = writable["code"].astype(str)
+            merged = pd.concat([existing, writable], ignore_index=True)
+            merged["code"] = merged["code"].astype(str)
             merged = merged.drop_duplicates("code", keep="last").sort_values("code")
             merged.to_csv(path, index=False)
 
@@ -148,8 +151,11 @@ class MarketService:
         for day_iso, date_frame in frame.groupby("date"):
             path = self.market_bars_dir / day_iso / "5min.csv"
             path.parent.mkdir(parents=True, exist_ok=True)
-            existing = pd.read_csv(path) if path.exists() else pd.DataFrame()
-            merged = pd.concat([existing, date_frame], ignore_index=True)
+            existing = self._read_csv(path) if path.exists() else pd.DataFrame()
+            writable = date_frame.copy()
+            writable["code"] = writable["code"].astype(str)
+            merged = pd.concat([existing, writable], ignore_index=True)
+            merged["code"] = merged["code"].astype(str)
             merged = merged.drop_duplicates(["code", "time"], keep="last").sort_values(["time", "code"])
             merged.to_csv(path, index=False)
 
@@ -243,3 +249,7 @@ class MarketService:
         while result.error_code == "0" and result.next():
             rows.append(result.get_row_data())
         return pd.DataFrame(rows, columns=result.fields)
+
+    @staticmethod
+    def _read_csv(path: Path) -> pd.DataFrame:
+        return pd.read_csv(path, dtype={"code": str})
