@@ -1,4 +1,4 @@
-"""FastAPI server for quant-arena. A lot of code is deprecated and do not modify this."""
+"""FastAPI server for quant-arena."""
 
 import asyncio
 import secrets
@@ -6,7 +6,6 @@ from contextlib import AsyncExitStack
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
-from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -20,6 +19,7 @@ from quant_arena.config import AgentConfig, AppConfig, load_app_config
 from quant_arena.errors import ServiceError
 from quant_arena.market import MarketService
 from quant_arena.mcp_server import create_mcp_server, wrap_mcp_with_agent_auth
+from quant_arena.models import RankingSnapshot
 from quant_arena.clock import now_shanghai
 
 
@@ -43,9 +43,9 @@ class AppState:
         self.background_task: asyncio.Task[None] | None = None
 
 
-def _load_arena(config_path: Path, market_provider: Any | None = None) -> AppState:
+def _load_app_state(config_path: Path, market_service: MarketService | None = None) -> AppState:
     config = load_app_config(config_path)
-    market = market_provider or MarketService(Path(config.market_data_root).resolve())
+    market = market_service or MarketService(Path(config.market_data_root).resolve())
     arena = ArenaService(
         agents_root=Path(config.agents_root).resolve(),
         market=market,
@@ -82,22 +82,42 @@ def _search_code_names(
 
 
 async def _poll_market(state: AppState) -> None:
+    """
+    Poll market data.
+
+    From 9:30 to 15:00, poll intraday and match orders.
+    After 21:00, finalize today's data using baostock.
+    Note that do not use multiple workers or restart the
+    server frequently after 21:00.
+    """
+    last_finalized_date: date | None = None
     while True:
-        state.arena.match_pending_orders()
+        now = now_shanghai()
+        today = now.date()
+        if now.hour >= 21 and last_finalized_date != today:
+            await asyncio.to_thread(state.market.finalize_market_data_after_market_closed, today)
+            last_finalized_date = today
+        elif (now.hour > 9 or (now.hour == 9 and now.minute >= 30)) and (
+            now.hour < 15
+        ):
+            await asyncio.to_thread(state.arena.match_pending_orders)
         await asyncio.sleep(state.config.polling_interval_seconds)
 
 
-def create_app(config_path: Path | None = None, market_provider: Any | None = None) -> FastAPI:
+def create_app(
+    config_path: Path | None = None,
+    market_service: MarketService | None = None
+) -> FastAPI:
     """Create the FastAPI app."""
 
     resolved_config = (config_path or DEFAULT_CONFIG_PATH).resolve()
-    mcp_server = create_mcp_server(lambda: app.state.ctx.arena)
+    mcp_server = create_mcp_server(lambda: app.state.app_state.arena)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         async with AsyncExitStack() as stack:
-            state = _load_arena(resolved_config, market_provider=market_provider)
-            app.state.ctx = state
+            state = _load_app_state(resolved_config, market_service=market_service)
+            app.state.app_state = state
             await stack.enter_async_context(mcp_server.session_manager.run())
             if state.config.enable_background_polling and state.config.polling_interval_seconds > 0:
                 state.background_task = asyncio.create_task(_poll_market(state))
@@ -129,12 +149,12 @@ def create_app(config_path: Path | None = None, market_provider: Any | None = No
         "/mcp/",
         wrap_mcp_with_agent_auth(
             mcp_server.streamable_http_app(),
-            lambda: app.state.ctx.arena,
+            lambda: app.state.app_state.arena,
         ),
     )
 
     def get_state() -> AppState:
-        return app.state.ctx
+        return app.state.app_state
 
     def to_agent_response(agent_id: str, agent: AgentConfig) -> AgentResponse:
         return AgentResponse(
@@ -144,9 +164,6 @@ def create_app(config_path: Path | None = None, market_provider: Any | None = No
             sell_constraint=agent.sell_constraint,
             enabled=agent.enabled,
         )
-
-    def to_portfolio_response(agent_id: str) -> PortfolioResponse:
-        return PortfolioResponse.model_validate(get_state().arena.get_portfolio(agent_id).model_dump(mode="json"))
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -209,7 +226,7 @@ def create_app(config_path: Path | None = None, market_provider: Any | None = No
         return _search_code_names(get_state(), query=query, page=page, page_size=page_size)
 
     @app.get("/api/rankings")
-    def get_rankings(date_value: str | None = None) -> Any:
+    def get_rankings(date_value: str | None = None) -> list[RankingSnapshot]:
         target_date = date.fromisoformat(date_value) if date_value else None
         return get_state().arena.get_rankings(target_date)
 

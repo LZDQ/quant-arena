@@ -3,7 +3,7 @@
 import json
 from contextvars import ContextVar
 from datetime import datetime
-from typing import Any, Callable
+from typing import Callable
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -11,7 +11,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from quant_arena.arena import ArenaService
-from quant_arena.models import SubmitOrder
+from quant_arena.models import OperationLog, OrderRecord, PortfolioSnapshot, SubmitOrder
 
 
 _CURRENT_AGENT_ID: ContextVar[str | None] = ContextVar("quant_arena_current_agent_id", default=None)
@@ -50,17 +50,17 @@ def create_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
         return json.dumps(operations, ensure_ascii=False)
 
     @mcp.tool()
-    def get_portfolio() -> dict[str, Any]:
+    def get_portfolio() -> PortfolioSnapshot:
         """Get current portfolio including pending orders."""
 
-        return get_arena().get_portfolio(_get_current_agent_id()).model_dump(mode="json")
+        return get_arena().get_portfolio(_get_current_agent_id())
 
     @mcp.tool()
     def list_operations(
         limit: int | None = None,
         start: str | None = None,
         end: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> OperationLog:
         """List orders and fills for the authenticated agent."""
 
         parsed_start = datetime.fromisoformat(start) if start else None
@@ -70,10 +70,10 @@ def create_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
             start=parsed_start,
             end=parsed_end,
             limit=limit,
-        ).model_dump(mode="json")
+        )
 
     @mcp.tool()
-    def submit_operation(code: str, side: str, quantity: int, limit_price: float) -> dict[str, Any]:
+    def submit_operation(code: str, side: str, quantity: int, limit_price: float) -> OrderRecord:
         """Submit a pending buy or sell limit order."""
 
         order = get_arena().submit_order(
@@ -85,14 +85,14 @@ def create_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
                 limit_price=limit_price,
             ),
         )
-        return order.model_dump(mode="json")
+        return order
 
     @mcp.tool()
-    def cancel_operation(order_id: str) -> dict[str, Any]:
+    def cancel_operation(order_id: str) -> OrderRecord:
         """Cancel a pending order."""
 
         order = get_arena().cancel_order(_get_current_agent_id(), order_id)
-        return order.model_dump(mode="json")
+        return order
 
     return mcp
 
