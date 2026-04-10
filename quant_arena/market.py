@@ -1,9 +1,23 @@
-"""Baostock-backed market data service."""
+"""
+Baostock-backed market data service.
 
-from datetime import date, timedelta
-from pathlib import Path
+Stock endpoints summary:
+- `baostock` cannot get live intraday data
+- `ak.stock_intraday_em` not stable
+- `ak.stock_intraday_sina` is stable for today's live data
+- `ak.stock_zh_a_daily` is stable
+- `ak.stock_zh_a_minute` is limited to latest 10 days
+
+Final choices:
+- `baostock` for after-market finalization every day
+- `ak.stock_intraday_sina` for live data and paper trading
+"""
+
 from logging import getLogger
+from datetime import date
+from pathlib import Path
 
+import akshare as ak
 import baostock as bs
 import pandas as pd
 
@@ -12,6 +26,12 @@ from quant_arena.clock import now_shanghai
 logger = getLogger(__name__)
 
 class MarketService:
+    """
+    A mix of baostock and AKShare sina market data service.
+
+    Persisted data, including daily bars and 5min bars, is provided by baostock.
+    Intraday data for paper trading is provided by AKShare sina.
+    """
     def __init__(self, market_data_root: Path):
         self.market_data_root = market_data_root
         self.market_bars_dir = market_data_root / "bars"
@@ -21,24 +41,18 @@ class MarketService:
         bs.login()
 
     def get_code_names(self) -> pd.DataFrame | None:
-        """Return a data frame with columns `code`, `tradeStatus` and `code_name`."""
+        """Return the raw AKShare code-name table."""
         if self._code_names is None and self._code_names_path.exists():
             self._code_names = pd.read_csv(self._code_names_path)
         return self._code_names
 
     def refresh_code_names(self) -> None:
-        today = now_shanghai().date()
-        with self._baostock_session():
-            for offset in range(8):
-                result = bs.query_all_stock((today - timedelta(days=offset)).isoformat())
-                if result.error_code != "0":
-                    raise RuntimeError(f"baostock all-stock query failed: {result.error_msg}")
-                # frame = result.get_data()[["code", "code_name"]].rename(columns={"code_name": "name"})
-                frame = result.get_data()
-                if not frame.empty:
-                    frame.to_csv(self._code_names_path, index=False)
-                    self._code_names = frame
-                    return
+        frame = ak.stock_info_a_code_name()
+        if not frame.empty:
+            frame.to_csv(self._code_names_path, index=False)
+            self._code_names = frame
+        else:
+            raise ValueError("Failed to refresh code names: akshare returned empty data frame")
 
     def get_daily_bars(self, day: date) -> pd.DataFrame | None:
         path = self.market_bars_dir / day.isoformat() / "daily.csv"
@@ -47,48 +61,58 @@ class MarketService:
         return None
 
     def get_five_minute_bars(self, day: date) -> pd.DataFrame | None:
-        date_dir = self.market_bars_dir / day.isoformat() / "5min"
-        if not date_dir.exists():
+        path = self.market_bars_dir / day.isoformat() / "5min.csv"
+        if not path.exists():
             return None
-        frame = pd.DataFrame()
-        for path in sorted(date_dir.glob("*.csv")):
-            frame = pd.concat(
-                [frame, pd.read_csv(path)],
-                ignore_index=True
-            )
-        return frame
+        return pd.read_csv(path)
 
-    def fetch_daily_bar(self, code: str, start_date: date, end_date: date) -> pd.DataFrame:
-        frame = pd.DataFrame()
+    def fetch_daily_bar(
+        self,
+        code: str,
+        start_date: date,
+        end_date: date,
+    ) -> pd.DataFrame:
+        """Fetch persisted, stable history daily bar from baostock."""
         result = bs.query_history_k_data_plus(
-            code,
+            f"{ak.stock_a_code_to_symbol(code)[:2]}.{code}",
             "date,code,open,high,low,close,preclose,volume,amount",
             start_date=start_date.isoformat(),
             end_date=end_date.isoformat(),
             frequency="d",
-            adjustflag="3"
+            adjustflag="3",
         )
         if result.error_code != "0":
             raise RuntimeError(f"baostock daily-bar query failed: {result.error_msg}")
-        frame = pd.concat([frame, result.get_data()], ignore_index=True)
+        frame = result.get_data()
+        if not frame.empty:
+            frame = frame.copy()
+            frame["code"] = code  # overwrite baostock format code back to ours without sh. or sz. prefix
         return frame
 
-    def fetch_five_minute_bars(self, code: str, start_date: date, end_date: date) -> pd.DataFrame:
-        frame = pd.DataFrame()
+    def fetch_five_minute_bars(
+        self,
+        code: str,
+        start_date: date,
+        end_date: date,
+    ) -> pd.DataFrame:
         result = bs.query_history_k_data_plus(
-            code,
+            f"{ak.stock_a_code_to_symbol(code)[:2]}.{code}",
             "date,time,code,open,high,low,close,volume,amount",
             start_date=start_date.isoformat(),
             end_date=end_date.isoformat(),
             frequency="5",
-            adjustflag="3"
+            adjustflag="3",
         )
         if result.error_code != "0":
             raise RuntimeError(f"baostock five-minute query failed: {result.error_msg}")
-        frame = pd.concat([frame, result.get_data()], ignore_index=True)
+        frame = result.get_data()
+        if not frame.empty:
+            frame = frame.copy()
+            frame["code"] = code  # overwrite baostock format code back to ours without sh. or sz. prefix
         return frame
 
     def persist_daily_frame(self, frame: pd.DataFrame) -> None:
+        """Given daily bar frame, combine on-disk data and persist back to disk."""
         if frame.empty:
             return
         for day_iso, date_frame in frame.groupby("date"):
@@ -96,43 +120,62 @@ class MarketService:
             path.parent.mkdir(parents=True, exist_ok=True)
             existing = pd.read_csv(path) if path.exists() else pd.DataFrame()
             merged = pd.concat([existing, date_frame], ignore_index=True)
-            merged.drop_duplicates("code", keep="last").sort_values("code")
+            merged = merged.drop_duplicates("code", keep="last").sort_values("code")
             merged.to_csv(path, index=False)
 
     def persist_five_minute_frame(self, frame: pd.DataFrame) -> None:
         if frame.empty:
             return
-        # time is something like 20260409093500000
-        minutes = pd.to_datetime(frame["time"], format="%Y%m%d%H%M%S%f")
-        writable = frame.assign(minute=minutes.dt.strftime("%H-%M"))
-        for (day_iso, minute), minute_frame in writable.groupby(["date", "minute"]):
-            path = self.market_bars_dir / day_iso / "5min" / f"{minute}.csv"
+        for day_iso, date_frame in frame.groupby("date"):
+            path = self.market_bars_dir / day_iso / "5min.csv"
             path.parent.mkdir(parents=True, exist_ok=True)
             existing = pd.read_csv(path) if path.exists() else pd.DataFrame()
-            merged = pd.concat([existing, minute_frame.drop(columns="minute")], ignore_index=True) if existing is not None else minute_frame.drop(columns="minute")
-            merged.drop_duplicates("code", keep="last").sort_values("code")
+            merged = pd.concat([existing, date_frame], ignore_index=True)
+            merged = merged.drop_duplicates(["code", "time"], keep="last").sort_values(["time", "code"])
             merged.to_csv(path, index=False)
 
-    def sync_live_five_minute_bars(
+    def refresh_intraday(
         self,
         tracked_codes: set[str],
         today: date | None = None,
     ) -> pd.DataFrame:
-        """When market is open, sync data and return latest 5min bars."""
+        """
+        When market is open, refresh and return intraday data in-memory.
+
+        Columns:
+            symbol    name      ticktime  price  volume  prev_price kind
+            sz000001  平安银行  09:25:00  11.10  300400        0.00    U
+            sz000001  平安银行  09:30:00  11.09   39100       11.10    D
+            sz000001  平安银行  09:30:03  11.10  325600       11.09    U
+
+        Column `code` will also be injected into the result.
+        """
         today = today or now_shanghai().date()
+
         frame = pd.DataFrame()
         for code in tracked_codes:
-            code_frame = self.fetch_five_minute_bars(code, start_date=today, end_date=today)
-            frame = pd.concat([frame, code_frame], ignore_index=True)
-        self.persist_five_minute_frame(frame)
-        return frame.drop_duplicates("code", keep="last")
+            intraday = ak.stock_intraday_sina(
+                symbol=ak.stock_a_code_to_symbol(code),
+                date=today.strftime("%Y%m%d"),
+            )
+            if intraday.empty:
+                continue
+            intraday = intraday.copy()
+            intraday["code"] = code
+            frame = pd.concat([frame, intraday], ignore_index=True)
+
+        return frame
 
     def finalize_market_data_after_market_closed(
         self,
         today: date | None = None,
         update_every: int = 500,
     ) -> None:
-        """Invoke this after 5PM (baostock daily release time) to update daily bars."""
+        """
+        Invoke this after market close to update persisted daily and 5-minute bars from baostock.
+
+        baostock release time every day: after 8PM
+        """
         logger.info("Start finalizing today's bar")
         today = today or now_shanghai().date()
         daily_frame = pd.DataFrame()
@@ -153,4 +196,6 @@ class MarketService:
                 logger.info("Finalization progress: %d/%d", i, len(code_names))
                 self.persist_daily_frame(daily_frame)
                 self.persist_five_minute_frame(five_minute_frame)
+                daily_frame = pd.DataFrame()
+                five_minute_frame = pd.DataFrame()
         return
