@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 from tqdm import tqdm
+import logging
 
 from quant_arena.market import MarketService
 
@@ -143,4 +144,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     main()

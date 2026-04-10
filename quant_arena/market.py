@@ -43,7 +43,7 @@ class MarketService:
     def get_code_names(self) -> pd.DataFrame | None:
         """Return the raw AKShare code-name table."""
         if self._code_names is None and self._code_names_path.exists():
-            self._code_names = pd.read_csv(self._code_names_path)
+            self._code_names = pd.read_csv(self._code_names_path, dtype={"code": str})
         return self._code_names
 
     def refresh_code_names(self) -> None:
@@ -90,6 +90,8 @@ class MarketService:
         end_date: date,
     ) -> pd.DataFrame:
         """Fetch persisted, stable history daily bar from baostock."""
+        logger.debug("Fetching baostock daily bar for %s from %s to %s",
+                     code, start_date, end_date)
         result = bs.query_history_k_data_plus(
             f"{ak.stock_a_code_to_symbol(code)[:2]}.{code}",
             "date,code,open,high,low,close,preclose,volume,amount",
@@ -100,7 +102,7 @@ class MarketService:
         )
         if result.error_code != "0":
             raise RuntimeError(f"baostock daily-bar query failed: {result.error_msg}")
-        frame = result.get_data()
+        frame = self._result_to_frame(result)
         if not frame.empty:
             frame = frame.copy()
             frame["code"] = code  # overwrite baostock format code back to ours without sh. or sz. prefix
@@ -122,7 +124,7 @@ class MarketService:
         )
         if result.error_code != "0":
             raise RuntimeError(f"baostock five-minute query failed: {result.error_msg}")
-        frame = result.get_data()
+        frame = self._result_to_frame(result)
         if not frame.empty:
             frame = frame.copy()
             frame["code"] = code  # overwrite baostock format code back to ours without sh. or sz. prefix
@@ -233,4 +235,11 @@ class MarketService:
         result = bs.query_trade_dates(start_date, end_date)
         if result.error_code != "0":
             raise RuntimeError(f"baostock trade-dates query failed: {result.error_msg}")
-        return result.get_data()
+        return self._result_to_frame(result)
+
+    @staticmethod
+    def _result_to_frame(result: object) -> pd.DataFrame:
+        rows: list[list[str]] = []
+        while result.error_code == "0" and result.next():
+            rows.append(result.get_row_data())
+        return pd.DataFrame(rows, columns=result.fields)
