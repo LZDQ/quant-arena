@@ -29,10 +29,15 @@ DEFAULT_CONFIG_PATH = Path.home() / ".quant-arena" / "config.json"
 class AppState:
     """Typed app state."""
 
-    def __init__(self, config_path: Path, config: AppConfig, storage: StorageService, market: Any, arena: ArenaService):
+    def __init__(
+        self,
+        config_path: Path,
+        config: AppConfig,
+        market: MarketService,
+        arena: ArenaService,
+    ):
         self.config_path = config_path
         self.config = config
-        self.storage = storage
         self.market = market
         self.arena = arena
         self.background_task: asyncio.Task[None] | None = None
@@ -49,25 +54,12 @@ def _load_arena(config_path: Path, market_provider: Any | None = None) -> AppSta
     return AppState(config_path=config_path, config=config, storage=storage, market=market, arena=arena)
 
 
-def _current_market_codes(market: Any) -> set[str]:
-    code_names = market.get_code_names()
-    return set() if code_names is None else set(code_names["code"].tolist())
-
-
-def _refresh_code_names_status(state: AppState, force: bool = False) -> CodeRefreshResponse:
-    timestamp = now_shanghai()
-    local_today = timestamp.astimezone(SHANGHAI_TZ).date()
-    last_refreshed_at = state.market.code_names_last_refreshed_at()
-    if force or last_refreshed_at is None or last_refreshed_at.astimezone(SHANGHAI_TZ).date() < local_today:
-        state.market.refresh_code_names()
-        last_refreshed_at = state.market.code_names_last_refreshed_at() or timestamp
-    return CodeRefreshResponse(
-        refreshed_at=last_refreshed_at,
-        entry_count=0 if state.market.get_code_names() is None else len(state.market.get_code_names().index),
-    )
-
-
-def _search_code_names(state: AppState, query: str = "", page: int = 1, page_size: int = 20) -> CodeSearchResponse:
+def _search_code_names(
+    state: AppState,
+    query: str = "",
+    page: int = 1,
+    page_size: int = 20
+) -> CodeSearchResponse:
     normalized_page = max(page, 1)
     normalized_page_size = min(max(page_size, 1), 100)
     code_names = state.market.get_code_names()
@@ -91,10 +83,7 @@ def _search_code_names(state: AppState, query: str = "", page: int = 1, page_siz
 
 async def _poll_market(state: AppState) -> None:
     while True:
-        tracked_codes = _current_market_codes(state.market)
-        state.market.sync_live_five_minute_bars_for_codes(tracked_codes)
-        state.market.finalize_market_data_for_codes_if_market_closed(tracked_codes)
-        state.arena.match_pending_orders()
+        state.arena.step_and_match_pending_orders()  # this inheritently parses market data
         await asyncio.sleep(state.config.polling_interval_seconds)
 
 
@@ -170,11 +159,6 @@ def create_app(config_path: Path | None = None, market_provider: Any | None = No
     @app.get("/api/agents/{agent_id}", response_model=AgentResponse)
     def get_agent(agent_id: str) -> AgentResponse:
         return to_agent_response(agent_id, get_state().arena.get_agent(agent_id))
-
-    @app.patch("/api/agents/{agent_id}", response_model=AgentResponse)
-    def update_agent(agent_id: str, request: UpdateAgentRequest) -> AgentResponse:
-        updated = get_state().arena.update_agent(agent_id, request.model_dump())
-        return to_agent_response(agent_id, updated)
 
     @app.delete("/api/agents/{agent_id}", status_code=204)
     def delete_agent(agent_id: str) -> None:

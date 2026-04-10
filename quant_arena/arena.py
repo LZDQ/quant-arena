@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import date, datetime, time
 from typing import Any
 
+from quant_arena.market import MarketService
 from quant_arena.schemas import OperationListResponse, PortfolioResponse, PositionView, RankingEntry, SubmitOrderRequest
 from quant_arena.clock import SHANGHAI_TZ, now_shanghai
 from quant_arena.config import AgentConfig, AppConfig
@@ -21,7 +22,7 @@ from quant_arena.storage import StorageService
 class ArenaService:
     """Application service layer."""
 
-    def __init__(self, config: AppConfig, storage: StorageService, market: Any):
+    def __init__(self, config: AppConfig, storage: StorageService, market: MarketService):
         self.config = config
         self.storage = storage
         self.market = market
@@ -47,17 +48,6 @@ class ArenaService:
         state = self._load_or_init_agent_state(agent_id, agent)
         self.storage.save_agent_state(state)
         return agent
-
-    def update_agent(self, agent_id: str, updates: dict) -> AgentConfig:
-        current = self.get_agent(agent_id)
-        replaced = current.model_copy(update={key: value for key, value in updates.items() if value is not None})
-        self._agents[agent_id] = replaced
-        self.storage.save_agent_config(agent_id, replaced)
-        state = self._load_or_init_agent_state(agent_id, current)
-        if updates.get("initial_cash") is not None and not state.orders and not state.fills:
-            state.cash = replaced.initial_cash
-            self.storage.save_agent_state(state)
-        return replaced
 
     def delete_agent(self, agent_id: str) -> None:
         self.get_agent(agent_id)
@@ -226,6 +216,7 @@ class ArenaService:
 
     @staticmethod
     def _crosses(side: str, limit_price: float, market_price: float) -> bool:
+        # BUG: using latest price is not correct. Use high and low price instead.
         if side == "buy":
             return market_price <= limit_price
         return market_price >= limit_price
