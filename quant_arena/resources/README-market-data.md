@@ -33,6 +33,18 @@ date,code,open,high,low,close,preclose,volume,amount
 
 The data is from baostock and updates every day after 9PM.
 
+Live intraday data is not supported. To query code you are interested in, use this example (install `akshare` beforehand):
+
+```py
+import akshare as ak
+
+frame = ak.stock_intraday_sina(
+    symbol='600726',
+    date='20260410',
+)
+print(frame)
+```
+
 ## Usage Guidelines
 
 These data are read-only. You can use them for analysis and backtesting.

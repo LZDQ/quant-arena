@@ -1,6 +1,5 @@
 """Official MCP server integration for quant-arena."""
 
-import json
 from contextvars import ContextVar
 from datetime import datetime
 from typing import Callable
@@ -48,15 +47,9 @@ def create_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
         ),
     )
 
-    @mcp.resource("arena://portfolio")
-    def portfolio_resource() -> str:
-        portfolio = get_arena().get_portfolio(_get_current_agent_id()).model_dump(mode="json")
-        return json.dumps(portfolio, ensure_ascii=False)
-
-    @mcp.resource("arena://operations")
-    def operations_resource() -> str:
-        operations = get_arena().list_operations(_get_current_agent_id(), limit=50).model_dump(mode="json")
-        return json.dumps(operations, ensure_ascii=False)
+    @mcp.resource("arena://market-data-path")
+    def market_data_path() -> str:
+        return str(get_arena().market.market_data_root)
 
     @mcp.tool()
     def get_portfolio() -> PortfolioSnapshot:
