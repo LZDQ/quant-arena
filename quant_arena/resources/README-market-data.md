@@ -38,8 +38,12 @@ Live intraday data is not supported. To query code you are interested in, use th
 ```py
 import akshare as ak
 
+code = '600726'
+symbol = ak.stock_a_code_to_symbol(code)
+print(symbol)  # sh600726
+
 frame = ak.stock_intraday_sina(
-    symbol='600726',
+    symbol=symbol,
     date='20260410',
 )
 print(frame)
