@@ -99,12 +99,16 @@ async def _poll_market(state: AppState) -> None:
         now = now_shanghai()
         today = now.date()
         if last_refreshed_date != today:
+            logger.debug("Refreshing today's trading status")
             last_refreshed_date = today
             trade_date_frame = state.market.fetch_trade_dates(today, today)
-            is_trading_day = (
-                not trade_date_frame.empty
-                and str(trade_date_frame.iloc[-1]["is_trading_day"]) == "1"
-            )
+            if not trade_date_frame.empty:
+                is_trading_day = str(trade_date_frame.iloc[-1]["is_trading_day"]) == "1"
+                logger.info("Today's trading status is: %r", is_trading_day)
+            else:
+                logger.error("Cannot fetch today's trading status. Defaulting to True")
+                is_trading_day = True
+
             if not is_trading_day:
                 tomorrow = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=now.tzinfo)
                 await asyncio.sleep(max((tomorrow - now).total_seconds(), 0.0))
