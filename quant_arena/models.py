@@ -38,6 +38,11 @@ class OrderRecord(BaseModel):
         gt=0,
         description="限价单价格，只有市场价格达到这个条件才会成交"
     )
+    comment: str = Field(
+        min_length=1,
+        max_length=200,
+        description="下单原因备注"
+    )
     status: OrderStatus = Field(
         default="pending",
         description="订单状态，pending 是待成交，filled 是已成交，canceled 是已撤销"
@@ -82,6 +87,11 @@ class SubmitOrder(BaseModel):
     limit_price: float = Field(
         gt=0,
         description="限价单价格，只有市场价格达到这个条件才会成交"
+    )
+    comment: str = Field(
+        min_length=1,
+        max_length=200,
+        description="下单原因备注"
     )
 
 

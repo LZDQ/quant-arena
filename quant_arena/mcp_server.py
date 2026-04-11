@@ -73,7 +73,7 @@ def create_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
         )
 
     @mcp.tool()
-    def submit_operation(code: str, side: str, quantity: int, limit_price: float) -> OrderRecord:
+    def submit_operation(code: str, side: str, quantity: int, limit_price: float, comment: str) -> OrderRecord:
         """Submit a pending buy or sell limit order."""
 
         order = get_arena().submit_order(
@@ -83,6 +83,7 @@ def create_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
                 side=side,
                 quantity=quantity,
                 limit_price=limit_price,
+                comment=comment,
             ),
         )
         return order

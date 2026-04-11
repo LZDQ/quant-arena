@@ -15,7 +15,9 @@ Final choices:
 
 from logging import getLogger
 from datetime import date
+from importlib import resources
 from pathlib import Path
+import shutil
 
 import akshare as ak
 import baostock as bs
@@ -36,8 +38,14 @@ class MarketService:
         self.market_data_root = market_data_root
         self.market_bars_dir = market_data_root / "bars"
         self._code_names_path = market_data_root / "code_names.csv"
+        self._readme_path = market_data_root / "README.md"
         self._code_names: pd.DataFrame | None = None
+        self.market_data_root.mkdir(parents=True, exist_ok=True)
         self.market_bars_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(
+            resources.files("quant_arena.resources").joinpath("README-market-data.md"),
+            self._readme_path,
+        )
         bs.login()
 
     def get_code_names(self) -> pd.DataFrame | None:

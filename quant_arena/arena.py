@@ -87,6 +87,7 @@ class ArenaService:
             side=request.side,
             quantity=request.quantity,
             limit_price=request.limit_price,
+            comment=request.comment,
             submitted_at=now,
             activate_after=now,
         )
