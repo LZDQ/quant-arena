@@ -4,7 +4,7 @@ import asyncio
 import secrets
 from contextlib import AsyncExitStack
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import uvicorn
@@ -90,17 +90,30 @@ async def _poll_market(state: AppState) -> None:
     Note that do not use multiple workers or restart the
     server frequently after 21:00.
     """
+    last_refreshed_date: date | None = None
     last_finalized_date: date | None = None
+    is_trading_day = True
     while True:
         now = now_shanghai()
         today = now.date()
+        if last_refreshed_date != today:
+            last_refreshed_date = today
+            trade_date_frame = state.market.fetch_trade_dates(today, today)
+            is_trading_day = (
+                not trade_date_frame.empty
+                and str(trade_date_frame.iloc[-1]["is_trading_day"]) == "1"
+            )
+            if not is_trading_day:
+                tomorrow = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=now.tzinfo)
+                await asyncio.sleep(max((tomorrow - now).total_seconds(), 0.0))
+                continue
+
         if now.hour >= 21 and last_finalized_date != today:
             await asyncio.to_thread(state.market.finalize_market_data_after_market_closed, today)
             last_finalized_date = today
-        elif (now.hour > 9 or (now.hour == 9 and now.minute >= 30)) and (
-            now.hour < 15
-        ):
+        elif (now.hour > 9 or (now.hour == 9 and now.minute >= 30)) and now.hour < 15:
             await asyncio.to_thread(state.arena.match_pending_orders)
+
         await asyncio.sleep(state.config.polling_interval_seconds)
 
 

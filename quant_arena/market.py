@@ -69,7 +69,7 @@ class MarketService:
         return None
 
     def get_latest_daily_bar(self) -> pd.DataFrame | None:
-        """Return the latest daily bar. Useful for calculating daily limit."""
+        """Return the latest daily bar. Useful for calculating daily limit and building portfolio."""
         for day_dir in sorted(
             (path for path in self.market_bars_dir.iterdir() if path.is_dir()),
             key=lambda path: path.name,
@@ -167,9 +167,9 @@ class MarketService:
             merged = merged.drop_duplicates(["code", "time"], keep="last").sort_values(["time", "code"])
             merged.to_csv(path, index=False)
 
-    def refresh_intraday(
+    def fetch_intraday(
         self,
-        tracked_codes: set[str],
+        code: str,
         today: date | None = None,
     ) -> pd.DataFrame:
         """
@@ -185,20 +185,18 @@ class MarketService:
         """
         today = today or now_shanghai().date()
 
-        frame = pd.DataFrame()
-        for code in tracked_codes:
-            try:
-                intraday = ak.stock_intraday_sina(
-                    symbol=ak.stock_a_code_to_symbol(code),
-                    date=today.strftime("%Y%m%d"),
-                )
-            except Exception as e:
-                raise RuntimeError("Failed to query intraday data. Is today a trading day?") from e
-            if intraday.empty:
-                continue
-            intraday = intraday.copy()
-            intraday["code"] = code
-            frame = pd.concat([frame, intraday], ignore_index=True)
+        try:
+            frame = ak.stock_intraday_sina(
+                symbol=ak.stock_a_code_to_symbol(code),
+                date=today.strftime("%Y%m%d"),
+            )
+        except KeyError as e:  # throws KeyError: 'ticktime'
+            raise RuntimeError("Failed to query intraday data. Is today a trading day?") from e
+
+        if frame.empty:
+            return frame
+        frame = frame.copy()
+        frame["code"] = code
 
         return frame
 

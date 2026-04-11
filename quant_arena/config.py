@@ -48,7 +48,7 @@ class AppConfig(BaseModel):
         description="Whether the server should automatically refresh the shared codes.csv reference file when it becomes stale.",
     )
     polling_interval_seconds: int = Field(
-        default=300,
+        default=60,
         description="Seconds between background market sync and order-matching cycles.",
     )
     enable_background_polling: bool = Field(

@@ -11,8 +11,8 @@ market = MarketService(market_data_root=Path("/Users/ldq/.quant-arena/market-dat
 market.refresh_code_names()
 print(market.get_code_names())
 while True:
-    print(market.refresh_intraday(
-        {"600726"},
+    print(market.fetch_intraday(
+        "600726",
         today=date(2026, 4, 10),
     ))
     time.sleep(10)

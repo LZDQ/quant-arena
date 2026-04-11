@@ -3,6 +3,7 @@
 import json
 import shutil
 from datetime import date, datetime
+from logging import getLogger
 from pathlib import Path
 
 import pandas as pd
@@ -24,6 +25,8 @@ from quant_arena.models import (
     SubmitOrder,
 )
 
+logger = getLogger(__name__)
+
 
 class ArenaService:
     """Application service layer."""
@@ -39,8 +42,6 @@ class ArenaService:
         self.fees = fees
         self._latest_prices: dict[str, float] = {}
         self._latest_price_times: dict[str, datetime] = {}
-        self._intraday_frame = pd.DataFrame()
-        self._intraday_trade_date: date | None = None
         self.agents_root.mkdir(parents=True, exist_ok=True)
         self._agents = self._load_agents()
 
@@ -77,7 +78,7 @@ class ArenaService:
         now = submitted_at or now_shanghai()
         if request.side == "buy" and request.quantity % 100 != 0:
             raise BadRequestError("Buy order quantity must be a multiple of 100")
-        self._refresh_intraday_cache({request.code}, self._trade_date_of(now))
+        self._refresh_intraday_cache({request.code})
         if request.code not in self._latest_prices:
             raise NotFoundError(f"No intraday market data available for {request.code}")
         state = self._load_or_init_agent_state(agent_id, agent)
@@ -108,11 +109,11 @@ class ArenaService:
                 return order
         raise NotFoundError(f"Unknown order: {order_id}")
 
-    def match_pending_orders(self, now: datetime | None = None) -> None:
+    def match_pending_orders(self) -> None:
         """
         Match pending orders against intraday market data for the current trade date.
 
-        Orders are checked only against raw rows returned by `MarketService.refresh_intraday`.
+        Orders are checked only against rows returned by `_refresh_intraday_cache`.
         Matching walks intraday rows in chronological order starting from each order's
         `activate_after` timestamp. Daily price limits are derived from the latest
         persisted daily-bar frame returned by `MarketService.get_latest_daily_bar()`.
@@ -121,18 +122,20 @@ class ArenaService:
         today's Shanghai trade date, it is marked canceled with a rejection reason and
         skipped from matching.
         """
-        timestamp = now or now_shanghai()
-        today = self._trade_date_of(timestamp)
+        timestamp = now_shanghai()
+        today = timestamp.date()
         for agent_id, agent in self.list_agents():
             state = self._load_or_init_agent_state(agent_id, agent)
             tracked_codes = {
                 order.code for order in state.orders if order.status == "pending"
             } | set(state.positions.keys())
-            self._refresh_intraday_cache(tracked_codes, today)
+            if not tracked_codes:
+                continue
+            intraday_frame = self._refresh_intraday_cache(tracked_codes, today)
             intraday_by_code = {
                 code: frame.reset_index(drop=True)
-                for code, frame in self._intraday_frame.groupby("code")
-            } if not self._intraday_frame.empty else {}
+                for code, frame in intraday_frame.groupby("code")
+            } if not intraday_frame.empty else {}
             latest_daily_bars = self.market.get_latest_daily_bar()
             daily_bars_by_code: dict[str, pd.Series] = {}
             if latest_daily_bars is not None and not latest_daily_bars.empty:
@@ -144,7 +147,7 @@ class ArenaService:
             for order in state.orders:
                 if order.status != "pending":
                     continue
-                if self._trade_date_of(order.submitted_at) != today:
+                if order.submitted_at.date() != today:
                     order.status = "canceled"
                     order.canceled_at = timestamp
                     order.rejection_reason = "Order expired overnight"
@@ -186,13 +189,13 @@ class ArenaService:
                     self._fill_order(state, order, market_price, executed_at, trade_date)
                     break
 
-            self._update_equity_snapshot(state, refresh_market=False)
+            self._update_equity_snapshot(state)
             self._save_agent_state(state)
 
     def get_portfolio(self, agent_id: str) -> PortfolioSnapshot:
         agent = self.get_agent(agent_id)
         state = self._load_or_init_agent_state(agent_id, agent)
-        return self._build_portfolio(state, refresh_market=True)
+        return self._build_portfolio(state)
 
     def list_operations(
         self,
@@ -224,7 +227,7 @@ class ArenaService:
         entries: list[RankingSnapshot] = []
         for agent_id, agent in self.list_agents():
             state = self._load_or_init_agent_state(agent_id, agent)
-            portfolio = self._build_portfolio(state, refresh_market=True)
+            portfolio = self._build_portfolio(state)
             point = self._resolve_equity_point(state, target_date, portfolio)
             return_pct = 0.0 if agent.initial_cash == 0 else ((point.total_equity - agent.initial_cash) / agent.initial_cash) * 100.0
             entries.append(
@@ -292,8 +295,8 @@ class ArenaService:
         order.filled_at = executed_at
         state.fills.append(fill)
 
-    def _update_equity_snapshot(self, state: AgentState, refresh_market: bool) -> None:
-        portfolio = self._build_portfolio(state, refresh_market=refresh_market)
+    def _update_equity_snapshot(self, state: AgentState) -> None:
+        portfolio = self._build_portfolio(state)
         today = now_shanghai().date()
         point = EquityPoint(
             trade_date=today,
@@ -310,10 +313,9 @@ class ArenaService:
         else:
             state.equity_history.append(point)
 
-    def _build_portfolio(self, state: AgentState, refresh_market: bool) -> PortfolioSnapshot:
+    def _build_portfolio(self, state: AgentState) -> PortfolioSnapshot:
         today = now_shanghai().date()
-        if refresh_market and state.positions:
-            self._refresh_intraday_cache(set(state.positions.keys()), today)
+        latest_daily_bars: pd.DataFrame | None = None
 
         positions: list[PositionSnapshot] = []
         market_value = 0.0
@@ -327,6 +329,16 @@ class ArenaService:
             sellable = self._sellable_quantity(state, code, today)
             avg_cost = sum(lot.quantity * lot.cost_price for lot in live_lots) / quantity
             market_price = self._latest_prices.get(code)
+            if market_price is None:
+                if latest_daily_bars is None:
+                    latest_daily_bars = self.market.get_latest_daily_bar()
+                if latest_daily_bars is not None and not latest_daily_bars.empty:
+                    matched_rows = latest_daily_bars.loc[latest_daily_bars["code"].astype(str) == code, "close"]
+                    if not matched_rows.empty:
+                        market_price = float(matched_rows.iloc[-1])
+            if market_price is None:
+                logger.warning("No live or daily fallback price available for %s, using 0.0", code)
+                market_price = 0.0
             position_value = (market_price or 0.0) * quantity
             position_unrealized = ((market_price or avg_cost) - avg_cost) * quantity
             market_value += position_value
@@ -359,31 +371,33 @@ class ArenaService:
             as_of=as_of,
         )
 
-    def _refresh_intraday_cache(self, codes: set[str], trade_date: date) -> None:
-        if self._intraday_trade_date != trade_date:
-            self._intraday_trade_date = trade_date
-            self._intraday_frame = pd.DataFrame()
-            self._latest_prices = {}
-            self._latest_price_times = {}
+    def _refresh_intraday_cache(self, codes: set[str]) -> pd.DataFrame:
+        """Refresh and update latest prices."""
         if not codes:
             return
 
-        frame = self.market.refresh_intraday(codes, today=trade_date)
+        today = now_shanghai().date()
+
+        frame = pd.concat(
+            [self.market.fetch_intraday(code, today=today) for code in codes],
+            ignore_index=True
+        )
         if frame.empty:
-            return
-        frame = frame.copy()
+            return frame
+
         frame["price"] = pd.to_numeric(frame["price"], errors="coerce")
         frame["volume"] = pd.to_numeric(frame["volume"], errors="coerce")
         frame["trade_time"] = pd.to_datetime(
-            trade_date.strftime("%Y-%m-%d") + " " + frame["ticktime"]
+            today.strftime("%Y-%m-%d") + " " + frame["ticktime"]
         ).dt.tz_localize(SHANGHAI_TZ)
         frame = frame.sort_values(["code", "trade_time"]).reset_index(drop=True)
-        self._intraday_frame = frame
 
         for code, code_frame in frame.groupby("code"):
             latest_row = code_frame.iloc[-1]
             self._latest_prices[code] = float(latest_row["price"])
             self._latest_price_times[code] = latest_row["trade_time"].to_pydatetime()
+
+        return frame
 
     def _sellable_quantity(self, state: AgentState, code: str, trade_date: date) -> int:
         lots = state.positions.get(code, [])
@@ -466,7 +480,3 @@ class ArenaService:
 
     def _state_path(self, agent_id: str) -> Path:
         return self._agent_dir(agent_id) / "state.json"
-
-    @staticmethod
-    def _trade_date_of(moment: datetime) -> date:
-        return moment.astimezone(SHANGHAI_TZ).date()
