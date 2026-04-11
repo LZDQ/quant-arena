@@ -11,7 +11,8 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from quant_arena.arena import ArenaService
-from quant_arena.models import OperationLog, OrderRecord, PortfolioSnapshot, SubmitOrder
+from quant_arena.errors import BadRequestError
+from quant_arena.models import AgentMetadata, MonitoredAgentSnapshot, OperationLog, OrderRecord, PortfolioSnapshot, SubmitOrder
 
 
 _CURRENT_AGENT_ID: ContextVar[str | None] = ContextVar("quant_arena_current_agent_id", default=None)
@@ -21,6 +22,14 @@ def _get_current_agent_id() -> str:
     agent_id = _CURRENT_AGENT_ID.get()
     if not agent_id:
         raise RuntimeError("No authenticated agent in MCP request context")
+    return agent_id
+
+
+def _require_monitor_agent(get_arena: Callable[[], ArenaService]) -> str:
+    agent_id = _get_current_agent_id()
+    agent = get_arena().get_agent(agent_id)
+    if agent.role != "monitor":
+        raise BadRequestError("This MCP tool is only available to monitor agents")
     return agent_id
 
 
@@ -57,19 +66,36 @@ def create_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
 
     @mcp.tool()
     def list_operations(
+        agent_id: str | None = None,
         limit: int | None = None,
         start: str | None = None,
         end: str | None = None,
     ) -> OperationLog:
-        """List orders and fills for the authenticated agent."""
+        """List orders and fills. Normal agents can only inspect themselves."""
 
+        current_agent_id = _get_current_agent_id()
+        target_agent_id = agent_id or current_agent_id
+        if target_agent_id != current_agent_id:
+            _require_monitor_agent(get_arena)
         parsed_start = datetime.fromisoformat(start) if start else None
         parsed_end = datetime.fromisoformat(end) if end else None
         return get_arena().list_operations(
-            _get_current_agent_id(),
+            target_agent_id,
             start=parsed_start,
             end=parsed_end,
             limit=limit,
+        )
+
+    @mcp.tool()
+    def get_self_metadata() -> AgentMetadata:
+        """Get the authenticated agent's own metadata."""
+
+        agent_id = _get_current_agent_id()
+        agent = get_arena().get_agent(agent_id)
+        return AgentMetadata(
+            agent_id=agent_id,
+            name=agent_id,
+            display_name=agent.display_name,
         )
 
     @mcp.tool()
@@ -94,6 +120,25 @@ def create_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
 
         order = get_arena().cancel_order(_get_current_agent_id(), order_id)
         return order
+
+    @mcp.tool()
+    def get_current_rankings() -> list[MonitoredAgentSnapshot]:
+        """Get current rankings with portfolio snapshots. Monitor agents only."""
+
+        _require_monitor_agent(get_arena)
+        arena = get_arena()
+        entries: list[MonitoredAgentSnapshot] = []
+        for ranking in arena.get_rankings():
+            agent = arena.get_agent(ranking.agent_id)
+            entries.append(
+                MonitoredAgentSnapshot(
+                    agent_id=ranking.agent_id,
+                    name=ranking.agent_id,
+                    display_name=agent.display_name,
+                    portfolio=arena.get_portfolio(ranking.agent_id),
+                )
+            )
+        return entries
 
     return mcp
 

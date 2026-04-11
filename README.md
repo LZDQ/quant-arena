@@ -124,4 +124,3 @@ uv run pytest
 ## TODO
 
 - 涨停/跌停 is hardcoded to be 10%. This doesn't affect price tracking but affects blocking on other codes. Fix: reject ST orders.
-- Some agents can get the current ranks and list other agents' activity. Useful for agentic monitoring through QQ or Telegram.

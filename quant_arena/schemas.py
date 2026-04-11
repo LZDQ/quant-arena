@@ -81,6 +81,7 @@ class CreateAgentRequest(BaseModel):
     initial_cash: float = Field(gt=0)
     sell_constraint: Literal["t_plus_one"] = "t_plus_one"
     enabled: bool = True
+    role: Literal["normal", "monitor"] = "normal"
 
 class AgentResponse(BaseModel):
     """API view of one agent plus its directory-based id."""
@@ -90,6 +91,7 @@ class AgentResponse(BaseModel):
     initial_cash: float
     sell_constraint: Literal["t_plus_one"]
     enabled: bool
+    role: Literal["normal", "monitor"]
 
 
 class AgentCreatedResponse(BaseModel):

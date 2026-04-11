@@ -82,6 +82,10 @@ class AgentConfig(BaseModel):
         default=True,
         description="Whether the agent is enabled and available for use.",
     )
+    role: Literal["normal", "monitor"] = Field(
+        default="normal",
+        description="Agent role. monitor agents can inspect other agents through MCP tools.",
+    )
 
 
 def _write_default_app_config(path: Path) -> AppConfig:

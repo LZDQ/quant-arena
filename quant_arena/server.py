@@ -185,6 +185,7 @@ def create_app(
             initial_cash=agent.initial_cash,
             sell_constraint=agent.sell_constraint,
             enabled=agent.enabled,
+            role=agent.role,
         )
 
     @app.get("/health")

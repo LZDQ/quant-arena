@@ -172,7 +172,7 @@ class PortfolioSnapshot(BaseModel):
     total_equity: float
     realized_pnl: float
     unrealized_pnl: float
-    positions: list["PositionSnapshot"]
+    positions: list[PositionSnapshot]
     pending_orders: list[OrderRecord]
     as_of: datetime | None = None
 
@@ -194,6 +194,23 @@ class RankingSnapshot(BaseModel):
     return_pct: float
     realized_pnl: float
     unrealized_pnl: float
+
+
+class MonitoredAgentSnapshot(BaseModel):
+    """Monitor-agent view of another agent."""
+
+    agent_id: str
+    name: str
+    display_name: str
+    portfolio: PortfolioSnapshot
+
+
+class AgentMetadata(BaseModel):
+    """MCP self metadata for the authenticated agent."""
+
+    agent_id: str
+    name: str
+    display_name: str
 
 
 class AgentState(BaseModel):
