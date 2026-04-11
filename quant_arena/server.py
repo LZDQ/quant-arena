@@ -1,5 +1,6 @@
 """FastAPI server for quant-arena."""
 
+from logging import getLogger
 import asyncio
 import secrets
 from contextlib import AsyncExitStack
@@ -22,6 +23,7 @@ from quant_arena.mcp_server import create_mcp_server, wrap_mcp_with_agent_auth
 from quant_arena.models import RankingSnapshot
 from quant_arena.clock import now_shanghai
 
+logger = getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = Path.home() / ".quant-arena" / "config.json"
 
@@ -109,10 +111,17 @@ async def _poll_market(state: AppState) -> None:
                 continue
 
         if now.hour >= 21 and last_finalized_date != today:
-            await asyncio.to_thread(state.market.finalize_market_data_after_market_closed, today)
+            try:
+                await asyncio.to_thread(state.market.finalize_market_data_after_market_closed, today)
+            except:
+                logger.exception("Exception in finalizing today's market")
             last_finalized_date = today
+
         elif (now.hour > 9 or (now.hour == 9 and now.minute >= 30)) and now.hour < 15:
-            await asyncio.to_thread(state.arena.match_pending_orders)
+            try:
+                await asyncio.to_thread(state.arena.match_pending_orders)
+            except:
+                logger.exception("Exception in matching pending orders")
 
         await asyncio.sleep(state.config.polling_interval_seconds)
 

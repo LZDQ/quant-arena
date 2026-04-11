@@ -6,6 +6,7 @@ from datetime import date, datetime
 from logging import getLogger
 from pathlib import Path
 
+import threading
 import pandas as pd
 
 from quant_arena.market import MarketService
@@ -44,6 +45,7 @@ class ArenaService:
         self._latest_price_times: dict[str, datetime] = {}
         self.agents_root.mkdir(parents=True, exist_ok=True)
         self._agents = self._load_agents()
+        self._order_lock = threading.RLock()
 
     def list_agents(self) -> list[tuple[str, AgentConfig]]:
         return list(sorted(self._agents.items(), key=lambda item: item[0]))
@@ -74,40 +76,42 @@ class ArenaService:
         request: SubmitOrder,
         submitted_at: datetime | None = None
     ) -> OrderRecord:
-        agent = self.get_agent(agent_id)
-        now = submitted_at or now_shanghai()
-        if request.side == "buy" and request.quantity % 100 != 0:
-            raise BadRequestError("Buy order quantity must be a multiple of 100")
-        self._refresh_intraday_cache({request.code})
-        if request.code not in self._latest_prices:
-            raise NotFoundError(f"No intraday market data available for {request.code}")
-        state = self._load_or_init_agent_state(agent_id, agent)
-        order = OrderRecord(
-            agent_id=agent_id,
-            code=request.code,
-            side=request.side,
-            quantity=request.quantity,
-            limit_price=request.limit_price,
-            comment=request.comment,
-            submitted_at=now,
-            activate_after=now,
-        )
-        state.orders.append(order)
-        self._save_agent_state(state)
-        return order
+        with self._order_lock:
+            agent = self.get_agent(agent_id)
+            now = submitted_at or now_shanghai()
+            if request.side == "buy" and request.quantity % 100 != 0:
+                raise BadRequestError("Buy order quantity must be a multiple of 100")
+            self._refresh_intraday_cache({request.code})
+            if request.code not in self._latest_prices:
+                raise NotFoundError(f"No intraday market data available for {request.code}")
+            state = self._load_or_init_agent_state(agent_id, agent)
+            order = OrderRecord(
+                agent_id=agent_id,
+                code=request.code,
+                side=request.side,
+                quantity=request.quantity,
+                limit_price=request.limit_price,
+                comment=request.comment,
+                submitted_at=now,
+                activate_after=now,
+            )
+            state.orders.append(order)
+            self._save_agent_state(state)
+            return order
 
     def cancel_order(self, agent_id: str, order_id: str) -> OrderRecord:
-        agent = self.get_agent(agent_id)
-        state = self._load_or_init_agent_state(agent_id, agent)
-        for order in state.orders:
-            if order.order_id == order_id:
-                if order.status != "pending":
-                    raise ConflictError("Only pending orders can be canceled")
-                order.status = "canceled"
-                order.canceled_at = now_shanghai()
-                self._save_agent_state(state)
-                return order
-        raise NotFoundError(f"Unknown order: {order_id}")
+        with self._order_lock:
+            agent = self.get_agent(agent_id)
+            state = self._load_or_init_agent_state(agent_id, agent)
+            for order in state.orders:
+                if order.order_id == order_id:
+                    if order.status != "pending":
+                        raise ConflictError("Only pending orders can be canceled")
+                    order.status = "canceled"
+                    order.canceled_at = now_shanghai()
+                    self._save_agent_state(state)
+                    return order
+            raise NotFoundError(f"Unknown order: {order_id}")
 
     def match_pending_orders(self) -> None:
         """
@@ -122,75 +126,76 @@ class ArenaService:
         today's Shanghai trade date, it is marked canceled with a rejection reason and
         skipped from matching.
         """
-        timestamp = now_shanghai()
-        today = timestamp.date()
-        for agent_id, agent in self.list_agents():
-            state = self._load_or_init_agent_state(agent_id, agent)
-            tracked_codes = {
-                order.code for order in state.orders if order.status == "pending"
-            } | set(state.positions.keys())
-            if not tracked_codes:
-                continue
-            intraday_frame = self._refresh_intraday_cache(tracked_codes, today)
-            intraday_by_code = {
-                code: frame.reset_index(drop=True)
-                for code, frame in intraday_frame.groupby("code")
-            } if not intraday_frame.empty else {}
-            latest_daily_bars = self.market.get_latest_daily_bar()
-            daily_bars_by_code: dict[str, pd.Series] = {}
-            if latest_daily_bars is not None and not latest_daily_bars.empty:
-                for _, row in latest_daily_bars.iterrows():
-                    code = str(row["code"])
-                    if code in tracked_codes:
-                        daily_bars_by_code[code] = row
-
-            for order in state.orders:
-                if order.status != "pending":
+        with self._order_lock:
+            timestamp = now_shanghai()
+            today = timestamp.date()
+            for agent_id, agent in self.list_agents():
+                state = self._load_or_init_agent_state(agent_id, agent)
+                tracked_codes = {
+                    order.code for order in state.orders if order.status == "pending"
+                } | set(state.positions.keys())
+                if not tracked_codes:
                     continue
-                if order.submitted_at.date() != today:
-                    order.status = "canceled"
-                    order.canceled_at = timestamp
-                    order.rejection_reason = "Order expired overnight"
-                    continue
+                intraday_frame = self._refresh_intraday_cache(tracked_codes, today)
+                intraday_by_code = {
+                    code: frame.reset_index(drop=True)
+                    for code, frame in intraday_frame.groupby("code")
+                } if not intraday_frame.empty else {}
+                latest_daily_bars = self.market.get_latest_daily_bar()
+                daily_bars_by_code: dict[str, pd.Series] = {}
+                if latest_daily_bars is not None and not latest_daily_bars.empty:
+                    for _, row in latest_daily_bars.iterrows():
+                        code = str(row["code"])
+                        if code in tracked_codes:
+                            daily_bars_by_code[code] = row
 
-                code_frame = intraday_by_code.get(order.code)
-                if code_frame is None or code_frame.empty:
+                for order in state.orders:
+                    if order.status != "pending":
+                        continue
+                    if order.submitted_at.date() != today:
+                        order.status = "canceled"
+                        order.canceled_at = timestamp
+                        order.rejection_reason = "Order expired overnight"
+                        continue
+
+                    code_frame = intraday_by_code.get(order.code)
+                    if code_frame is None or code_frame.empty:
+                        order.last_checked_at = timestamp
+                        continue
+
                     order.last_checked_at = timestamp
-                    continue
+                    daily_bar = daily_bars_by_code.get(order.code)
+                    if daily_bar is None:
+                        continue
+                    close_price = float(daily_bar["close"])
+                    limit_up = round(close_price * 1.1, 2)
+                    limit_down = round(close_price * 0.9, 2)
+                    eligible_rows = code_frame.loc[code_frame["trade_time"] >= order.activate_after]
+                    if eligible_rows.empty:
+                        continue
 
-                order.last_checked_at = timestamp
-                daily_bar = daily_bars_by_code.get(order.code)
-                if daily_bar is None:
-                    continue
-                close_price = float(daily_bar["close"])
-                limit_up = round(close_price * 1.1, 2)
-                limit_down = round(close_price * 0.9, 2)
-                eligible_rows = code_frame.loc[code_frame["trade_time"] >= order.activate_after]
-                if eligible_rows.empty:
-                    continue
+                    for _, row in eligible_rows.iterrows():
+                        market_price = float(row["price"])
+                        if order.side == "buy":
+                            if market_price >= limit_up:
+                                continue
+                            if order.limit_price < market_price:
+                                continue
+                        else:
+                            if market_price <= limit_down:
+                                continue
+                            if order.limit_price > market_price:
+                                continue
 
-                for _, row in eligible_rows.iterrows():
-                    market_price = float(row["price"])
-                    if order.side == "buy":
-                        if market_price >= limit_up:
-                            continue
-                        if order.limit_price < market_price:
-                            continue
-                    else:
-                        if market_price <= limit_down:
-                            continue
-                        if order.limit_price > market_price:
-                            continue
-
-                    executed_at = row["trade_time"].to_pydatetime()
-                    trade_date = executed_at.date()
-                    if not self._can_fill(state, order, market_price, trade_date):
+                        executed_at = row["trade_time"].to_pydatetime()
+                        trade_date = executed_at.date()
+                        if not self._can_fill(state, order, market_price, trade_date):
+                            break
+                        self._fill_order(state, order, market_price, executed_at, trade_date)
                         break
-                    self._fill_order(state, order, market_price, executed_at, trade_date)
-                    break
 
-            self._update_equity_snapshot(state)
-            self._save_agent_state(state)
+                self._update_equity_snapshot(state)
+                self._save_agent_state(state)
 
     def get_portfolio(self, agent_id: str) -> PortfolioSnapshot:
         agent = self.get_agent(agent_id)
@@ -374,7 +379,7 @@ class ArenaService:
     def _refresh_intraday_cache(self, codes: set[str]) -> pd.DataFrame:
         """Refresh and update latest prices."""
         if not codes:
-            return
+            return pd.DataFrame()
 
         today = now_shanghai().date()
 

@@ -15,8 +15,8 @@ Standalone stock trading simulation and monitoring service. It is designed to ru
 - Agent registration with initial cash.
 - Portfolio, operations, equity-curve, ranking, order submission, and cancel APIs.
 - A-share constraints in v1:
-  - buy blocked on limit-up
-  - sell blocked on limit-down
+  - buy blocked on 涨停 until it drops
+  - sell blocked on 跌停 until it raises up
   - T+1 sellability enforced from position lots
 - Fees and tax included in realized PnL and ranking.
 
