@@ -1,0 +1,13 @@
+[Unit]
+Description=Create quant-arena tmux session
+After=default.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ldq/quant-arena
+ExecStartPre=/bin/bash -c 'while ! echo > /dev/tcp/127.0.0.1/7890; do sleep 1; done'
+ExecStart=tmux new -d -s quant-arena 'source .venv/bin/activate && python -m quant_arena; bash'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=default.target
