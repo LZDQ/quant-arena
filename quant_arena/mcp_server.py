@@ -121,7 +121,7 @@ def wrap_mcp_with_agent_auth(
         agent_id = None
         if token_value is not None:
             for candidate_id, agent in get_arena().list_agents():
-                if agent.token_secret == token_value:
+                if agent.enabled and agent.token_secret == token_value:
                     agent_id = candidate_id
                     break
         if agent_id is None:

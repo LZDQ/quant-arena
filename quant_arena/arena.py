@@ -136,7 +136,7 @@ class ArenaService:
                 } | set(state.positions.keys())
                 if not tracked_codes:
                     continue
-                intraday_frame = self._refresh_intraday_cache(tracked_codes, today)
+                intraday_frame = self._refresh_intraday_cache(tracked_codes)
                 intraday_by_code = {
                     code: frame.reset_index(drop=True)
                     for code, frame in intraday_frame.groupby("code")

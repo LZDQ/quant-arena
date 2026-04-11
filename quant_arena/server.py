@@ -113,14 +113,14 @@ async def _poll_market(state: AppState) -> None:
         if now.hour >= 21 and last_finalized_date != today:
             try:
                 await asyncio.to_thread(state.market.finalize_market_data_after_market_closed, today)
-            except:
+            except Exception:
                 logger.exception("Exception in finalizing today's market")
             last_finalized_date = today
 
         elif (now.hour > 9 or (now.hour == 9 and now.minute >= 30)) and now.hour < 15:
             try:
                 await asyncio.to_thread(state.arena.match_pending_orders)
-            except:
+            except Exception:
                 logger.exception("Exception in matching pending orders")
 
         await asyncio.sleep(state.config.polling_interval_seconds)

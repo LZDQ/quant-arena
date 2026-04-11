@@ -120,3 +120,7 @@ Preconfigured agent prompts for `nanobot-soulboard` are under `quant_arena/resou
 ```bash
 uv run pytest
 ```
+
+## TODO (bugs)
+
+- 涨停/跌停 is hardcoded to be 10%. This doesn't affect price tracking but affects blocking on other codes. Fix: reject ST orders.
