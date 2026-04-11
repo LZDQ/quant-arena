@@ -187,10 +187,13 @@ class MarketService:
 
         frame = pd.DataFrame()
         for code in tracked_codes:
-            intraday = ak.stock_intraday_sina(
-                symbol=ak.stock_a_code_to_symbol(code),
-                date=today.strftime("%Y%m%d"),
-            )
+            try:
+                intraday = ak.stock_intraday_sina(
+                    symbol=ak.stock_a_code_to_symbol(code),
+                    date=today.strftime("%Y%m%d"),
+                )
+            except Exception as e:
+                raise RuntimeError("Failed to query intraday data. Is today a trading day?") from e
             if intraday.empty:
                 continue
             intraday = intraday.copy()
