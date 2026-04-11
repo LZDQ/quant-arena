@@ -6,6 +6,7 @@ type AgentResponse = {
   initial_cash: number;
   sell_constraint: string;
   enabled: boolean;
+  role: "normal" | "monitor";
 };
 
 type AgentCreatedResponse = {
@@ -99,6 +100,7 @@ type CreateAgentForm = {
   agent_id: string;
   display_name: string;
   initial_cash: string;
+  role: "normal" | "monitor";
 };
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
@@ -107,6 +109,7 @@ const defaultCreateAgentForm: CreateAgentForm = {
   agent_id: "",
   display_name: "",
   initial_cash: "100000",
+  role: "normal",
 };
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -383,9 +386,12 @@ export function App() {
                     <div className="agent-card-title">{agent.display_name}</div>
                     <div className="agent-card-subtitle">{agent.agent_id}</div>
                   </div>
-                  <span className={`agent-pill ${agent.enabled ? "agent-pill-live" : "agent-pill-off"}`}>
-                    {agent.enabled ? "LIVE" : "OFF"}
-                  </span>
+                  <div>
+                    <span className={`agent-pill ${agent.enabled ? "agent-pill-live" : "agent-pill-off"}`}>
+                      {agent.enabled ? "LIVE" : "OFF"}
+                    </span>
+                    <span className="agent-card-subtitle">{agent.role.toUpperCase()}</span>
+                  </div>
                 </button>
               );
             })}
@@ -419,6 +425,15 @@ export function App() {
               min="1"
               required
             />
+            <select
+              value={createAgentForm.role}
+              onChange={(event) =>
+                setCreateAgentForm((prev) => ({ ...prev, role: event.target.value as "normal" | "monitor" }))
+              }
+            >
+              <option value="normal">Normal</option>
+              <option value="monitor">Monitor</option>
+            </select>
             <button className="action-button action-button-solid" type="submit">
               Create Agent
             </button>
@@ -440,10 +455,11 @@ export function App() {
 
         <section className="panel panel-main">
           <div className="panel-header">
-            <div>
-              <p className="panel-kicker">Snapshot</p>
-              <h2>{snapshot?.agent.display_name ?? "Select an Agent"}</h2>
-            </div>
+                <div>
+                  <p className="panel-kicker">Snapshot</p>
+                  <h2>{snapshot?.agent.display_name ?? "Select an Agent"}</h2>
+                  {snapshot && <p className="agent-card-subtitle">{snapshot.agent.agent_id} · {snapshot.agent.role.toUpperCase()}</p>}
+                </div>
             {snapshot && (
               <button className="destructive-link" onClick={() => void handleDeleteAgent(snapshot.agent.agent_id)}>
                 Remove Agent

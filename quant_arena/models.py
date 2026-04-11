@@ -202,6 +202,7 @@ class MonitoredAgentSnapshot(BaseModel):
     agent_id: str
     name: str
     display_name: str
+    role: Literal["normal", "monitor"]
     portfolio: PortfolioSnapshot
 
 
@@ -211,6 +212,7 @@ class AgentMetadata(BaseModel):
     agent_id: str
     name: str
     display_name: str
+    role: Literal["normal", "monitor"]
 
 
 class AgentState(BaseModel):

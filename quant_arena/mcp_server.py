@@ -96,6 +96,7 @@ def create_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
             agent_id=agent_id,
             name=agent_id,
             display_name=agent.display_name,
+            role=agent.role,
         )
 
     @mcp.tool()
@@ -135,6 +136,7 @@ def create_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
                     agent_id=ranking.agent_id,
                     name=ranking.agent_id,
                     display_name=agent.display_name,
+                    role=agent.role,
                     portfolio=arena.get_portfolio(ranking.agent_id),
                 )
             )
