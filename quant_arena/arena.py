@@ -240,6 +240,8 @@ class ArenaService:
                     trade_date=point.trade_date,
                     agent_id=agent_id,
                     display_name=agent.display_name,
+                    cash=round(portfolio.cash, 2),
+                    market_value=round(portfolio.market_value, 2),
                     total_equity=round(point.total_equity, 2),
                     return_pct=round(return_pct, 4),
                     realized_pnl=round(point.realized_pnl, 2),

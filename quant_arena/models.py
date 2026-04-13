@@ -190,6 +190,8 @@ class RankingSnapshot(BaseModel):
     trade_date: date
     agent_id: str
     display_name: str
+    cash: float
+    market_value: float
     total_equity: float
     return_pct: float
     realized_pnl: float

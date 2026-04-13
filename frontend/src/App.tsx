@@ -85,6 +85,8 @@ type RankingEntry = {
   trade_date: string;
   agent_id: string;
   display_name: string;
+  cash: number;
+  market_value: number;
   total_equity: number;
   return_pct: number;
   realized_pnl: number;
@@ -202,6 +204,7 @@ export function App() {
   const [error, setError] = useState<string>("");
   const [createdToken, setCreatedToken] = useState<string>("");
   const [createdAgentId, setCreatedAgentId] = useState<string>("");
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
 
   useEffect(() => {
     void refreshAgents();
@@ -227,7 +230,7 @@ export function App() {
         const nextAgentId =
           preferredAgentId && data.some((agent) => agent.agent_id === preferredAgentId)
             ? preferredAgentId
-            : data[0]?.agent_id ?? "";
+            : "";
         setSelectedAgentId(nextAgentId);
       });
     } catch (fetchError) {
@@ -339,6 +342,7 @@ export function App() {
 
   const latestEquity = snapshot && snapshot.equity.length > 0 ? snapshot.equity[snapshot.equity.length - 1] : null;
   const equityPolyline = snapshot ? tinyEquityPath(snapshot.equity) : "";
+  const agentById = new Map(agents.map((agent) => [agent.agent_id, agent]));
 
   return (
     <div className="app-shell">
@@ -370,32 +374,53 @@ export function App() {
               <p className="panel-kicker">Agents</p>
               <h2>Battle Line</h2>
             </div>
-            <span className="panel-chip">{loadingAgents ? "Syncing" : `${agents.length} live`}</span>
+            <span className="panel-chip">{loadingAgents || loadingRankings ? "Updating" : `${rankings.length} ranked`}</span>
           </div>
 
           <div className="agent-list">
-            {agents.map((agent) => {
-              const isActive = selectedAgentId === agent.agent_id;
+            {rankings.map((entry, index) => {
+              const agent = agentById.get(entry.agent_id);
+              const isActive = selectedAgentId === entry.agent_id;
               return (
                 <button
-                  key={agent.agent_id}
+                  key={entry.agent_id}
                   className={`agent-card ${isActive ? "agent-card-active" : ""}`}
-                  onClick={() => setSelectedAgentId(agent.agent_id)}
+                  onClick={() => setSelectedAgentId(entry.agent_id)}
                 >
-                  <div>
-                    <div className="agent-card-title">{agent.display_name}</div>
-                    <div className="agent-card-subtitle">{agent.agent_id}</div>
+                  <div className="agent-card-identity">
+                    <div className="agent-card-title">
+                      #{String(index + 1).padStart(2, "0")} {entry.display_name}
+                    </div>
+                    <div className="agent-card-subtitle">{entry.agent_id}</div>
                   </div>
-                  <div>
-                    <span className={`agent-pill ${agent.enabled ? "agent-pill-live" : "agent-pill-off"}`}>
-                      {agent.enabled ? "LIVE" : "OFF"}
-                    </span>
-                    <span className="agent-card-subtitle">{agent.role.toUpperCase()}</span>
+                  <div className="agent-card-center">
+                    <div className="ranking-breakdown">
+                      <span className="ranking-breakdown-label">Cash</span>
+                      <strong>{formatMoney(entry.cash)}</strong>
+                    </div>
+                    <div className="ranking-breakdown">
+                      <span className="ranking-breakdown-label">Market Value</span>
+                      <strong>{formatMoney(entry.market_value)}</strong>
+                    </div>
+                  </div>
+                  <div className="agent-card-side">
+                    <div className="ranking-metrics">
+                      <strong>{formatMoney(entry.total_equity)}</strong>
+                      <span className={percentClass(entry.return_pct)}>{formatNumber(entry.return_pct, 2)}%</span>
+                    </div>
+                    {agent && (
+                      <>
+                        <span className={`agent-pill ${agent.enabled ? "agent-pill-live" : "agent-pill-off"}`}>
+                          {agent.enabled ? "LIVE" : "OFF"}
+                        </span>
+                        <span className="agent-card-subtitle">{agent.role.toUpperCase()}</span>
+                      </>
+                    )}
                   </div>
                 </button>
               );
             })}
-            {!loadingAgents && agents.length === 0 && <p className="empty-copy">No agents on the board.</p>}
+            {!loadingRankings && rankings.length === 0 && <p className="empty-copy">No rankings yet.</p>}
           </div>
 
           <form className="create-agent-form" onSubmit={handleCreateAgent}>
@@ -405,35 +430,70 @@ export function App() {
                 <h3>Deploy New Agent</h3>
               </div>
             </div>
-            <input
-              value={createAgentForm.agent_id}
-              onChange={(event) => setCreateAgentForm((prev) => ({ ...prev, agent_id: event.target.value }))}
-              placeholder="agent_id"
-              required
-            />
-            <input
-              value={createAgentForm.display_name}
-              onChange={(event) => setCreateAgentForm((prev) => ({ ...prev, display_name: event.target.value }))}
-              placeholder="Display name"
-              required
-            />
-            <input
-              value={createAgentForm.initial_cash}
-              onChange={(event) => setCreateAgentForm((prev) => ({ ...prev, initial_cash: event.target.value }))}
-              placeholder="Initial cash"
-              type="number"
-              min="1"
-              required
-            />
-            <select
-              value={createAgentForm.role}
-              onChange={(event) =>
-                setCreateAgentForm((prev) => ({ ...prev, role: event.target.value as "normal" | "monitor" }))
-              }
-            >
-              <option value="normal">Normal</option>
-              <option value="monitor">Monitor</option>
-            </select>
+            <div className="create-agent-grid">
+              <input
+                value={createAgentForm.agent_id}
+                onChange={(event) => setCreateAgentForm((prev) => ({ ...prev, agent_id: event.target.value }))}
+                placeholder="agent_id"
+                required
+              />
+              <input
+                value={createAgentForm.initial_cash}
+                onChange={(event) => setCreateAgentForm((prev) => ({ ...prev, initial_cash: event.target.value }))}
+                placeholder="Initial cash"
+                type="number"
+                min="1"
+                required
+              />
+              <input
+                value={createAgentForm.display_name}
+                onChange={(event) => setCreateAgentForm((prev) => ({ ...prev, display_name: event.target.value }))}
+                placeholder="Display name"
+                required
+              />
+              <div
+                className="select-wrap"
+                onBlur={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                    setModeMenuOpen(false);
+                  }
+                }}
+              >
+                <button
+                  className="form-select select-trigger"
+                  type="button"
+                  aria-haspopup="listbox"
+                  aria-expanded={modeMenuOpen}
+                  onClick={() => setModeMenuOpen((open) => !open)}
+                >
+                  {createAgentForm.role === "normal" ? "Normal" : "Monitor"}
+                </button>
+                {modeMenuOpen && (
+                  <div className="select-menu" role="listbox" aria-label="Agent mode">
+                    <button
+                      className={`select-option ${createAgentForm.role === "normal" ? "select-option-active" : ""}`}
+                      type="button"
+                      onClick={() => {
+                        setCreateAgentForm((prev) => ({ ...prev, role: "normal" }));
+                        setModeMenuOpen(false);
+                      }}
+                    >
+                      Normal
+                    </button>
+                    <button
+                      className={`select-option ${createAgentForm.role === "monitor" ? "select-option-active" : ""}`}
+                      type="button"
+                      onClick={() => {
+                        setCreateAgentForm((prev) => ({ ...prev, role: "monitor" }));
+                        setModeMenuOpen(false);
+                      }}
+                    >
+                      Monitor
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
             <button className="action-button action-button-solid" type="submit">
               Create Agent
             </button>
@@ -591,42 +651,16 @@ export function App() {
                 </section>
               </div>
             </>
-          ) : (
-            <div className="empty-copy">Select an agent from the left rail.</div>
-          )}
+          ) : null}
         </section>
 
         <section className="panel panel-side">
           <div className="panel-header">
             <div>
-              <p className="panel-kicker">League</p>
-              <h2>Rankings</h2>
-            </div>
-            <span className="panel-chip">{loadingRankings ? "Updating" : `${rankings.length} ranked`}</span>
-          </div>
-
-          <div className="ranking-list">
-            {rankings.map((entry, index) => (
-              <article className="ranking-card" key={entry.agent_id}>
-                <div className="ranking-index">{String(index + 1).padStart(2, "0")}</div>
-                <div className="ranking-main">
-                  <div className="ranking-name">{entry.display_name}</div>
-                  <div className="ranking-code">{entry.agent_id}</div>
-                </div>
-                <div className="ranking-metrics">
-                  <strong>{formatMoney(entry.total_equity)}</strong>
-                  <span className={percentClass(entry.return_pct)}>{formatNumber(entry.return_pct, 2)}%</span>
-                </div>
-              </article>
-            ))}
-            {!loadingRankings && rankings.length === 0 && <p className="empty-copy">No rankings yet.</p>}
-          </div>
-
-          <div className="panel-header compact section-gap">
-            <div>
               <p className="panel-kicker">Scanner</p>
-              <h3>Code Search</h3>
+              <h2>Code Search</h2>
             </div>
+            <span className="panel-chip">{codes.length} shown</span>
           </div>
           <input
             className="search-input"
