@@ -88,9 +88,9 @@ async def _poll_market(state: AppState) -> None:
     Poll market data.
 
     From 9:30 to 15:00, poll intraday and match orders.
-    After 21:00, finalize today's data using baostock.
+    After 20:00, finalize today's data using baostock.
     Note that do not use multiple workers or restart the
-    server frequently after 21:00.
+    server frequently after 20:00.
     """
     last_refreshed_date: date | None = None
     last_finalized_date: date | None = None
@@ -114,7 +114,7 @@ async def _poll_market(state: AppState) -> None:
                 await asyncio.sleep(max((tomorrow - now).total_seconds(), 0.0))
                 continue
 
-        if now.hour >= 21 and last_finalized_date != today:
+        if now.hour >= 20 and last_finalized_date != today:
             try:
                 await asyncio.to_thread(state.market.finalize_market_data_after_market_closed, today)
             except Exception:

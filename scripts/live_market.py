@@ -12,7 +12,7 @@ market.refresh_code_names()
 print(market.get_code_names())
 while True:
     print(market.fetch_intraday(
-        "600726",
-        today=date(2026, 4, 10),
+        "601133",
+        today=date(2026, 4, 13),
     ))
     time.sleep(10)
