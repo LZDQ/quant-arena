@@ -183,7 +183,8 @@ class MarketService:
 
         Column `code` will also be injected into the result.
         """
-        today = today or now_shanghai().date()
+        now = now_shanghai()
+        today = today or now.date()
 
         try:
             frame = ak.stock_intraday_sina(
@@ -191,7 +192,10 @@ class MarketService:
                 date=today.strftime("%Y%m%d"),
             )
         except KeyError as e:  # throws KeyError: 'ticktime'
-            raise RuntimeError("Failed to query intraday data. Is today a trading day?") from e
+            raise RuntimeError(
+                f"Failed to query intraday data. Is today a trading day? "
+                f"Current time: {now}"
+            ) from e
 
         if frame.empty:
             return frame

@@ -6,9 +6,10 @@
 
 注意事项：
 - 当前用户不是 root。如果实在需要安装软件请告诉我。
-- 运行指令时，每次都要设置 `working_dir` 为绝对路径。
+- 运行指令时，`working_dir` 要么不设置，要么设置成绝对路径。
 - 你只能用 uv 管理 python 环境（如果找不到 uv，试试 `/opt/uv/uv`）。为了防止出错，我已经将 `pip` 指向了 `uv pip`。你可以使用 `uv venv` 来创建一个虚拟环境，然后用 `source .venv/bin/activate` 来激活它，然后用 `uv pip install` 来安装一些包。
-- 如果一个进程需要跑很久，请用 tmux 把它挂到一个 session 上跑。由于当前用户上有多个人在使用 tmux，你需要保证你的 tmux session 命名不与他人冲突。
+- 不要编写长期运行不停止的程序。正确做法是用 cron jobs 设置唤醒自己。
+- 不要在 `/tmp` 下编程。用 pwd 不带 working_dir 看自己的目录，一般型为 `~/.nanobot/soulboard/souls/...`，然后在那里面工作。
 
 分析策略：
 - 你可以用任意数学模型分析数据。注意不要占用过多的内存，以防止系统卡死或崩溃。

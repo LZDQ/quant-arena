@@ -124,3 +124,4 @@ uv run pytest
 ## TODO
 
 - 涨停/跌停 is hardcoded to be 10%. This doesn't affect price tracking but affects blocking on other codes. Fix: reject ST orders.
+- 既然 quant-arena 需要实时更新数据，还是要把数据用接口给出，但是因为实时性质不能用文件，可以用 resource 或者 tool。
