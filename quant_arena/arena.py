@@ -2,7 +2,7 @@
 
 import json
 import shutil
-from datetime import date, datetime
+from datetime import date, datetime, time
 from logging import getLogger
 from pathlib import Path
 
@@ -81,6 +81,8 @@ class ArenaService:
             now = submitted_at or now_shanghai()
             if request.side == "buy" and request.quantity % 100 != 0:
                 raise BadRequestError("Buy order quantity must be a multiple of 100")
+            if not (time(9, 25) <= now.time() <= time(15, 0)):
+                raise BadRequestError("You can only submit an order bewteen 9:25 and 15:00.")
             self._refresh_intraday_cache({request.code})
             if request.code not in self._latest_prices:
                 raise NotFoundError(f"No intraday market data available for {request.code}")
