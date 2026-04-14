@@ -5,7 +5,7 @@ import asyncio
 import secrets
 from contextlib import AsyncExitStack
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 import uvicorn
@@ -88,12 +88,15 @@ async def _poll_market(state: AppState) -> None:
     Poll market data.
 
     From 9:30 to 15:00, poll intraday and match orders.
-    After 20:00, finalize today's data using baostock.
+    After 17:30, finalize today's daily bars using baostock.
+    After 20:00, finalize today's 5min bars using baostock.
     Note that do not use multiple workers or restart the
-    server frequently after 20:00.
+    server frequently when finalizing.
+    TODO: implement built-in continuation of finalization
     """
     last_refreshed_date: date | None = None
-    last_finalized_date: date | None = None
+    last_finalized_daily_date: date | None = None
+    last_finalized_5min_date: date | None = None
     is_trading_day = True
     while True:
         now = now_shanghai()
@@ -106,22 +109,29 @@ async def _poll_market(state: AppState) -> None:
                 is_trading_day = str(trade_date_frame.iloc[-1]["is_trading_day"]) == "1"
                 logger.info("Today's trading status is: %r", is_trading_day)
             else:
-                logger.error("Cannot fetch today's trading status. Defaulting to True")
-                is_trading_day = True
+                logger.error("Cannot fetch today's trading status. Defaulting to False")
+                is_trading_day = False
 
             if not is_trading_day:
                 tomorrow = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=now.tzinfo)
                 await asyncio.sleep(max((tomorrow - now).total_seconds(), 0.0))
                 continue
 
-        if now.hour >= 20 and last_finalized_date != today:
+        if now.time() >= time(17, 30) and last_finalized_daily_date != today:
             try:
-                await asyncio.to_thread(state.market.finalize_market_data_after_market_closed, today)
+                await asyncio.to_thread(state.market.finalize_market_data_daily, today)
             except Exception:
-                logger.exception("Exception in finalizing today's market")
-            last_finalized_date = today
+                logger.exception("Exception in finalizing today's daily bars")
+            last_finalized_daily_date = today
 
-        elif (now.hour > 9 or (now.hour == 9 and now.minute >= 30)) and now.hour < 15:
+        if now.time() >= time(20, 0) and last_finalized_5min_date != today:
+            try:
+                await asyncio.to_thread(state.market.finalize_market_data_5min, today)
+            except Exception:
+                logger.exception("Exception in finalizing today's 5min bars")
+            last_finalized_5min_date = today
+
+        if time(9, 30) <= now.time() <= time(15,00):
             try:
                 await asyncio.to_thread(state.arena.match_pending_orders)
             except Exception:

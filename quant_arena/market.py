@@ -204,20 +204,19 @@ class MarketService:
 
         return frame
 
-    def finalize_market_data_after_market_closed(
+    def finalize_market_data_daily(
         self,
         today: date | None = None,
         update_every: int = 500,
     ) -> None:
         """
-        Invoke this after market close to update persisted daily and 5-minute bars from baostock.
+        Invoke this after market close to update persisted daily bars from baostock.
 
-        baostock release time every day: after 8PM
+        baostock release time every day: after 17:30
         """
         logger.info("Start finalizing today's bar")
         today = today or now_shanghai().date()
         daily_frame = pd.DataFrame()
-        five_minute_frame = pd.DataFrame()
         code_names = self.get_code_names()
         if code_names is None:
             raise ValueError("No code names tracked")
@@ -226,15 +225,36 @@ class MarketService:
                 [daily_frame, self.fetch_daily_bar(code, today, today)],
                 ignore_index=True,
             )
+            if i % update_every == 0 or i == len(code_names):
+                logger.info("Finalization progress: %d/%d", i, len(code_names))
+                self.persist_daily_frame(daily_frame)
+                daily_frame = pd.DataFrame()
+        return
+
+    def finalize_market_data_5min(
+        self,
+        today: date | None = None,
+        update_every: int = 500,
+    ) -> None:
+        """
+        Invoke this after market close to update persisted 5-minute bars from baostock.
+
+        baostock release time every day: after 8PM
+        """
+        logger.info("Start finalizing today's bar")
+        today = today or now_shanghai().date()
+        five_minute_frame = pd.DataFrame()
+        code_names = self.get_code_names()
+        if code_names is None:
+            raise ValueError("No code names tracked")
+        for i, code in enumerate(code_names['code'], start=1):
             five_minute_frame = pd.concat(
                 [five_minute_frame, self.fetch_five_minute_bars(code, today, today)],
                 ignore_index=True,
             )
             if i % update_every == 0 or i == len(code_names):
                 logger.info("Finalization progress: %d/%d", i, len(code_names))
-                self.persist_daily_frame(daily_frame)
                 self.persist_five_minute_frame(five_minute_frame)
-                daily_frame = pd.DataFrame()
                 five_minute_frame = pd.DataFrame()
         return
 
