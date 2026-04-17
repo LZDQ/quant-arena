@@ -2,6 +2,7 @@
 
 from logging import getLogger
 import asyncio
+import os
 import secrets
 from contextlib import AsyncExitStack
 from contextlib import asynccontextmanager
@@ -9,7 +10,7 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -168,6 +169,8 @@ def create_app(
                         pass
 
     app = FastAPI(title="quant-arena", lifespan=lifespan)
+    base_url = os.environ.get("QUANT_ARENA_BASE_URL", "")
+    api = APIRouter()
 
     @app.exception_handler(ServiceError)
     async def handle_service_error(_: Request, exc: ServiceError) -> JSONResponse:
@@ -180,9 +183,9 @@ def create_app(
         allow_headers=["*"],
     )
     static_dir = Path(__file__).resolve().parent.parent / "static"
-    app.mount("/assets", StaticFiles(directory=static_dir / "assets", check_dir=False), name="assets")
+    app.mount(f"{base_url}/assets" if base_url else "/assets", StaticFiles(directory=static_dir / "assets", check_dir=False), name="assets")
     app.mount(
-        "/mcp/",
+        f"{base_url}/mcp/" if base_url else "/mcp/",
         wrap_mcp_with_agent_auth(
             mcp_server.streamable_http_app(),
             lambda: app.state.app_state.arena,
@@ -202,11 +205,11 @@ def create_app(
             role=agent.role,
         )
 
-    @app.get("/health")
+    @api.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.get("/api/paths", response_model=PathsResponse)
+    @api.get("/api/paths", response_model=PathsResponse)
     def get_paths() -> PathsResponse:
         state = get_state()
         return PathsResponse(
@@ -215,11 +218,11 @@ def create_app(
             market_data_root=state.config.market_data_root,
         )
 
-    @app.get("/api/agents")
+    @api.get("/api/agents")
     def list_agents() -> list[AgentResponse]:
         return [to_agent_response(agent_id, agent) for agent_id, agent in get_state().arena.list_agents()]
 
-    @app.post("/api/agents", response_model=AgentCreatedResponse)
+    @api.post("/api/agents", response_model=AgentCreatedResponse)
     def create_agent(request: CreateAgentRequest) -> AgentCreatedResponse:
         token_secret = secrets.token_urlsafe(24)
         agent = AgentConfig.model_validate(
@@ -234,7 +237,7 @@ def create_app(
             token_secret=token_secret,
         )
 
-    @app.get("/api/agents/{agent_id}", response_model=AgentSnapshotResponse)
+    @api.get("/api/agents/{agent_id}", response_model=AgentSnapshotResponse)
     def get_agent(agent_id: str) -> AgentSnapshotResponse:
         arena = get_state().arena
         return AgentSnapshotResponse(
@@ -244,11 +247,11 @@ def create_app(
             equity=arena.get_equity_curve(agent_id),
         )
 
-    @app.delete("/api/agents/{agent_id}", status_code=204)
+    @api.delete("/api/agents/{agent_id}", status_code=204)
     def delete_agent(agent_id: str) -> None:
         get_state().arena.delete_agent(agent_id)
 
-    @app.post("/api/market/codes/refresh", response_model=CodeRefreshResponse)
+    @api.post("/api/market/codes/refresh", response_model=CodeRefreshResponse)
     def refresh_market_codes() -> CodeRefreshResponse:
         state = get_state()
         state.market.refresh_code_names()
@@ -258,20 +261,32 @@ def create_app(
             entry_count=0 if code_names is None else len(code_names),
         )
 
-    @app.get("/api/market/codes", response_model=CodeSearchResponse)
+    @api.get("/api/market/codes", response_model=CodeSearchResponse)
     def search_market_codes(query: str = "", page: int = 1, page_size: int = 20) -> CodeSearchResponse:
         return _search_code_names(get_state(), query=query, page=page, page_size=page_size)
 
-    @app.get("/api/rankings")
+    @api.get("/api/rankings")
     def get_rankings(date_value: str | None = None) -> list[RankingSnapshot]:
         target_date = date.fromisoformat(date_value) if date_value else None
         return get_state().arena.get_rankings(target_date)
 
-    @app.api_route("/mcp", methods=["GET", "POST", "DELETE"])
+    @api.api_route("/mcp", methods=["GET", "POST", "DELETE"])
     def mcp_redirect() -> RedirectResponse:
-        return RedirectResponse(url="/mcp/", status_code=307)
+        target = f"{base_url}/mcp/" if base_url else "/mcp/"
+        return RedirectResponse(url=target, status_code=307)
 
-    @app.get("/{path:path}")
+    app.include_router(api, prefix=base_url)
+
+    if base_url:
+        @app.get("/")
+        def root_redirect() -> RedirectResponse:
+            return RedirectResponse(url=f"{base_url}/", status_code=307)
+
+        @app.get(base_url)
+        def frontend_base_redirect() -> RedirectResponse:
+            return RedirectResponse(url=f"{base_url}/", status_code=307)
+
+    @app.get(f"{base_url}/{{path:path}}" if base_url else "/{path:path}")
     def frontend(path: str):
         candidate = static_dir / path
         if path and candidate.is_file():

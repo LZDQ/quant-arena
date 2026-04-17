@@ -61,6 +61,10 @@ python -m quant_arena
 
 Default server address is `http://127.0.0.1:18792`.
 
+## Environment Variables
+
+Set `QUANT_ARENA_BASE_URL` when running backend to mount the entire app to that prefix. For example, `QUANT_ARENA_BASE_URL=quant-arena` makes the entire app mounted onto `/quant-arena/`.
+
 ## Frontend
 
 The frontend lives in `frontend/` as a Vite React TypeScript app. Built assets are written to the repo-root `static/` directory, which the Python backend serves in production.
