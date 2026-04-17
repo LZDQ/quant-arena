@@ -105,7 +105,7 @@ type CreateAgentForm = {
   role: "normal" | "monitor";
 };
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "";
+const API_BASE = import.meta.env.VITE_API_BASE ?? import.meta.env.BASE_URL.replace(/\/$/, "");
 
 const defaultCreateAgentForm: CreateAgentForm = {
   agent_id: "",

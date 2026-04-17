@@ -63,7 +63,9 @@ Default server address is `http://127.0.0.1:18792`.
 
 ## Environment Variables
 
-Set `QUANT_ARENA_BASE_URL` when running backend to mount the entire app to that prefix. For example, `QUANT_ARENA_BASE_URL=quant-arena` makes the entire app mounted onto `/quant-arena/`.
+To change mount path, for example to `/quant-arena/`, do these:
+1. Set `VITE_BASE_URL=/quant-arena` and build frontend.
+2. Set `QUANT_ARENA_BASE_URL=/quant-arena` and run the backend server.
 
 ## Frontend
 
