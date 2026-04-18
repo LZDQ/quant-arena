@@ -115,6 +115,31 @@ curl http://127.0.0.1:18792/mcp \
 
 Configure napcat to send messages when an agent submits an operation.
 
+```json
+{
+  "napcat": {
+    "enabled": true,
+    "url": "ws://127.0.0.1:3001/",
+    "access_token": "<token>",
+    "notify_on_submit": true,
+    "notify_on_cancel": true,
+    "notify_on_fill": false,
+    "destinations": {
+      "my-group": {
+        "type": "group",
+        "group_id": "12345678"
+      },
+      "my-private-chat": {
+        "type": "private",
+        "user_id": "12345678"
+      }
+    }
+  }
+}
+```
+
+
+
 ## Soulboard Integration
 
 Preconfigured agent prompts for `nanobot-soulboard` are under `quant_arena/resources/soulboard/`. Copy those markdown files to a workspace and make the agent trade.
