@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from quant_arena.schemas import AgentCreatedResponse, AgentResponse, AgentSnapshotResponse, CodeRefreshResponse, CodeSearchItem, CodeSearchResponse, CreateAgentRequest, OperationListResponse, PathsResponse, PortfolioResponse
+from quant_arena.schemas import AgentCreatedResponse, AgentResponse, AgentSnapshotResponse, CreateAgentRequest, OperationListResponse, PathsResponse, PortfolioResponse
 from quant_arena.arena import ArenaService
 from quant_arena.config import AgentConfig, AppConfig, load_app_config
 from quant_arena.errors import ServiceError
@@ -55,33 +55,6 @@ def _load_app_state(config_path: Path, market_service: MarketService | None = No
         fees=config.fees,
     )
     return AppState(config_path=config_path, config=config, market=market, arena=arena)
-
-
-def _search_code_names(
-    state: AppState,
-    query: str = "",
-    page: int = 1,
-    page_size: int = 20
-) -> CodeSearchResponse:
-    normalized_page = max(page, 1)
-    normalized_page_size = min(max(page_size, 1), 100)
-    code_names = state.market.get_code_names()
-    items = [] if code_names is None else [CodeSearchItem(code=row["code"], name=row["name"]) for _, row in code_names.iterrows()]
-    needle = query.strip().lower()
-    if needle:
-        items = [item for item in items if needle in item.code.lower() or needle in item.name.lower()]
-    total = len(items)
-    start = (normalized_page - 1) * normalized_page_size
-    end = start + normalized_page_size
-    return CodeSearchResponse(
-        query=query,
-        page=normalized_page,
-        page_size=normalized_page_size,
-        total=total,
-        items=items[start:end],
-        last_refreshed_at=None,
-        auto_refresh_enabled=state.config.enable_code_name_refresh,
-    )
 
 
 async def _poll_market(state: AppState) -> None:
@@ -250,20 +223,6 @@ def create_app(
     @api.delete("/api/agents/{agent_id}", status_code=204)
     def delete_agent(agent_id: str) -> None:
         get_state().arena.delete_agent(agent_id)
-
-    @api.post("/api/market/codes/refresh", response_model=CodeRefreshResponse)
-    def refresh_market_codes() -> CodeRefreshResponse:
-        state = get_state()
-        state.market.refresh_code_names()
-        code_names = state.market.get_code_names()
-        return CodeRefreshResponse(
-            refreshed_at=now_shanghai(),
-            entry_count=0 if code_names is None else len(code_names),
-        )
-
-    @api.get("/api/market/codes", response_model=CodeSearchResponse)
-    def search_market_codes(query: str = "", page: int = 1, page_size: int = 20) -> CodeSearchResponse:
-        return _search_code_names(get_state(), query=query, page=page, page_size=page_size)
 
     @api.get("/api/rankings")
     def get_rankings(date_value: str | None = None) -> list[RankingSnapshot]:

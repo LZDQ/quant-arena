@@ -30,6 +30,7 @@ type OrderRecord = {
   side: "buy" | "sell";
   quantity: number;
   limit_price: number;
+  comment: string;
   status: string;
   submitted_at: string;
   filled_at: string | null;
@@ -39,6 +40,7 @@ type OrderRecord = {
 
 type FillRecord = {
   fill_id: string;
+  order_id: string;
   code: string;
   side: "buy" | "sell";
   quantity: number;
@@ -93,11 +95,6 @@ type RankingEntry = {
   unrealized_pnl: number;
 };
 
-type CodeSearchResponse = {
-  total: number;
-  items: Array<{ code: string; name: string }>;
-};
-
 type CreateAgentForm = {
   agent_id: string;
   display_name: string;
@@ -113,6 +110,22 @@ const defaultCreateAgentForm: CreateAgentForm = {
   initial_cash: "100000",
   role: "normal",
 };
+
+const ORDERS_PAGE_SIZE = 8;
+
+function getAgentIdFromUrl(): string {
+  return new URLSearchParams(window.location.search).get("agent-id") ?? "";
+}
+
+function setAgentIdInUrl(agentId: string): void {
+  const url = new URL(window.location.href);
+  if (agentId) {
+    url.searchParams.set("agent-id", agentId);
+  } else {
+    url.searchParams.delete("agent-id");
+  }
+  window.history.replaceState(null, "", url);
+}
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -194,8 +207,6 @@ export function App() {
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
   const [snapshot, setSnapshot] = useState<AgentSnapshotResponse | null>(null);
   const [rankings, setRankings] = useState<RankingEntry[]>([]);
-  const [codes, setCodes] = useState<Array<{ code: string; name: string }>>([]);
-  const [codeQuery, setCodeQuery] = useState("");
   const [createAgentForm, setCreateAgentForm] = useState<CreateAgentForm>(defaultCreateAgentForm);
   const [loadingAgents, setLoadingAgents] = useState(true);
   const [loadingSnapshot, setLoadingSnapshot] = useState(false);
@@ -205,18 +216,30 @@ export function App() {
   const [createdToken, setCreatedToken] = useState<string>("");
   const [createdAgentId, setCreatedAgentId] = useState<string>("");
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const [ordersPage, setOrdersPage] = useState(1);
 
   useEffect(() => {
-    void refreshAgents();
+    void refreshAgents(getAgentIdFromUrl());
     void refreshRankings();
-    void searchCodes("");
   }, []);
 
   useEffect(() => {
+    const handlePopState = () => {
+      setSelectedAgentId(getAgentIdFromUrl());
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, []);
+
+  useEffect(() => {
+    setAgentIdInUrl(selectedAgentId);
     if (!selectedAgentId) {
       setSnapshot(null);
       return;
     }
+    setOrdersPage(1);
     void refreshSnapshot(selectedAgentId);
   }, [selectedAgentId]);
 
@@ -263,36 +286,6 @@ export function App() {
       setError((fetchError as Error).message);
     } finally {
       setLoadingRankings(false);
-    }
-  }
-
-  async function searchCodes(query: string) {
-    try {
-      const params = new URLSearchParams();
-      if (query) {
-        params.set("query", query);
-      }
-      params.set("page_size", "8");
-      const data = await apiFetch<CodeSearchResponse>(`/api/market/codes?${params.toString()}`);
-      setCodes(data.items);
-    } catch (fetchError) {
-      setError((fetchError as Error).message);
-    }
-  }
-
-  async function handleRefreshCodes() {
-    setMessage("");
-    setError("");
-    setCreatedToken("");
-    setCreatedAgentId("");
-    try {
-      const result = await apiFetch<{ entry_count: number }>("/api/market/codes/refresh", {
-        method: "POST",
-      });
-      setMessage(`Code list refreshed. ${result.entry_count} entries loaded.`);
-      await searchCodes(codeQuery);
-    } catch (fetchError) {
-      setError((fetchError as Error).message);
     }
   }
 
@@ -343,6 +336,14 @@ export function App() {
   const latestEquity = snapshot && snapshot.equity.length > 0 ? snapshot.equity[snapshot.equity.length - 1] : null;
   const equityPolyline = snapshot ? tinyEquityPath(snapshot.equity) : "";
   const agentById = new Map(agents.map((agent) => [agent.agent_id, agent]));
+  const orderedOrders = snapshot ? [...snapshot.operations.orders].reverse() : [];
+  const fillByOrderId = new Map((snapshot?.operations.fills ?? []).map((fill) => [fill.order_id, fill]));
+  const totalOrdersPages = Math.max(1, Math.ceil(orderedOrders.length / ORDERS_PAGE_SIZE));
+  const currentOrdersPage = Math.min(ordersPage, totalOrdersPages);
+  const visibleOrders = orderedOrders.slice(
+    (currentOrdersPage - 1) * ORDERS_PAGE_SIZE,
+    currentOrdersPage * ORDERS_PAGE_SIZE,
+  );
 
   return (
     <div className="app-shell">
@@ -353,11 +354,6 @@ export function App() {
           <p className="hero-copy">
             Bold live oversight for agents, positions, equity curve and market maintenance.
           </p>
-        </div>
-        <div className="hero-actions">
-          <button className="action-button" onClick={() => void handleRefreshCodes()}>
-            Refresh Codes
-          </button>
         </div>
       </header>
 
@@ -617,7 +613,32 @@ export function App() {
                       <p className="panel-kicker">Orders</p>
                       <h3>Pending + Recent</h3>
                     </div>
-                    <span className="panel-chip">{snapshot.operations.orders.length}</span>
+                    <div className="table-panel-tools">
+                      <span className="panel-chip">{snapshot.operations.orders.length}</span>
+                      {snapshot.operations.orders.length > 0 && (
+                        <div className="table-pager" aria-label="Orders pagination">
+                          <button
+                            className="pager-button"
+                            type="button"
+                            onClick={() => setOrdersPage((page) => Math.max(1, page - 1))}
+                            disabled={currentOrdersPage === 1}
+                          >
+                            Prev Page
+                          </button>
+                          <span className="pager-label">
+                            Page {currentOrdersPage}/{totalOrdersPages}
+                          </span>
+                          <button
+                            className="pager-button"
+                            type="button"
+                            onClick={() => setOrdersPage((page) => Math.min(totalOrdersPages, page + 1))}
+                            disabled={currentOrdersPage === totalOrdersPages}
+                          >
+                            Next Page
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                   <table>
                     <thead>
@@ -627,23 +648,39 @@ export function App() {
                         <th>Side</th>
                         <th>Qty</th>
                         <th>Limit</th>
+                        <th>Filled</th>
                         <th>Status</th>
+                        <th>Comment</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {snapshot.operations.orders.slice(-8).reverse().map((order) => (
-                        <tr key={order.order_id}>
-                          <td>{formatDateTime(order.submitted_at)}</td>
-                          <td>{order.code}</td>
-                          <td className={order.side === "buy" ? "up" : "down"}>{order.side.toUpperCase()}</td>
-                          <td>{order.quantity}</td>
-                          <td>{formatNumber(order.limit_price, 3)}</td>
-                          <td>{order.status}</td>
-                        </tr>
-                      ))}
+                      {visibleOrders.map((order) => {
+                        const fill = fillByOrderId.get(order.order_id);
+                        return (
+                          <tr key={order.order_id}>
+                            <td>{formatDateTime(order.submitted_at)}</td>
+                            <td>{order.code}</td>
+                            <td className={order.side === "buy" ? "up" : "down"}>{order.side.toUpperCase()}</td>
+                            <td>{order.quantity}</td>
+                            <td>{formatNumber(order.limit_price, 2)}</td>
+                            <td>{fill ? formatNumber(fill.executed_price, 2) : "--"}</td>
+                            <td>
+                              {order.filled_at ? (
+                                <div>Filled {formatDateTime(order.filled_at)}</div>
+                              ) : order.canceled_at ? (
+                                <div>Canceled {formatDateTime(order.canceled_at)}</div>
+                              ) : (
+                                <div>{order.status}</div>
+                              )}
+                              {order.rejection_reason && <div className="order-meta down">{order.rejection_reason}</div>}
+                            </td>
+                            <td className="comment-cell">{order.comment}</td>
+                          </tr>
+                        );
+                      })}
                       {snapshot.operations.orders.length === 0 && (
                         <tr>
-                          <td colSpan={6} className="empty-table">No order history.</td>
+                          <td colSpan={8} className="empty-table">No order history.</td>
                         </tr>
                       )}
                     </tbody>
@@ -654,34 +691,6 @@ export function App() {
           ) : null}
         </section>
 
-        <section className="panel panel-side">
-          <div className="panel-header">
-            <div>
-              <p className="panel-kicker">Scanner</p>
-              <h2>Code Search</h2>
-            </div>
-            <span className="panel-chip">{codes.length} shown</span>
-          </div>
-          <input
-            className="search-input"
-            value={codeQuery}
-            onChange={(event) => {
-              const nextValue = event.target.value;
-              setCodeQuery(nextValue);
-              void searchCodes(nextValue);
-            }}
-            placeholder="Search code or name"
-          />
-          <div className="code-list">
-            {codes.map((item) => (
-              <div className="code-row" key={item.code}>
-                <strong>{item.code}</strong>
-                <span>{item.name}</span>
-              </div>
-            ))}
-            {codes.length === 0 && <p className="empty-copy">No matching codes.</p>}
-          </div>
-        </section>
       </main>
     </div>
   );

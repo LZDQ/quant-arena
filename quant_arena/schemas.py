@@ -49,30 +49,6 @@ class PathsResponse(BaseModel):
     market_data_root: str
 
 
-class CodeSearchItem(BaseModel):
-    code: str
-    name: str
-
-
-class CodeSearchResponse(BaseModel):
-    """Paged code-directory response."""
-
-    query: str
-    page: int
-    page_size: int
-    total: int
-    items: list[CodeSearchItem]
-    last_refreshed_at: datetime | None = None
-    auto_refresh_enabled: bool
-
-
-class CodeRefreshResponse(BaseModel):
-    """Result of a code-directory refresh."""
-
-    refreshed_at: datetime
-    entry_count: int
-
-
 class CreateAgentRequest(BaseModel):
     """Request to create a new agent."""
 
