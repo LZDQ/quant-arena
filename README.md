@@ -111,21 +111,13 @@ curl http://127.0.0.1:18792/mcp \
   }'
 ```
 
-Tools:
+## Napcat
 
-- `get_portfolio`
-- `list_operations`
-- `submit_operation`
+Configure napcat to send messages when an agent submits an operation.
 
 ## Soulboard Integration
 
 Preconfigured agent prompts for `nanobot-soulboard` are under `quant_arena/resources/soulboard/`. Copy those markdown files to a workspace and make the agent trade.
-
-## Tests
-
-```bash
-uv run pytest
-```
 
 ## TODO
 
