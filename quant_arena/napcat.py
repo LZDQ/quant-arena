@@ -84,10 +84,13 @@ class NapCatNotifier:
                 raise
             except Exception:
                 logger.exception("NapCat notifier worker crashed")
-            logger.warning(
-                "NapCat notifier reconnecting in %.1f seconds",
-                self.config.reconnect_interval_seconds,
-            )
+            else:
+                logger.warning(
+                    "NapCat WebSocket disconnected; reconnecting in %.1f seconds",
+                    self.config.reconnect_interval_seconds,
+                )
+            if self._worker_task is None:
+                return
             await asyncio.sleep(self.config.reconnect_interval_seconds)
 
     async def _run_connection(self) -> None:
@@ -111,6 +114,12 @@ class NapCatNotifier:
             try:
                 await websocket.wait_closed()
             finally:
+                logger.warning(
+                    "NapCat WebSocket disconnected from %s with code=%r reason=%r",
+                    self.config.url,
+                    websocket.close_code,
+                    websocket.close_reason,
+                )
                 if self._websocket is websocket:
                     self._websocket = None
 

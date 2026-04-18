@@ -115,6 +115,7 @@ curl http://127.0.0.1:18792/mcp \
 
 Configure napcat to send messages when an agent submits an operation.
 
+Root config:
 ```json
 {
   "napcat": {
@@ -138,7 +139,14 @@ Configure napcat to send messages when an agent submits an operation.
 }
 ```
 
-
+Per-agent config:
+```json
+{
+  "qq_notify_target_keys": [
+    "my-group"
+  ]
+}
+```
 
 ## Soulboard Integration
 
