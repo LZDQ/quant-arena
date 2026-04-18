@@ -103,7 +103,7 @@ class NapCatNotifier:
             self._websocket = websocket
             login_info = await self._fetch_login_info(websocket)
             logger.info(
-                "Connected to NapCat WebSocket at {} as {} ({})",
+                "Connected to NapCat WebSocket at %s as %s (%s)",
                 self.config.url,
                 login_info.get("nickname"),
                 login_info.get("user_id"),
