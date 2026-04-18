@@ -13,6 +13,7 @@ from quant_arena.market import MarketService
 from quant_arena.clock import SHANGHAI_TZ, now_shanghai
 from quant_arena.config import AgentConfig, FeeConfig
 from quant_arena.errors import BadRequestError, ConflictError, NotFoundError
+from quant_arena.napcat import NapCatNotifier
 from quant_arena.models import (
     AgentState,
     EquityPoint,
@@ -37,10 +38,12 @@ class ArenaService:
         agents_root: Path,
         market: MarketService,
         fees: FeeConfig,
+        notifier: NapCatNotifier | None = None,
     ):
         self.agents_root = agents_root
         self.market = market
         self.fees = fees
+        self.notifier = notifier
         self._latest_prices: dict[str, float] = {}
         self._latest_price_times: dict[str, datetime] = {}
         self.agents_root.mkdir(parents=True, exist_ok=True)
@@ -99,6 +102,7 @@ class ArenaService:
             )
             state.orders.append(order)
             self._save_agent_state(state)
+            self._notify_order_submitted(agent, order)
             return order
 
     def cancel_order(self, agent_id: str, order_id: str) -> OrderRecord:
@@ -112,6 +116,7 @@ class ArenaService:
                     order.status = "canceled"
                     order.canceled_at = now_shanghai()
                     self._save_agent_state(state)
+                    self._notify_order_canceled(agent, order)
                     return order
             raise NotFoundError(f"Unknown order: {order_id}")
 
@@ -303,6 +308,7 @@ class ArenaService:
         order.status = "filled"
         order.filled_at = executed_at
         state.fills.append(fill)
+        self._notify_order_filled(self.get_agent(order.agent_id), order, fill)
 
     def _update_equity_snapshot(self, state: AgentState) -> None:
         portfolio = self._build_portfolio(state)
@@ -489,3 +495,18 @@ class ArenaService:
 
     def _state_path(self, agent_id: str) -> Path:
         return self._agent_dir(agent_id) / "state.json"
+
+    def _notify_order_submitted(self, agent: AgentConfig, order: OrderRecord) -> None:
+        if self.notifier is None:
+            return
+        self.notifier.notify_order_submitted(agent.display_name, agent.qq_notify_target_keys, order)
+
+    def _notify_order_canceled(self, agent: AgentConfig, order: OrderRecord) -> None:
+        if self.notifier is None:
+            return
+        self.notifier.notify_order_canceled(agent.display_name, agent.qq_notify_target_keys, order)
+
+    def _notify_order_filled(self, agent: AgentConfig, order: OrderRecord, fill: FillRecord) -> None:
+        if self.notifier is None:
+            return
+        self.notifier.notify_order_filled(agent.display_name, agent.qq_notify_target_keys, order, fill)

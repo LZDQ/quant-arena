@@ -2,9 +2,9 @@
 
 import json
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter, field_validator
 
 
 class FeeConfig(BaseModel):
@@ -23,6 +23,80 @@ class FeeConfig(BaseModel):
         description="Stamp tax in basis points applied to sell fills.",
     )
 
+
+class NapCatPrivateTargetConfig(BaseModel):
+    """One private-chat target."""
+
+    type: Literal["private"] = Field(
+        default="private",
+        description="NapCat destination type.",
+    )
+    user_id: str = Field(
+        min_length=1,
+        description="Target QQ user id as a string.",
+    )
+
+
+class NapCatGroupTargetConfig(BaseModel):
+    """One group-chat target."""
+
+    type: Literal["group"] = Field(
+        default="group",
+        description="NapCat destination type.",
+    )
+    group_id: str = Field(
+        min_length=1,
+        description="Target QQ group id as a string.",
+    )
+
+
+NapCatTargetConfig = Annotated[
+    NapCatPrivateTargetConfig | NapCatGroupTargetConfig,
+    Field(discriminator="type"),
+]
+
+
+class NapCatConfig(BaseModel):
+    """NapCat QQ notification settings."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Whether NapCat QQ notifications are enabled.",
+    )
+    url: str = Field(
+        default="ws://127.0.0.1:3001/",
+        description="Forward WebSocket URL exposed by NapCat.",
+    )
+    access_token: str = Field(
+        default="",
+        description="Access token used for NapCat WebSocket authorization.",
+    )
+    notify_on_submit: bool = Field(
+        default=True,
+        description="Whether to notify when orders are submitted.",
+    )
+    notify_on_cancel: bool = Field(
+        default=True,
+        description="Whether to notify when orders are canceled.",
+    )
+    notify_on_fill: bool = Field(
+        default=False,
+        description="Whether to notify when orders are filled.",
+    )
+    request_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description="Timeout for one NapCat API request over WebSocket.",
+    )
+    reconnect_interval_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description="Seconds to wait before reconnecting after a NapCat connection failure.",
+    )
+    destinations: dict[str, NapCatTargetConfig] = Field(
+        default_factory=dict,
+        description="Named QQ destinations available for per-agent notification routing.",
+    )
 
 class AppConfig(BaseModel):
     """Top-level server configuration."""
@@ -59,6 +133,10 @@ class AppConfig(BaseModel):
         default_factory=FeeConfig,
         description="Trading fee settings used by the simulation engine.",
     )
+    napcat: NapCatConfig = Field(
+        default_factory=NapCatConfig,
+        description="NapCat QQ notification settings.",
+    )
 
 
 class AgentConfig(BaseModel):
@@ -85,6 +163,10 @@ class AgentConfig(BaseModel):
     role: Literal["normal", "monitor"] = Field(
         default="normal",
         description="Agent role. monitor agents can inspect other agents through MCP tools.",
+    )
+    qq_notify_target_keys: list[str] = Field(
+        default_factory=list,
+        description="Named QQ notification destinations enabled for this agent.",
     )
 
 

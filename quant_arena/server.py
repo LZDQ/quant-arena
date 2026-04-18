@@ -22,6 +22,7 @@ from quant_arena.errors import ServiceError
 from quant_arena.market import MarketService
 from quant_arena.mcp_server import create_mcp_server, wrap_mcp_with_agent_auth
 from quant_arena.models import RankingSnapshot
+from quant_arena.napcat import NapCatNotifier
 from quant_arena.clock import now_shanghai
 
 logger = getLogger(__name__)
@@ -38,23 +39,27 @@ class AppState:
         config: AppConfig,
         market: MarketService,
         arena: ArenaService,
+        notifier: NapCatNotifier,
     ):
         self.config_path = config_path
         self.config = config
         self.market = market
         self.arena = arena
+        self.notifier = notifier
         self.background_task: asyncio.Task[None] | None = None
 
 
 def _load_app_state(config_path: Path, market_service: MarketService | None = None) -> AppState:
     config = load_app_config(config_path)
     market = market_service or MarketService(Path(config.market_data_root).resolve())
+    notifier = NapCatNotifier(config.napcat)
     arena = ArenaService(
         agents_root=Path(config.agents_root).resolve(),
         market=market,
         fees=config.fees,
+        notifier=notifier,
     )
-    return AppState(config_path=config_path, config=config, market=market, arena=arena)
+    return AppState(config_path=config_path, config=config, market=market, arena=arena, notifier=notifier)
 
 
 async def _poll_market(state: AppState) -> None:
@@ -129,6 +134,7 @@ def create_app(
             state = _load_app_state(resolved_config, market_service=market_service)
             app.state.app_state = state
             await stack.enter_async_context(mcp_server.session_manager.run())
+            await state.notifier.start()
             if state.config.enable_background_polling and state.config.polling_interval_seconds > 0:
                 state.background_task = asyncio.create_task(_poll_market(state))
             try:
@@ -140,6 +146,7 @@ def create_app(
                         await state.background_task
                     except asyncio.CancelledError:
                         pass
+                await state.notifier.close()
 
     app = FastAPI(title="quant-arena", lifespan=lifespan)
     base_url = os.environ.get("QUANT_ARENA_BASE_URL", "")
