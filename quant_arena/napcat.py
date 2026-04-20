@@ -3,6 +3,7 @@
 import asyncio
 import json
 import secrets
+from dataclasses import dataclass
 from logging import getLogger
 from typing import Any
 
@@ -15,22 +16,37 @@ from quant_arena.models import FillRecord, OrderRecord
 logger = getLogger(__name__)
 
 
+@dataclass(slots=True)
+class QueuedNapCatMessage:
+    """One outbound NapCat request."""
+
+    destination_key: str
+    destination_type: str
+    destination_id: str
+    action: str
+    params: dict[str, str]
+    agent_id: str
+    order_id: str
+    event_name: str
+    message_text: str
+    attempt: int = 0
+
+
 class NapCatNotifier:
     """Send backend notifications to NapCat over WebSocket."""
 
     def __init__(self, config: NapCatConfig):
         self.config = config
+        self._queue: asyncio.Queue[QueuedNapCatMessage] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._worker_task: asyncio.Task[None] | None = None
-        self._websocket = None
-        self._send_lock: asyncio.Lock | None = None
 
     async def start(self) -> None:
         if not self.config.enabled:
             logger.info("NapCat notifications are disabled")
             return
         self._loop = asyncio.get_running_loop()
-        self._send_lock = asyncio.Lock()
+        self._queue = asyncio.Queue()
         self._worker_task = asyncio.create_task(self._run(), name="napcat-notifier")
         logger.info("NapCat notifier enabled for %s with %d configured destinations", self.config.url, len(self.config.destinations))
 
@@ -44,8 +60,7 @@ class NapCatNotifier:
             pass
         finally:
             self._worker_task = None
-            self._websocket = None
-            self._send_lock = None
+            self._queue = None
             self._loop = None
         logger.info("NapCat notifier stopped")
 
@@ -103,7 +118,6 @@ class NapCatNotifier:
             additional_headers=headers or None,
             open_timeout=self.config.request_timeout_seconds,
         ) as websocket:
-            self._websocket = websocket
             login_info = await self._fetch_login_info(websocket)
             logger.info(
                 "Connected to NapCat WebSocket at %s as %s (%s)",
@@ -111,17 +125,38 @@ class NapCatNotifier:
                 login_info.get("nickname"),
                 login_info.get("user_id"),
             )
-            try:
-                await websocket.wait_closed()
-            finally:
-                logger.warning(
-                    "NapCat WebSocket disconnected from %s with code=%r reason=%r",
-                    self.config.url,
-                    websocket.close_code,
-                    websocket.close_reason,
-                )
-                if self._websocket is websocket:
-                    self._websocket = None
+            queue = self._queue
+            if queue is None:
+                logger.warning("NapCat notifier queue is not initialized after connect")
+                return
+            while True:
+                outbound = await queue.get()
+                try:
+                    await self._send_message(websocket, outbound)
+                except asyncio.CancelledError:
+                    raise
+                except ConnectionClosed:
+                    logger.warning(
+                        "NapCat WebSocket disconnected from %s with code=%r reason=%r",
+                        self.config.url,
+                        websocket.close_code,
+                        websocket.close_reason,
+                    )
+                    self._requeue_message(outbound, "connection closed before send completed")
+                    raise
+                except TimeoutError:
+                    self._requeue_message(outbound, "request timed out")
+                    raise
+                except Exception:
+                    logger.exception(
+                        "Unexpected NapCat send failure for event=%s agent=%s order=%s target=%s",
+                        outbound.event_name,
+                        outbound.agent_id,
+                        outbound.order_id,
+                        outbound.destination_key,
+                    )
+                finally:
+                    queue.task_done()
 
     async def _fetch_login_info(self, websocket) -> dict[str, Any]:
         try:
@@ -135,61 +170,22 @@ class NapCatNotifier:
             raise ValueError("NapCat get_login_info returned invalid data")
         return data
 
-    async def _send_message(
-        self,
-        destination_key: str,
-        destination_type: str,
-        action: str,
-        params: dict[str, str],
-        agent_id: str,
-        order_id: str,
-        event_name: str,
-    ) -> None:
-        websocket = self._websocket
-        send_lock = self._send_lock
-        if websocket is None or send_lock is None:
-            logger.warning(
-                "Skipping NapCat %s notification for agent=%s order=%s because notifier is not connected",
-                event_name,
-                agent_id,
-                order_id,
-            )
-            return
-        try:
-            async with send_lock:
-                response = await self._call_api(websocket, action, params)
-        except ConnectionClosed:
-            logger.exception(
-                "NapCat connection closed while sending %s notification for agent=%s order=%s target=%s",
-                event_name,
-                agent_id,
-                order_id,
-                destination_key,
-            )
-            return
-        except Exception:
-            logger.exception(
-                "NapCat send failed for event=%s agent=%s order=%s target=%s",
-                event_name,
-                agent_id,
-                order_id,
-                destination_key,
-            )
-            return
+    async def _send_message(self, websocket, outbound: QueuedNapCatMessage) -> None:
+        response = await self._call_api(websocket, outbound.action, outbound.params)
         logger.info(
             "Sent NapCat %s notification for agent=%s order=%s to %s(%s)",
-            event_name,
-            agent_id,
-            order_id,
-            destination_type,
-            destination_key,
+            outbound.event_name,
+            outbound.agent_id,
+            outbound.order_id,
+            outbound.destination_type,
+            outbound.destination_key,
         )
         logger.debug(
             "NapCat response for event=%s agent=%s order=%s target=%s: %r",
-            event_name,
-            agent_id,
-            order_id,
-            destination_key,
+            outbound.event_name,
+            outbound.agent_id,
+            outbound.order_id,
+            outbound.destination_key,
             response,
         )
 
@@ -234,12 +230,58 @@ class NapCatNotifier:
                 continue
             logger.debug("Ignoring unrelated NapCat response while waiting for echo=%s: %r", echo, payload)
 
+    def _requeue_message(self, outbound: QueuedNapCatMessage, reason: str) -> None:
+        if outbound.attempt >= 1:
+            logger.warning(
+                "Dropping NapCat %s notification for agent=%s order=%s target=%s after retry failure: %s",
+                outbound.event_name,
+                outbound.agent_id,
+                outbound.order_id,
+                outbound.destination_key,
+                reason,
+            )
+            return
+        queue = self._queue
+        loop = self._loop
+        if queue is None or loop is None:
+            logger.warning(
+                "Cannot requeue NapCat %s notification for agent=%s order=%s target=%s: %s",
+                outbound.event_name,
+                outbound.agent_id,
+                outbound.order_id,
+                outbound.destination_key,
+                reason,
+            )
+            return
+        retried = QueuedNapCatMessage(
+            destination_key=outbound.destination_key,
+            destination_type=outbound.destination_type,
+            destination_id=outbound.destination_id,
+            action=outbound.action,
+            params=outbound.params,
+            agent_id=outbound.agent_id,
+            order_id=outbound.order_id,
+            event_name=outbound.event_name,
+            message_text=outbound.message_text,
+            attempt=outbound.attempt + 1,
+        )
+        logger.warning(
+            "Requeueing NapCat %s notification for agent=%s order=%s target=%s: %s",
+            outbound.event_name,
+            outbound.agent_id,
+            outbound.order_id,
+            outbound.destination_key,
+            reason,
+        )
+        loop.call_soon_threadsafe(queue.put_nowait, retried)
+
     def _enqueue_for_targets(self, target_keys: list[str], agent_id: str, order_id: str, event_name: str, message_text: str) -> None:
         if not self.config.enabled:
             logger.debug("Skipping NapCat %s notification for order %s because notifier is disabled", event_name, order_id)
             return
+        queue = self._queue
         loop = self._loop
-        if loop is None:
+        if queue is None or loop is None:
             logger.warning(
                 "Skipping NapCat %s notification for agent=%s order=%s because notifier is not started",
                 event_name,
@@ -261,47 +303,44 @@ class NapCatNotifier:
                 )
                 continue
             if isinstance(target, NapCatPrivateTargetConfig):
-                destination_type = "private"
-                action = "send_private_msg"
-                params = {
-                    "user_id": target.user_id,
-                    "message": message_text,
-                }
-            else:
-                destination_type = "group"
-                action = "send_group_msg"
-                params = {
-                    "group_id": target.group_id,
-                    "message": message_text,
-                }
-            logger.info(
-                "Sending NapCat %s notification for agent=%s order=%s to %s(%s)",
-                event_name,
-                agent_id,
-                order_id,
-                destination_type,
-                target_key,
-            )
-            future = asyncio.run_coroutine_threadsafe(
-                self._send_message(
+                outbound = QueuedNapCatMessage(
                     destination_key=target_key,
-                    destination_type=destination_type,
-                    action=action,
-                    params=params,
+                    destination_type="private",
+                    destination_id=target.user_id,
+                    action="send_private_msg",
+                    params={
+                        "user_id": target.user_id,
+                        "message": message_text,
+                    },
                     agent_id=agent_id,
                     order_id=order_id,
                     event_name=event_name,
-                ),
-                loop,
+                    message_text=message_text,
+                )
+            else:
+                outbound = QueuedNapCatMessage(
+                    destination_key=target_key,
+                    destination_type="group",
+                    destination_id=target.group_id,
+                    action="send_group_msg",
+                    params={
+                        "group_id": target.group_id,
+                        "message": message_text,
+                    },
+                    agent_id=agent_id,
+                    order_id=order_id,
+                    event_name=event_name,
+                    message_text=message_text,
+                )
+            logger.info(
+                "Queueing NapCat %s notification for agent=%s order=%s to %s(%s)",
+                event_name,
+                agent_id,
+                order_id,
+                outbound.destination_type,
+                target_key,
             )
-            future.add_done_callback(self._log_send_task_failure)
-
-    @staticmethod
-    def _log_send_task_failure(future) -> None:
-        try:
-            future.result()
-        except Exception:
-            logger.exception("Unexpected NapCat send task failure")
+            loop.call_soon_threadsafe(queue.put_nowait, outbound)
 
     @staticmethod
     def _format_order_submitted(agent_display_name: str, order: OrderRecord) -> str:
