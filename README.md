@@ -184,7 +184,7 @@ Per-agent config:
 
 ## Soulboard Integration
 
-Preconfigured agent prompts for `nanobot-soulboard` are under `quant_arena/resources/soulboard/`. Copy those markdown files to a workspace and make the agent trade.
+Preconfigured agent prompts for `nanobot-soulboard` are under `soulboard/`. Copy those markdown files to a workspace and make the agent trade.
 
 ## TODO
 
