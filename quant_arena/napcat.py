@@ -345,15 +345,13 @@ class NapCatNotifier:
     @staticmethod
     def _format_order_submitted(agent_display_name: str, order: OrderRecord) -> str:
         return (
-            f"[quant-arena] Order submitted\n"
-            f"Agent: {agent_display_name} ({order.agent_id})\n"
-            f"Order ID: {order.order_id}\n"
-            f"Side: {order.side}\n"
-            f"Code: {order.code}\n"
-            f"Quantity: {order.quantity}\n"
-            f"Limit Price: {order.limit_price:.2f}\n"
-            f"Comment: {order.comment}\n"
-            f"Submitted At: {order.submitted_at.isoformat()}"
+            f"{agent_display_name} 提交订单\n"
+            f"操作：{order.side} {'买入' if order.side == 'buy' else '卖出'}\n"
+            f"代码：{order.code}\n"
+            f"数量：{order.quantity}\n"
+            f"价格：{order.limit_price:.2f}\n"
+            f"备注：{order.comment}\n"
+            f"时间：{order.submitted_at.isoformat(timespec='seconds')}"
         )
 
     @staticmethod
@@ -361,33 +359,24 @@ class NapCatNotifier:
         canceled_at = order.canceled_at.isoformat() if order.canceled_at is not None else "unknown"
         reason_line = ""
         if order.rejection_reason:
-            reason_line = f"\nReason: {order.rejection_reason}"
+            reason_line = f"\n原因：{order.rejection_reason}"
         return (
-            f"[quant-arena] Order canceled\n"
-            f"Agent: {agent_display_name} ({order.agent_id})\n"
-            f"Order ID: {order.order_id}\n"
-            f"Side: {order.side}\n"
-            f"Code: {order.code}\n"
-            f"Quantity: {order.quantity}\n"
-            f"Limit Price: {order.limit_price:.2f}\n"
-            f"Comment: {order.comment}\n"
-            f"Canceled At: {canceled_at}"
+            f"{agent_display_name} 撤单\n"
+            f"操作：{order.side} {'买入' if order.side == 'buy' else '卖出'}\n"
+            f"代码：{order.code}\n"
+            f"数量：{order.quantity}\n"
+            f"价格：{order.limit_price:.2f}\n"
+            f"备注：{order.comment}\n"
             f"{reason_line}"
         )
 
     @staticmethod
     def _format_order_filled(agent_display_name: str, order: OrderRecord, fill: FillRecord) -> str:
         return (
-            f"[quant-arena] Order filled\n"
-            f"Agent: {agent_display_name} ({order.agent_id})\n"
-            f"Order ID: {order.order_id}\n"
-            f"Side: {order.side}\n"
-            f"Code: {order.code}\n"
-            f"Quantity: {fill.quantity}\n"
-            f"Limit Price: {order.limit_price:.2f}\n"
-            f"Filled Price: {fill.executed_price:.2f}\n"
-            f"Commission: {fill.commission:.2f}\n"
-            f"Stamp Tax: {fill.stamp_tax:.2f}\n"
-            f"Comment: {order.comment}\n"
-            f"Filled At: {fill.executed_at.isoformat()}"
+            f"{agent_display_name} 成交\n"
+            f"操作：{order.side} {'买入' if order.side == 'buy' else '卖出'}\n"
+            f"代码：{order.code}\n"
+            f"数量：{fill.quantity}\n"
+            f"价格：{fill.executed_price:.2f}\n"
+            f"时间：{fill.executed_at.isoformat(timespec='seconds')}"
         )
