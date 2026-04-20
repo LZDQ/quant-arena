@@ -22,7 +22,9 @@ from quant_arena.errors import ServiceError
 from quant_arena.market import MarketService
 from quant_arena.mcp_server import create_mcp_server, wrap_mcp_with_agent_auth
 from quant_arena.models import RankingSnapshot
+from quant_arena.notifier import NotifierService
 from quant_arena.napcat import NapCatNotifier
+from quant_arena.qq_open import QQOpenNotifier
 from quant_arena.clock import now_shanghai
 
 logger = getLogger(__name__)
@@ -39,7 +41,7 @@ class AppState:
         config: AppConfig,
         market: MarketService,
         arena: ArenaService,
-        notifier: NapCatNotifier,
+        notifier: NotifierService,
     ):
         self.config_path = config_path
         self.config = config
@@ -52,7 +54,10 @@ class AppState:
 def _load_app_state(config_path: Path, market_service: MarketService | None = None) -> AppState:
     config = load_app_config(config_path)
     market = market_service or MarketService(Path(config.market_data_root).resolve())
-    notifier = NapCatNotifier(config.napcat)
+    notifier = NotifierService(
+        napcat=NapCatNotifier(config.napcat),
+        qq_open=QQOpenNotifier(config.qq_open),
+    )
     arena = ArenaService(
         agents_root=Path(config.agents_root).resolve(),
         market=market,

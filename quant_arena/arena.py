@@ -13,7 +13,7 @@ from quant_arena.market import MarketService
 from quant_arena.clock import SHANGHAI_TZ, now_shanghai
 from quant_arena.config import AgentConfig, FeeConfig
 from quant_arena.errors import BadRequestError, ConflictError, NotFoundError
-from quant_arena.napcat import NapCatNotifier
+from quant_arena.notifier import NotifierService
 from quant_arena.models import (
     AgentState,
     EquityPoint,
@@ -38,7 +38,7 @@ class ArenaService:
         agents_root: Path,
         market: MarketService,
         fees: FeeConfig,
-        notifier: NapCatNotifier | None = None,
+        notifier: NotifierService | None = None,
     ):
         self.agents_root = agents_root
         self.market = market
@@ -499,14 +499,14 @@ class ArenaService:
     def _notify_order_submitted(self, agent: AgentConfig, order: OrderRecord) -> None:
         if self.notifier is None:
             return
-        self.notifier.notify_order_submitted(agent.display_name, agent.qq_notify_target_keys, order)
+        self.notifier.notify_order_submitted(agent, order)
 
     def _notify_order_canceled(self, agent: AgentConfig, order: OrderRecord) -> None:
         if self.notifier is None:
             return
-        self.notifier.notify_order_canceled(agent.display_name, agent.qq_notify_target_keys, order)
+        self.notifier.notify_order_canceled(agent, order)
 
     def _notify_order_filled(self, agent: AgentConfig, order: OrderRecord, fill: FillRecord) -> None:
         if self.notifier is None:
             return
-        self.notifier.notify_order_filled(agent.display_name, agent.qq_notify_target_keys, order, fill)
+        self.notifier.notify_order_filled(agent, order, fill)
