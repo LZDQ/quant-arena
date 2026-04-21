@@ -133,29 +133,40 @@ class ArenaService:
         today's Shanghai trade date, it is marked canceled with a rejection reason and
         skipped from matching.
         """
-        with self._order_lock:
-            timestamp = now_shanghai()
-            today = timestamp.date()
-            for agent_id, agent in self.list_agents():
-                state = self._load_or_init_agent_state(agent_id, agent)
-                tracked_codes = {
-                    order.code for order in state.orders if order.status == "pending"
-                } | set(state.positions.keys())
-                if not tracked_codes:
-                    continue
-                intraday_frame = self._refresh_intraday_cache(tracked_codes)
-                intraday_by_code = {
-                    code: frame.reset_index(drop=True)
-                    for code, frame in intraday_frame.groupby("code")
-                } if not intraday_frame.empty else {}
-                latest_daily_bars = self.market.get_latest_daily_bar()
-                daily_bars_by_code: dict[str, pd.Series] = {}
-                if latest_daily_bars is not None and not latest_daily_bars.empty:
-                    for _, row in latest_daily_bars.iterrows():
-                        code = str(row["code"])
-                        if code in tracked_codes:
-                            daily_bars_by_code[code] = row
+        timestamp = now_shanghai()
+        today = timestamp.date()
+        latest_daily_bars = self.market.get_latest_daily_bar()
+        fetched_codes: set[str] = set()
+        intraday_cache_by_code: dict[str, pd.DataFrame] = {}
+        for agent_id, agent in self.list_agents():
+            state = self._load_or_init_agent_state(agent_id, agent)
+            tracked_codes = {
+                order.code for order in state.orders if order.status == "pending"
+            } | set(state.positions.keys())
+            if not tracked_codes:
+                continue
+            missing_codes = tracked_codes - fetched_codes
+            if missing_codes:
+                intraday_frame = self._refresh_intraday_cache(missing_codes)
+                if not intraday_frame.empty:
+                    for code, frame in intraday_frame.groupby("code"):
+                        intraday_cache_by_code[code] = frame.reset_index(drop=True)
+                for code in missing_codes:
+                    fetched_codes.add(code)
+            intraday_by_code = {
+                code: intraday_cache_by_code[code]
+                for code in tracked_codes
+                if code in intraday_cache_by_code
+            }
+            daily_bars_by_code: dict[str, pd.Series] = {}
+            if latest_daily_bars is not None and not latest_daily_bars.empty:
+                for _, row in latest_daily_bars.iterrows():
+                    code = str(row["code"])
+                    if code in tracked_codes:
+                        daily_bars_by_code[code] = row
 
+            with self._order_lock:
+                state = self._load_or_init_agent_state(agent_id, agent)
                 for order in state.orders:
                     if order.status != "pending":
                         continue
