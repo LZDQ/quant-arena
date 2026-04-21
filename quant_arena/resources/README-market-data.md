@@ -36,6 +36,8 @@ The data is from baostock and updates every day after 9PM.
 Live intraday data is not supported. To query code you are interested in, use this example (install `akshare` beforehand):
 
 ```py
+# Example to fetch intraday data
+# Only available after 9:25 AM
 import akshare as ak
 
 code = '600726'
