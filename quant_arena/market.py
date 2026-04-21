@@ -215,6 +215,7 @@ class MarketService:
         baostock release time every day: after 17:30
         """
         logger.info("Start finalizing today's bar")
+        bs.login()
         today = today or now_shanghai().date()
         daily_frame = pd.DataFrame()
         code_names = self.get_code_names()
@@ -242,6 +243,7 @@ class MarketService:
         baostock release time every day: after 8PM
         """
         logger.info("Start finalizing today's bar")
+        bs.login()
         today = today or now_shanghai().date()
         five_minute_frame = pd.DataFrame()
         code_names = self.get_code_names()
