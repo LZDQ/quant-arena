@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
 	"akshare>=1.18.54",
-	"baostock>=0.8.9",
+	"baostock>=0.9.1",
 	"fastapi>=0.115.0,<1.0.0",
 	"httpx>=0.28.0,<1.0.0",
 	"mcp>=1.26.0,<2.0.0",
