@@ -55,7 +55,7 @@ def _load_app_state(config_path: Path, market_service: MarketService | None = No
     config = load_app_config(config_path)
     market = market_service or MarketService(Path(config.market_data_root).resolve())
     notifier = NotifierService(
-        napcat=NapCatNotifier(config.napcat),
+        napcat=NapCatNotifier(config.napcat, Path(config.agents_root).resolve()),
         qq_open=QQOpenNotifier(config.qq_open),
     )
     arena = ArenaService(

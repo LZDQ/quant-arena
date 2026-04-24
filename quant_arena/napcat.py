@@ -5,15 +5,26 @@ import json
 import secrets
 from dataclasses import dataclass
 from logging import getLogger
-from typing import Any
+from pathlib import Path
+from typing import TypeAlias
 
 import websockets
 from websockets.exceptions import ConnectionClosed
+from pydantic import BaseModel, Field
 
-from quant_arena.config import NapCatConfig, NapCatGroupTargetConfig, NapCatPrivateTargetConfig
+from quant_arena.config import NapCatConfig, NapCatPrivateTargetConfig
 from quant_arena.models import FillRecord, OrderRecord
 
 logger = getLogger(__name__)
+
+
+NapCatTextSegmentData: TypeAlias = dict[str, str]
+NapCatReplySegmentData: TypeAlias = dict[str, str]
+NapCatSegment: TypeAlias = dict[str, str | NapCatTextSegmentData | NapCatReplySegmentData]
+NapCatMessagePayload: TypeAlias = str | list[NapCatSegment]
+NapCatRequestParams: TypeAlias = dict[str, str | NapCatMessagePayload]
+NapCatResponseData: TypeAlias = dict[str, str | int | float | bool | None]
+NapCatResponse: TypeAlias = dict[str, str | int | float | bool | None | NapCatResponseData]
 
 
 @dataclass(slots=True)
@@ -24,7 +35,7 @@ class QueuedNapCatMessage:
     destination_type: str
     destination_id: str
     action: str
-    params: dict[str, str]
+    params: NapCatRequestParams
     agent_id: str
     order_id: str
     event_name: str
@@ -32,11 +43,32 @@ class QueuedNapCatMessage:
     attempt: int = 0
 
 
+class NapCatOrderMessageState(BaseModel):
+    """Persisted NapCat message ids for one order in one target."""
+
+    submitted_message_id: str | None = None
+    canceled_message_id: str | None = None
+    filled_message_id: str | None = None
+
+
+class NapCatTargetMessageState(BaseModel):
+    """Persisted NapCat message ids grouped by destination target."""
+
+    orders: dict[str, NapCatOrderMessageState] = Field(default_factory=dict)
+
+
+class NapCatMessageState(BaseModel):
+    """Per-agent NapCat auxiliary message state."""
+
+    targets: dict[str, NapCatTargetMessageState] = Field(default_factory=dict)
+
+
 class NapCatNotifier:
     """Send backend notifications to NapCat over WebSocket."""
 
-    def __init__(self, config: NapCatConfig):
+    def __init__(self, config: NapCatConfig, agents_root: Path):
         self.config = config
+        self.agents_root = agents_root
         self._queue: asyncio.Queue[QueuedNapCatMessage] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._worker_task: asyncio.Task[None] | None = None
@@ -158,7 +190,7 @@ class NapCatNotifier:
                 finally:
                     queue.task_done()
 
-    async def _fetch_login_info(self, websocket) -> dict[str, Any]:
+    async def _fetch_login_info(self, websocket) -> NapCatResponseData:
         try:
             response = await self._call_api(websocket, "get_login_info", {})
         except Exception:
@@ -172,6 +204,7 @@ class NapCatNotifier:
 
     async def _send_message(self, websocket, outbound: QueuedNapCatMessage) -> None:
         response = await self._call_api(websocket, outbound.action, outbound.params)
+        self._record_sent_message_id(outbound, response)
         logger.info(
             "Sent NapCat %s notification for agent=%s order=%s to %s(%s)",
             outbound.event_name,
@@ -189,7 +222,7 @@ class NapCatNotifier:
             response,
         )
 
-    async def _call_api(self, websocket, action: str, params: dict[str, str]) -> dict[str, Any]:
+    async def _call_api(self, websocket, action: str, params: NapCatRequestParams) -> NapCatResponse:
         echo = secrets.token_hex(12)
         request = {
             "action": action,
@@ -211,7 +244,7 @@ class NapCatNotifier:
             raise ValueError(f"NapCat API action {action} failed")
         return response
 
-    async def _receive_response(self, websocket, echo: str) -> dict[str, Any]:
+    async def _receive_response(self, websocket, echo: str) -> NapCatResponse:
         while True:
             raw = await asyncio.wait_for(websocket.recv(), timeout=self.config.request_timeout_seconds)
             try:
@@ -310,7 +343,7 @@ class NapCatNotifier:
                     action="send_private_msg",
                     params={
                         "user_id": target.user_id,
-                        "message": message_text,
+                        "message": self._build_message_payload(agent_id, target_key, order_id, event_name, message_text),
                     },
                     agent_id=agent_id,
                     order_id=order_id,
@@ -325,7 +358,7 @@ class NapCatNotifier:
                     action="send_group_msg",
                     params={
                         "group_id": target.group_id,
-                        "message": message_text,
+                        "message": self._build_message_payload(agent_id, target_key, order_id, event_name, message_text),
                     },
                     agent_id=agent_id,
                     order_id=order_id,
@@ -342,6 +375,89 @@ class NapCatNotifier:
             )
             loop.call_soon_threadsafe(queue.put_nowait, outbound)
 
+    def _build_message_payload(
+        self,
+        agent_id: str,
+        target_key: str,
+        order_id: str,
+        event_name: str,
+        message_text: str,
+    ) -> NapCatMessagePayload:
+        if event_name == "submit":
+            return message_text
+        state = self._load_message_state(agent_id)
+        target_state = state.targets.get(target_key)
+        if target_state is None:
+            return message_text
+        order_state = target_state.orders.get(order_id)
+        if order_state is None or not order_state.submitted_message_id:
+            return message_text
+        return [
+            {
+                "type": "reply",
+                "data": {
+                    "id": order_state.submitted_message_id,
+                },
+            },
+            {
+                "type": "text",
+                "data": {
+                    "text": message_text,
+                },
+            },
+        ]
+
+    def _record_sent_message_id(self, outbound: QueuedNapCatMessage, response: NapCatResponse) -> None:
+        message_id = self._extract_message_id(response)
+        if message_id is None:
+            logger.debug(
+                "NapCat response for event=%s agent=%s order=%s target=%s did not include a message_id",
+                outbound.event_name,
+                outbound.agent_id,
+                outbound.order_id,
+                outbound.destination_key,
+            )
+            return
+        state = self._load_message_state(outbound.agent_id)
+        target_state = state.targets.setdefault(outbound.destination_key, NapCatTargetMessageState())
+        order_state = target_state.orders.setdefault(outbound.order_id, NapCatOrderMessageState())
+        if outbound.event_name == "submit":
+            order_state.submitted_message_id = message_id
+        elif outbound.event_name == "cancel":
+            order_state.canceled_message_id = message_id
+        elif outbound.event_name == "fill":
+            order_state.filled_message_id = message_id
+        self._save_message_state(outbound.agent_id, state)
+
+    @staticmethod
+    def _extract_message_id(response: NapCatResponse) -> str | None:
+        data = response.get("data")
+        if not isinstance(data, dict):
+            return None
+        message_id = data.get("message_id")
+        if message_id is None:
+            return None
+        return str(message_id)
+
+    def _load_message_state(self, agent_id: str) -> NapCatMessageState:
+        path = self._message_state_path(agent_id)
+        if not path.exists():
+            return NapCatMessageState()
+        with path.open("r", encoding="utf-8") as handle:
+            return NapCatMessageState.model_validate(json.load(handle))
+
+    def _save_message_state(self, agent_id: str, state: NapCatMessageState) -> None:
+        self._agent_dir(agent_id).mkdir(parents=True, exist_ok=True)
+        with self._message_state_path(agent_id).open("w", encoding="utf-8") as handle:
+            json.dump(state.model_dump(mode="json"), handle, ensure_ascii=False, indent="\t")
+            handle.write("\n")
+
+    def _agent_dir(self, agent_id: str) -> Path:
+        return self.agents_root / agent_id
+
+    def _message_state_path(self, agent_id: str) -> Path:
+        return self._agent_dir(agent_id) / "napcat_message_state.json"
+
     @staticmethod
     def _format_order_submitted(agent_display_name: str, order: OrderRecord) -> str:
         return (
@@ -356,27 +472,23 @@ class NapCatNotifier:
 
     @staticmethod
     def _format_order_canceled(agent_display_name: str, order: OrderRecord) -> str:
-        canceled_at = order.canceled_at.isoformat() if order.canceled_at is not None else "unknown"
+        # canceled_at = order.canceled_at.isoformat() if order.canceled_at is not None else "unknown"
         reason_line = ""
         if order.rejection_reason:
             reason_line = f"\n原因：{order.rejection_reason}"
         return (
-            f"{agent_display_name} 撤单\n"
-            f"操作：{order.side} {'买入' if order.side == 'buy' else '卖出'}\n"
-            f"代码：{order.code}\n"
-            f"数量：{order.quantity}\n"
-            f"价格：{order.limit_price:.2f}\n"
-            f"备注：{order.comment}\n"
+            f"{agent_display_name} 撤单："
+            f"{'买入' if order.side == 'buy' else '卖出'} {order.code} "
+            f"数量 {order.quantity} "
+            f"价格 {order.limit_price:.2f}"
             f"{reason_line}"
         )
 
     @staticmethod
     def _format_order_filled(agent_display_name: str, order: OrderRecord, fill: FillRecord) -> str:
         return (
-            f"{agent_display_name} 成交\n"
-            f"操作：{order.side} {'买入' if order.side == 'buy' else '卖出'}\n"
-            f"代码：{order.code}\n"
-            f"数量：{fill.quantity}\n"
-            f"价格：{fill.executed_price:.2f}\n"
-            f"时间：{fill.executed_at.isoformat(timespec='seconds')}"
+            f"{agent_display_name} 成交："
+            f"{'买入' if order.side == 'buy' else '卖出'} {order.code} "
+            f"数量 {fill.quantity} "
+            f"成交价 {fill.executed_price:.2f}"
         )
