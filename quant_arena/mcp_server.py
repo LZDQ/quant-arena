@@ -60,11 +60,16 @@ def create_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
     @mcp.tool()
     def list_operations(
         agent_id: str | None = None,
-        limit: int | None = None,
+        limit: int = 5,
         start: str | None = None,
         end: str | None = None,
     ) -> OperationLog:
-        """List orders and fills. Normal agents can only inspect themselves."""
+        """List orders and fills.
+
+        Normal agents can only inspect themselves.
+        `start` and `end` are optional ISO 8601 datetime filters applied to order submit time
+        and fill execution time. `limit` defaults to the last 5 matching orders and fills.
+        """
 
         current_agent_id = _get_current_agent_id()
         target_agent_id = agent_id or current_agent_id
