@@ -158,6 +158,60 @@ class QQOpenConfig(BaseModel):
     )
 
 
+class IBConnectionConfig(BaseModel):
+    """One IB Gateway / TWS endpoint."""
+
+    host: str = Field(
+        default="127.0.0.1",
+        description="Hostname or IP of IB Gateway or TWS.",
+    )
+    port: int = Field(
+        description="TCP port. IB Gateway: 4001 live / 4002 paper. TWS: 7496 live / 7497 paper.",
+    )
+    client_id: int = Field(
+        default=2,
+        description="ib_insync clientId for this connection.",
+    )
+
+
+class IBConfig(BaseModel):
+    """Interactive Brokers paper/real trading settings."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Whether the IB integration is enabled.",
+    )
+    paper: IBConnectionConfig = Field(
+        default_factory=lambda: IBConnectionConfig(port=4002, client_id=2),
+        description="IB Gateway / TWS endpoint for the paper trading account.",
+    )
+    real: IBConnectionConfig = Field(
+        default_factory=lambda: IBConnectionConfig(port=4001, client_id=3),
+        description="IB Gateway / TWS endpoint for the real trading account.",
+    )
+    paper_token: str = Field(
+        default="",
+        description="Bearer token an MCP client must present to access the paper account.",
+    )
+    real_token: str = Field(
+        default="",
+        description="Bearer token an MCP client must present to access the real account.",
+    )
+    request_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description="Timeout for one IB MCP tool call.",
+    )
+    default_exchange: str = Field(
+        default="SMART",
+        description="Default exchange used when resolving stock contracts.",
+    )
+    default_currency: str = Field(
+        default="USD",
+        description="Default currency used when resolving stock contracts.",
+    )
+
+
 class AppConfig(BaseModel):
     """Top-level server configuration."""
 
@@ -200,6 +254,10 @@ class AppConfig(BaseModel):
     qq_open: QQOpenConfig = Field(
         default_factory=QQOpenConfig,
         description="QQ Open Platform notification settings.",
+    )
+    ib: IBConfig = Field(
+        default_factory=IBConfig,
+        description="Interactive Brokers paper/real trading settings.",
     )
 
 

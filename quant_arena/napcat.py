@@ -3,6 +3,7 @@
 import asyncio
 import json
 import secrets
+import threading
 from dataclasses import dataclass
 from logging import getLogger
 from pathlib import Path
@@ -72,29 +73,97 @@ class NapCatNotifier:
         self._queue: asyncio.Queue[QueuedNapCatMessage] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._worker_task: asyncio.Task[None] | None = None
+        self._thread: threading.Thread | None = None
+        self._ready: threading.Event = threading.Event()
+        self._stop_event: asyncio.Event | None = None
+        self._state_lock = threading.Lock()
 
     async def start(self) -> None:
+        """
+        Start the NapCat notifier on a dedicated thread + event loop.
+
+        Running the WebSocket worker on its own loop keeps the websockets
+        keepalive task and per-request `wait_for` deadlines isolated from
+        whatever else is happening on the main FastAPI/asyncio loop or its
+        threadpool — so heavy intraday polling / pandas work in another
+        thread can no longer starve the heartbeat into a 1011 close.
+        """
         if not self.config.enabled:
             logger.info("NapCat notifications are disabled")
             return
-        self._loop = asyncio.get_running_loop()
-        self._queue = asyncio.Queue()
-        self._worker_task = asyncio.create_task(self._run(), name="napcat-notifier")
-        logger.info("NapCat notifier enabled for %s with %d configured destinations", self.config.url, len(self.config.destinations))
+        self._ready.clear()
+        self._thread = threading.Thread(
+            target=self._thread_main,
+            name="napcat-notifier-loop",
+            daemon=True,
+        )
+        self._thread.start()
+        if not self._ready.wait(timeout=5.0):
+            logger.error("NapCat notifier thread failed to initialize within 5s")
+            return
+        logger.info(
+            "NapCat notifier enabled for %s with %d configured destinations",
+            self.config.url,
+            len(self.config.destinations),
+        )
 
     async def close(self) -> None:
-        if self._worker_task is None:
+        if self._thread is None:
             return
-        self._worker_task.cancel()
-        try:
-            await self._worker_task
-        except asyncio.CancelledError:
-            pass
-        finally:
-            self._worker_task = None
-            self._queue = None
-            self._loop = None
+        loop = self._loop
+        stop_event = self._stop_event
+        if loop is not None and stop_event is not None and loop.is_running():
+            loop.call_soon_threadsafe(stop_event.set)
+        self._thread.join(timeout=5.0)
+        self._thread = None
+        self._loop = None
+        self._queue = None
+        self._stop_event = None
+        self._worker_task = None
         logger.info("NapCat notifier stopped")
+
+    def _thread_main(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        self._queue = asyncio.Queue()
+        self._stop_event = asyncio.Event()
+        self._ready.set()
+        try:
+            loop.run_until_complete(self._supervise())
+        except Exception:
+            logger.exception("NapCat notifier thread crashed")
+        finally:
+            try:
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            finally:
+                loop.close()
+
+    async def _supervise(self) -> None:
+        assert self._stop_event is not None
+        worker = asyncio.create_task(self._run(), name="napcat-notifier")
+        self._worker_task = worker
+        stop_wait = asyncio.create_task(self._stop_event.wait(), name="napcat-stop")
+        try:
+            done, _ = await asyncio.wait(
+                {worker, stop_wait}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if stop_wait in done:
+                worker.cancel()
+                try:
+                    await worker
+                except asyncio.CancelledError:
+                    pass
+        finally:
+            stop_wait.cancel()
+            try:
+                await stop_wait
+            except (asyncio.CancelledError, Exception):
+                pass
 
     def notify_order_submitted(self, agent_display_name: str, target_keys: list[str], order: OrderRecord) -> None:
         if not self.config.notify_on_submit:
@@ -149,6 +218,10 @@ class NapCatNotifier:
             self.config.url,
             additional_headers=headers or None,
             open_timeout=self.config.request_timeout_seconds,
+            ping_interval=20,
+            ping_timeout=60,
+            close_timeout=5,
+            max_queue=64,
         ) as websocket:
             login_info = await self._fetch_login_info(websocket)
             logger.info(
@@ -177,8 +250,17 @@ class NapCatNotifier:
                     self._requeue_message(outbound, "connection closed before send completed")
                     raise
                 except TimeoutError:
+                    # Do NOT drop the socket. NapCat sometimes takes >request_timeout
+                    # to ack a send_msg; the connection itself is fine as long as
+                    # websockets ping/pong is still flowing on its own task.
+                    logger.warning(
+                        "NapCat send timed out for event=%s agent=%s order=%s target=%s; keeping connection",
+                        outbound.event_name,
+                        outbound.agent_id,
+                        outbound.order_id,
+                        outbound.destination_key,
+                    )
                     self._requeue_message(outbound, "request timed out")
-                    raise
                 except Exception:
                     logger.exception(
                         "Unexpected NapCat send failure for event=%s agent=%s order=%s target=%s",
@@ -441,16 +523,18 @@ class NapCatNotifier:
 
     def _load_message_state(self, agent_id: str) -> NapCatMessageState:
         path = self._message_state_path(agent_id)
-        if not path.exists():
-            return NapCatMessageState()
-        with path.open("r", encoding="utf-8") as handle:
-            return NapCatMessageState.model_validate(json.load(handle))
+        with self._state_lock:
+            if not path.exists():
+                return NapCatMessageState()
+            with path.open("r", encoding="utf-8") as handle:
+                return NapCatMessageState.model_validate(json.load(handle))
 
     def _save_message_state(self, agent_id: str, state: NapCatMessageState) -> None:
-        self._agent_dir(agent_id).mkdir(parents=True, exist_ok=True)
-        with self._message_state_path(agent_id).open("w", encoding="utf-8") as handle:
-            json.dump(state.model_dump(mode="json"), handle, ensure_ascii=False, indent="\t")
-            handle.write("\n")
+        with self._state_lock:
+            self._agent_dir(agent_id).mkdir(parents=True, exist_ok=True)
+            with self._message_state_path(agent_id).open("w", encoding="utf-8") as handle:
+                json.dump(state.model_dump(mode="json"), handle, ensure_ascii=False, indent="\t")
+                handle.write("\n")
 
     def _agent_dir(self, agent_id: str) -> Path:
         return self.agents_root / agent_id

@@ -1,4 +1,4 @@
-"""Official MCP server integration for quant-arena."""
+"""A-share MCP server integration for quant-arena."""
 
 from contextvars import ContextVar
 from datetime import datetime
@@ -9,7 +9,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from quant_arena.arena import ArenaService
+from quant_arena.ashare_arena import ArenaService
 from quant_arena.errors import BadRequestError
 from quant_arena.models import AgentMetadata, MonitoredAgentSnapshot, OperationLog, OrderRecord, PortfolioSnapshot, SubmitOrder
 
@@ -32,11 +32,11 @@ def _require_monitor_agent(get_arena: Callable[[], ArenaService]) -> str:
     return agent_id
 
 
-def create_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
-    """Create the official MCP server."""
+def create_ashare_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
+    """Create the A-share arena MCP server."""
 
     mcp = FastMCP(
-        "quant-arena",
+        "quant-arena-ashare",
         json_response=True,
         stateless_http=True,
         streamable_http_path="/",

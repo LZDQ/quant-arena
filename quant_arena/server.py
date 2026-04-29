@@ -16,11 +16,13 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from quant_arena.schemas import AgentCreatedResponse, AgentResponse, AgentSnapshotResponse, CreateAgentRequest, OperationListResponse, PathsResponse, PortfolioResponse
-from quant_arena.arena import ArenaService
+from quant_arena.ashare_arena import ArenaService
 from quant_arena.config import AgentConfig, AppConfig, load_app_config
 from quant_arena.errors import ServiceError
-from quant_arena.market import MarketService
-from quant_arena.mcp_server import create_mcp_server, wrap_mcp_with_agent_auth
+from quant_arena.ashare import AShareService
+from quant_arena.ashare_mcp import create_ashare_mcp_server, wrap_mcp_with_agent_auth
+from quant_arena.ib_mcp import create_ib_mcp_server, wrap_ib_mcp_with_token_auth
+from quant_arena.ib_service import IBService
 from quant_arena.models import RankingSnapshot
 from quant_arena.notifier import NotifierService
 from quant_arena.napcat import NapCatNotifier
@@ -39,21 +41,25 @@ class AppState:
         self,
         config_path: Path,
         config: AppConfig,
-        market: MarketService,
+        market: AShareService,
         arena: ArenaService,
         notifier: NotifierService,
+        ib_paper: IBService | None,
+        ib_real: IBService | None,
     ):
         self.config_path = config_path
         self.config = config
         self.market = market
         self.arena = arena
         self.notifier = notifier
+        self.ib_paper = ib_paper
+        self.ib_real = ib_real
         self.background_task: asyncio.Task[None] | None = None
 
 
-def _load_app_state(config_path: Path, market_service: MarketService | None = None) -> AppState:
+def _load_app_state(config_path: Path, market_service: AShareService | None = None) -> AppState:
     config = load_app_config(config_path)
-    market = market_service or MarketService(Path(config.market_data_root).resolve())
+    market = market_service or AShareService(Path(config.market_data_root).resolve())
     notifier = NotifierService(
         napcat=NapCatNotifier(config.napcat, Path(config.agents_root).resolve()),
         qq_open=QQOpenNotifier(config.qq_open),
@@ -64,7 +70,32 @@ def _load_app_state(config_path: Path, market_service: MarketService | None = No
         fees=config.fees,
         notifier=notifier,
     )
-    return AppState(config_path=config_path, config=config, market=market, arena=arena, notifier=notifier)
+    ib_paper: IBService | None = None
+    ib_real: IBService | None = None
+    if config.ib.enabled:
+        ib_paper = IBService(
+            mode="paper",
+            connection=config.ib.paper,
+            default_exchange=config.ib.default_exchange,
+            default_currency=config.ib.default_currency,
+            request_timeout_seconds=config.ib.request_timeout_seconds,
+        )
+        ib_real = IBService(
+            mode="real",
+            connection=config.ib.real,
+            default_exchange=config.ib.default_exchange,
+            default_currency=config.ib.default_currency,
+            request_timeout_seconds=config.ib.request_timeout_seconds,
+        )
+    return AppState(
+        config_path=config_path,
+        config=config,
+        market=market,
+        arena=arena,
+        notifier=notifier,
+        ib_paper=ib_paper,
+        ib_real=ib_real,
+    )
 
 
 async def _poll_market(state: AppState) -> None:
@@ -126,12 +157,25 @@ async def _poll_market(state: AppState) -> None:
 
 def create_app(
     config_path: Path | None = None,
-    market_service: MarketService | None = None
+    market_service: AShareService | None = None
 ) -> FastAPI:
     """Create the FastAPI app."""
 
     resolved_config = (config_path or DEFAULT_CONFIG_PATH).resolve()
-    mcp_server = create_mcp_server(lambda: app.state.app_state.arena)
+    mcp_server = create_ashare_mcp_server(lambda: app.state.app_state.arena)
+    ib_mcp_server = create_ib_mcp_server()
+
+    def _require_ib_paper() -> IBService:
+        ib = app.state.app_state.ib_paper
+        if ib is None:
+            raise RuntimeError("IB integration is not enabled in config")
+        return ib
+
+    def _require_ib_real() -> IBService:
+        ib = app.state.app_state.ib_real
+        if ib is None:
+            raise RuntimeError("IB integration is not enabled in config")
+        return ib
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -139,7 +183,12 @@ def create_app(
             state = _load_app_state(resolved_config, market_service=market_service)
             app.state.app_state = state
             await stack.enter_async_context(mcp_server.session_manager.run())
+            await stack.enter_async_context(ib_mcp_server.session_manager.run())
             await state.notifier.start()
+            if state.ib_paper is not None:
+                state.ib_paper.start()
+            if state.ib_real is not None:
+                state.ib_real.start()
             if state.config.enable_background_polling and state.config.polling_interval_seconds > 0:
                 state.background_task = asyncio.create_task(_poll_market(state))
             try:
@@ -151,6 +200,10 @@ def create_app(
                         await state.background_task
                     except asyncio.CancelledError:
                         pass
+                if state.ib_paper is not None:
+                    state.ib_paper.close()
+                if state.ib_real is not None:
+                    state.ib_real.close()
                 await state.notifier.close()
 
     app = FastAPI(title="quant-arena", lifespan=lifespan)
@@ -174,6 +227,15 @@ def create_app(
         wrap_mcp_with_agent_auth(
             mcp_server.streamable_http_app(),
             lambda: app.state.app_state.arena,
+        ),
+    )
+    app.mount(
+        f"{base_url}/ib/mcp/" if base_url else "/ib/mcp/",
+        wrap_ib_mcp_with_token_auth(
+            ib_mcp_server.streamable_http_app(),
+            load_app_config(resolved_config).ib,
+            _require_ib_paper,
+            _require_ib_real,
         ),
     )
 
@@ -244,6 +306,11 @@ def create_app(
     @api.api_route("/mcp", methods=["GET", "POST", "DELETE"])
     def mcp_redirect() -> RedirectResponse:
         target = f"{base_url}/mcp/" if base_url else "/mcp/"
+        return RedirectResponse(url=target, status_code=307)
+
+    @api.api_route("/ib/mcp", methods=["GET", "POST", "DELETE"])
+    def ib_mcp_redirect() -> RedirectResponse:
+        target = f"{base_url}/ib/mcp/" if base_url else "/ib/mcp/"
         return RedirectResponse(url=target, status_code=307)
 
     app.include_router(api, prefix=base_url)

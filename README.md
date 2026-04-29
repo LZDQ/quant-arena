@@ -182,6 +182,83 @@ Per-agent config:
 }
 ```
 
+## Interactive Brokers (IB)
+
+IB paper and real trading are exposed through a separate MCP endpoint
+mounted at `/ib/mcp`. There is no per-agent state for IB — the IB
+account is the source of truth, so each mode supports exactly one
+trading client.
+
+### Configuration
+
+Add an `ib` section to `~/.quant-arena/config.json`:
+
+```json
+{
+  "ib": {
+    "enabled": true,
+    "paper": {
+      "host": "127.0.0.1",
+      "port": 4002,
+      "client_id": 2
+    },
+    "real": {
+      "host": "127.0.0.1",
+      "port": 4001,
+      "client_id": 3
+    },
+    "paper_token": "<paper-bearer-token>",
+    "real_token": "<real-bearer-token>",
+    "request_timeout_seconds": 30.0,
+    "default_exchange": "SMART",
+    "default_currency": "USD"
+  }
+}
+```
+
+Default ports are IB Gateway's (4001 live, 4002 paper). Use 7496/7497
+for TWS instead. `client_id` must be unique per active session against
+the same gateway.
+
+### MCP usage
+
+The endpoint is shared between paper and real — the bearer token
+selects which account this request targets. Only one MCP client is
+allowed per mode at a time; concurrent requests for the same mode are
+rejected with HTTP 409.
+
+```bash
+# Paper account
+curl http://127.0.0.1:18792/ib/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <paper-bearer-token>' \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "get_account_summary",
+      "arguments": {}
+    }
+  }'
+
+# Real account — same URL, different token
+curl http://127.0.0.1:18792/ib/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <real-bearer-token>' \
+  ...
+```
+
+### Tools
+
+- `get_mode` — paper or real for this connection
+- `get_account_summary` — IB account summary tags (NetLiquidation, AvailableFunds, …)
+- `get_positions` — current positions
+- `get_open_trades` — all open IB orders/trades
+- `get_recent_fills` — today's executions
+- `submit_order(symbol, side, quantity, order_type='LMT', limit_price=None, exchange=None, currency=None, tif='DAY')`
+- `cancel_order(order_id)`
+
 ## Soulboard Integration
 
 Preconfigured agent prompts for `nanobot-soulboard` are under `soulboard/`. Copy those markdown files to a workspace and make the agent trade.

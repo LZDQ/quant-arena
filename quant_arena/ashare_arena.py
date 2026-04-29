@@ -1,15 +1,17 @@
-"""Trading simulation engine. A lot of code is deprecated and do not modify this."""
+"""Trading simulation engine."""
 
 import json
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time
 from logging import getLogger
 from pathlib import Path
 
 import threading
+import numpy as np
 import pandas as pd
 
-from quant_arena.market import MarketService
+from quant_arena.ashare import AShareService
 from quant_arena.clock import SHANGHAI_TZ, now_shanghai
 from quant_arena.config import AgentConfig, FeeConfig
 from quant_arena.errors import BadRequestError, ConflictError, NotFoundError
@@ -36,7 +38,7 @@ class ArenaService:
     def __init__(
         self,
         agents_root: Path,
-        market: MarketService,
+        market: AShareService,
         fees: FeeConfig,
         notifier: NotifierService | None = None,
     ):
@@ -49,6 +51,7 @@ class ArenaService:
         self.agents_root.mkdir(parents=True, exist_ok=True)
         self._agents = self._load_agents()
         self._order_lock = threading.RLock()
+        self._intraday_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="intraday-fetch")
 
     def list_agents(self) -> list[tuple[str, AgentConfig]]:
         return list(sorted(self._agents.items(), key=lambda item: item[0]))
@@ -127,7 +130,7 @@ class ArenaService:
         Orders are checked only against rows returned by `_refresh_intraday_cache`.
         Matching walks intraday rows in chronological order starting from each order's
         `activate_after` timestamp. Daily price limits are derived from the latest
-        persisted daily-bar frame returned by `MarketService.get_latest_daily_bar()`.
+        persisted daily-bar frame returned by `AShareService.get_latest_daily_bar()`.
 
         Pending orders do not survive overnight. If an order's submission date is not
         today's Shanghai trade date, it is marked canceled with a rejection reason and
@@ -135,35 +138,25 @@ class ArenaService:
         """
         timestamp = now_shanghai()
         today = timestamp.date()
-        latest_daily_bars = self.market.get_latest_daily_bar()
-        fetched_codes: set[str] = set()
-        intraday_cache_by_code: dict[str, pd.DataFrame] = {}
-        for agent_id, agent in self.list_agents():
+
+        agent_pairs = self.list_agents()
+        all_tracked_codes: set[str] = set()
+        per_agent_codes: dict[str, set[str]] = {}
+        for agent_id, agent in agent_pairs:
             state = self._load_or_init_agent_state(agent_id, agent)
-            tracked_codes = {
+            tracked = {
                 order.code for order in state.orders if order.status == "pending"
             } | set(state.positions.keys())
+            per_agent_codes[agent_id] = tracked
+            all_tracked_codes |= tracked
+
+        intraday_cache_by_code = self._refresh_intraday_cache(all_tracked_codes)
+        daily_close_by_code = self._latest_daily_close_map(all_tracked_codes)
+
+        for agent_id, agent in agent_pairs:
+            tracked_codes = per_agent_codes[agent_id]
             if not tracked_codes:
                 continue
-            missing_codes = tracked_codes - fetched_codes
-            if missing_codes:
-                intraday_frame = self._refresh_intraday_cache(missing_codes)
-                if not intraday_frame.empty:
-                    for code, frame in intraday_frame.groupby("code"):
-                        intraday_cache_by_code[code] = frame.reset_index(drop=True)
-                for code in missing_codes:
-                    fetched_codes.add(code)
-            intraday_by_code = {
-                code: intraday_cache_by_code[code]
-                for code in tracked_codes
-                if code in intraday_cache_by_code
-            }
-            daily_bars_by_code: dict[str, pd.Series] = {}
-            if latest_daily_bars is not None and not latest_daily_bars.empty:
-                for _, row in latest_daily_bars.iterrows():
-                    code = str(row["code"])
-                    if code in tracked_codes:
-                        daily_bars_by_code[code] = row
 
             with self._order_lock:
                 state = self._load_or_init_agent_state(agent_id, agent)
@@ -176,44 +169,59 @@ class ArenaService:
                         order.rejection_reason = "Order expired overnight"
                         continue
 
-                    code_frame = intraday_by_code.get(order.code)
+                    code_frame = intraday_cache_by_code.get(order.code)
                     if code_frame is None or code_frame.empty:
                         order.last_checked_at = timestamp
                         continue
 
                     order.last_checked_at = timestamp
-                    daily_bar = daily_bars_by_code.get(order.code)
-                    if daily_bar is None:
+                    close_price = daily_close_by_code.get(order.code)
+                    if close_price is None:
                         continue
-                    close_price = float(daily_bar["close"])
                     limit_up = round(close_price * 1.1, 2)
                     limit_down = round(close_price * 0.9, 2)
-                    eligible_rows = code_frame.loc[code_frame["trade_time"] >= order.activate_after]
-                    if eligible_rows.empty:
+
+                    prices: np.ndarray = code_frame["price"].to_numpy(dtype=np.float64, copy=False)
+                    times: np.ndarray = code_frame["trade_time"].to_numpy(copy=False)
+                    activate_np = np.datetime64(
+                        order.activate_after.astimezone(SHANGHAI_TZ).replace(tzinfo=None),
+                        "ns",
+                    )
+                    start_idx = int(np.searchsorted(times, activate_np, side="left"))
+                    if start_idx >= prices.shape[0]:
                         continue
-
-                    for _, row in eligible_rows.iterrows():
-                        market_price = float(row["price"])
-                        if order.side == "buy":
-                            if market_price >= limit_up:
-                                continue
-                            if order.limit_price < market_price:
-                                continue
-                        else:
-                            if market_price <= limit_down:
-                                continue
-                            if order.limit_price > market_price:
-                                continue
-
-                        executed_at = row["trade_time"].to_pydatetime()
-                        trade_date = executed_at.date()
-                        if not self._can_fill(state, order, market_price, trade_date):
-                            break
-                        self._fill_order(state, order, market_price, executed_at, trade_date)
-                        break
+                    window_prices = prices[start_idx:]
+                    if order.side == "buy":
+                        eligible_mask = (window_prices < limit_up) & (window_prices <= order.limit_price)
+                    else:
+                        eligible_mask = (window_prices > limit_down) & (window_prices >= order.limit_price)
+                    if not eligible_mask.any():
+                        continue
+                    matched_idx = start_idx + int(np.argmax(eligible_mask))
+                    market_price = float(prices[matched_idx])
+                    executed_at = pd.Timestamp(times[matched_idx]).to_pydatetime().replace(tzinfo=SHANGHAI_TZ)
+                    trade_date = executed_at.date()
+                    if not self._can_fill(state, order, market_price, trade_date):
+                        continue
+                    self._fill_order(state, order, market_price, executed_at, trade_date)
 
                 self._update_equity_snapshot(state)
                 self._save_agent_state(state)
+
+    def _latest_daily_close_map(self, codes: set[str]) -> dict[str, float]:
+        if not codes:
+            return {}
+        latest_daily_bars = self.market.get_latest_daily_bar()
+        if latest_daily_bars is None or latest_daily_bars.empty:
+            return {}
+        frame = latest_daily_bars
+        code_series = frame["code"].astype(str)
+        close_series = pd.to_numeric(frame["close"], errors="coerce")
+        result: dict[str, float] = {}
+        for code, close in zip(code_series.to_numpy(), close_series.to_numpy(), strict=False):
+            if code in codes and close == close:  # filter NaN
+                result[code] = float(close)
+        return result
 
     def get_portfolio(self, agent_id: str) -> PortfolioSnapshot:
         agent = self.get_agent(agent_id)
@@ -397,33 +405,49 @@ class ArenaService:
             as_of=as_of,
         )
 
-    def _refresh_intraday_cache(self, codes: set[str]) -> pd.DataFrame:
-        """Refresh and update latest prices."""
+    def _refresh_intraday_cache(self, codes: set[str]) -> dict[str, pd.DataFrame]:
+        """
+        Refresh per-code intraday frames in parallel and update latest prices.
+
+        Returns a `dict[code, DataFrame]` keyed by code. Each frame is sorted by
+        `trade_time` ascending and has tz-naive `trade_time` (Shanghai wall clock)
+        plus numeric `price`. Skipping the global `pd.concat` + `groupby` round trip
+        keeps GIL pressure off the main event loop, and parallel HTTP fetches
+        collapse the wall-clock cost of a polling cycle.
+        """
         if not codes:
-            return pd.DataFrame()
+            return {}
 
         today = now_shanghai().date()
+        date_prefix = today.strftime("%Y-%m-%d") + " "
 
-        frame = pd.concat(
-            [self.market.fetch_intraday(code, today=today) for code in codes],
-            ignore_index=True
-        )
-        if frame.empty:
-            return frame
+        def _fetch_one(code: str) -> tuple[str, pd.DataFrame | None]:
+            try:
+                frame = self.market.fetch_intraday(code, today=today)
+            except Exception:
+                logger.exception("Intraday fetch failed for %s", code)
+                return code, None
+            return code, frame
 
-        frame["price"] = pd.to_numeric(frame["price"], errors="coerce")
-        frame["volume"] = pd.to_numeric(frame["volume"], errors="coerce")
-        frame["trade_time"] = pd.to_datetime(
-            today.strftime("%Y-%m-%d") + " " + frame["ticktime"]
-        ).dt.tz_localize(SHANGHAI_TZ)
-        frame = frame.sort_values(["code", "trade_time"]).reset_index(drop=True)
+        result: dict[str, pd.DataFrame] = {}
+        for code, frame in self._intraday_executor.map(_fetch_one, list(codes)):
+            if frame is None or frame.empty:
+                continue
+            prices = pd.to_numeric(frame["price"], errors="coerce").to_numpy(dtype=np.float64)
+            trade_time = pd.to_datetime(date_prefix + frame["ticktime"].astype(str), errors="coerce").to_numpy()
+            order = np.argsort(trade_time, kind="stable")
+            prices = prices[order]
+            trade_time = trade_time[order]
+            normalized = pd.DataFrame({"price": prices, "trade_time": trade_time}, copy=False)
+            result[code] = normalized
 
-        for code, code_frame in frame.groupby("code"):
-            latest_row = code_frame.iloc[-1]
-            self._latest_prices[code] = float(latest_row["price"])
-            self._latest_price_times[code] = latest_row["trade_time"].to_pydatetime()
+            if prices.size > 0:
+                last_price = float(prices[-1])
+                last_time = pd.Timestamp(trade_time[-1]).to_pydatetime().replace(tzinfo=SHANGHAI_TZ)
+                self._latest_prices[code] = last_price
+                self._latest_price_times[code] = last_time
 
-        return frame
+        return result
 
     def _sellable_quantity(self, state: AgentState, code: str, trade_date: date) -> int:
         lots = state.positions.get(code, [])
