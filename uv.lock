@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -414,6 +414,18 @@ wheels = [
 ]
 
 [[package]]
+name = "eventkit"
+version = "1.0.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/16/1e/0fac4e45d71ace143a2673ec642701c3cd16f833a0e77a57fa6a40472696/eventkit-1.0.3.tar.gz", hash = "sha256:99497f6f3c638a50ff7616f2f8cd887b18bbff3765dc1bd8681554db1467c933", size = 28320, upload-time = "2023-12-11T11:41:35.339Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/93/d9/7497d650b69b420e1a913329a843e16c715dac883750679240ef00a921e2/eventkit-1.0.3-py3-none-any.whl", hash = "sha256:0e199527a89aff9d195b9671ad45d2cc9f79ecda0900de8ecfb4c864d67ad6a2", size = 31837, upload-time = "2023-12-11T11:41:33.358Z" },
+]
+
+[[package]]
 name = "fastapi"
 version = "0.135.3"
 source = { registry = "https://pypi.org/simple" }
@@ -486,6 +498,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/0f/4c/751061ffa58615a32c31b2d82e8482be8dd4a89154f003147acee90f2be9/httpx_sse-0.4.3.tar.gz", hash = "sha256:9b1ed0127459a66014aec3c56bebd93da3c1bc8bb6618c8082039a44889a755d", size = 15943, upload-time = "2025-10-10T21:48:22.271Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d2/fd/6668e5aec43ab844de6fc74927e155a3b37bf40d7c3790e49fc0406b6578/httpx_sse-0.4.3-py3-none-any.whl", hash = "sha256:0ac1c9fe3c0afad2e0ebb25a934a59f4c7823b60792691f779fad2c5568830fc", size = 8960, upload-time = "2025-10-10T21:48:21.158Z" },
+]
+
+[[package]]
+name = "ib-insync"
+version = "0.9.86"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "eventkit" },
+    { name = "nest-asyncio" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/55/bb/733d5c81c8c2f54e90898afc7ff3a99f4d53619e6917c848833f9cc1ab56/ib_insync-0.9.86.tar.gz", hash = "sha256:73af602ca2463f260999970c5bd937b1c4325e383686eff301743a4de08d381e", size = 69859, upload-time = "2023-07-02T12:43:31.968Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8f/f3/28ea87be30570f4d6b8fd24380d12fa74e59467ee003755e76aeb29082b8/ib_insync-0.9.86-py3-none-any.whl", hash = "sha256:a61fbe56ff405d93d211dad8238d7300de76dd6399eafc04c320470edec9a4a4", size = 72980, upload-time = "2023-07-02T12:43:29.928Z" },
 ]
 
 [[package]]
@@ -688,6 +713,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/09/bf/ecaad0c208b9d8bd8f2141f7fa5e520b66915945a2ed56c520524df75fcb/mini_racer-0.14.1-py3-none-macosx_11_0_arm64.whl", hash = "sha256:56cc6965a1665a50d8d613bc43aa83b4cec6b1f09acc69dc4c2845dacb201463", size = 18511166, upload-time = "2026-02-01T05:53:07.059Z" },
     { url = "https://files.pythonhosted.org/packages/78/60/e0708ea8533e928f10f985be35af4c02dd2b61f4a7501dc88e8c927d85e5/mini_racer-0.14.1-py3-none-win_amd64.whl", hash = "sha256:4abd58c62c9955988dbc0cbf5a798914334fe570d2b192f8890bec20135ab6d1", size = 15515732, upload-time = "2026-02-01T05:53:22.276Z" },
     { url = "https://files.pythonhosted.org/packages/99/fd/7fb43e269c44e5d44ef02fbd164fc11833d8293b47ddcd48e4fb1649f4d2/mini_racer-0.14.1-py3-none-win_arm64.whl", hash = "sha256:440bef1269655b1da94b550612b50669de9881c3d88b805c139f7f1b5ec8ae7b", size = 14829128, upload-time = "2026-02-01T05:53:24.983Z" },
+]
+
+[[package]]
+name = "nest-asyncio"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/83/f8/51569ac65d696c8ecbee95938f89d4abf00f47d58d48f6fbabfe8f0baefe/nest_asyncio-1.6.0.tar.gz", hash = "sha256:6f172d5449aca15afd6c646851f4e31e02c598d553a667e38cafa997cfec55fe", size = 7418, upload-time = "2024-01-21T14:25:19.227Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a0/c4/c2971a3ba4c6103a3d10c4b0f24f461ddc027f0f09763220cf35ca1401b3/nest_asyncio-1.6.0-py3-none-any.whl", hash = "sha256:87af6efd6b5e897c81050477ef65c62e2b2f35d51703cae01aff2905b1852e1c", size = 5195, upload-time = "2024-01-21T14:25:17.223Z" },
 ]
 
 [[package]]
@@ -1068,6 +1102,7 @@ dependencies = [
     { name = "baostock" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "ib-insync" },
     { name = "mcp" },
     { name = "pandas" },
     { name = "pydantic" },
@@ -1081,6 +1116,7 @@ requires-dist = [
     { name = "baostock", specifier = ">=0.9.1" },
     { name = "fastapi", specifier = ">=0.115.0,<1.0.0" },
     { name = "httpx", specifier = ">=0.28.0,<1.0.0" },
+    { name = "ib-insync", specifier = ">=0.9.86" },
     { name = "mcp", specifier = ">=1.26.0,<2.0.0" },
     { name = "pandas", specifier = ">=2.2.0,<3.0.0" },
     { name = "pydantic", specifier = ">=2.9.0,<3.0.0" },
