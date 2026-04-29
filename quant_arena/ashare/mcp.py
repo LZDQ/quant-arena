@@ -10,6 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from quant_arena.ashare.arena import ArenaService
+from quant_arena.clock import SHANGHAI_TZ
 from quant_arena.errors import BadRequestError
 from quant_arena.models import AgentMetadata, MonitoredAgentSnapshot, OperationLog, OrderRecord, PortfolioSnapshot, SubmitOrder
 
@@ -22,6 +23,15 @@ def _get_current_agent_id() -> str:
     if not agent_id:
         raise RuntimeError("No authenticated agent in MCP request context")
     return agent_id
+
+
+def _parse_filter_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    moment = datetime.fromisoformat(value)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=SHANGHAI_TZ)
+    return moment
 
 
 def _require_monitor_agent(get_arena: Callable[[], ArenaService]) -> str:
@@ -75,8 +85,8 @@ def create_ashare_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
         target_agent_id = agent_id or current_agent_id
         if target_agent_id != current_agent_id:
             _require_monitor_agent(get_arena)
-        parsed_start = datetime.fromisoformat(start) if start else None
-        parsed_end = datetime.fromisoformat(end) if end else None
+        parsed_start = _parse_filter_datetime(start)
+        parsed_end = _parse_filter_datetime(end)
         return get_arena().list_operations(
             target_agent_id,
             start=parsed_start,

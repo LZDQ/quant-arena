@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import os
 import shutil
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time
 from logging import getLogger
@@ -34,28 +36,32 @@ logger = getLogger(__name__)
 
 
 class ArenaService:
-    """Application service layer."""
+    """A-share trading simulator: agent state, order matching, ranking."""
 
     def __init__(
         self,
         agents_root: Path,
         market: AShareService,
         fees: FeeConfig,
-        notifier: NotifierService | None = None,
+        notifier: NotifierService,
     ):
         self.agents_root = agents_root
         self.market = market
         self.fees = fees
         self.notifier = notifier
         self._latest_prices: dict[str, float] = {}
-        self._latest_price_times: dict[str, datetime] = {}
+        self._intraday_as_of: datetime | None = None
+        self._latest_close_index: dict[str, float] | None = None
+        self._rankings_cache: list[RankingSnapshot] | None = None
         self.agents_root.mkdir(parents=True, exist_ok=True)
-        self._agents = self._load_agents()
+        self._agents: dict[str, AgentConfig] = {}
+        self._states: dict[str, AgentState] = {}
+        self._load_agents()
         self._order_lock = threading.RLock()
         self._intraday_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="intraday-fetch")
 
     def list_agents(self) -> list[tuple[str, AgentConfig]]:
-        return list(sorted(self._agents.items(), key=lambda item: item[0]))
+        return sorted(self._agents.items(), key=lambda item: item[0])
 
     def get_agent(self, agent_id: str) -> AgentConfig:
         agent = self._agents.get(agent_id)
@@ -68,32 +74,35 @@ class ArenaService:
             raise ConflictError(f"Agent already exists: {agent_id}")
         self._agents[agent_id] = agent
         self._save_agent_config(agent_id, agent)
-        state = self._default_agent_state(agent_id, agent.initial_cash)
+        state = AgentState(agent_id=agent_id, cash=agent.initial_cash)
         self._save_agent_state(state)
+        self._rankings_cache = None
         return agent
 
     def delete_agent(self, agent_id: str) -> None:
         self.get_agent(agent_id)
         del self._agents[agent_id]
+        self._states.pop(agent_id, None)
         shutil.rmtree(self._agent_dir(agent_id), ignore_errors=True)
+        self._rankings_cache = None
 
     def submit_order(
         self,
         agent_id: str,
         request: SubmitOrder,
-        submitted_at: datetime | None = None
+        submitted_at: datetime | None = None,
     ) -> OrderRecord:
+        agent = self.get_agent(agent_id)
+        now = submitted_at or now_shanghai()
+        if request.side == "buy" and request.quantity % 100 != 0:
+            raise BadRequestError("Buy order quantity must be a multiple of 100")
+        if not (time(9, 25) <= now.time() <= time(15, 0)):
+            raise BadRequestError("You can only submit an order between 9:25 and 15:00.")
+        self._refresh_intraday_cache({request.code})
+        if request.code not in self._latest_prices:
+            raise NotFoundError(f"No intraday market data available for {request.code}")
         with self._order_lock:
-            agent = self.get_agent(agent_id)
-            now = submitted_at or now_shanghai()
-            if request.side == "buy" and request.quantity % 100 != 0:
-                raise BadRequestError("Buy order quantity must be a multiple of 100")
-            if not (time(9, 25) <= now.time() <= time(15, 0)):
-                raise BadRequestError("You can only submit an order bewteen 9:25 and 15:00.")
-            self._refresh_intraday_cache({request.code})
-            if request.code not in self._latest_prices:
-                raise NotFoundError(f"No intraday market data available for {request.code}")
-            state = self._load_or_init_agent_state(agent_id, agent)
+            state = self._state(agent_id)
             if request.side == "sell":
                 sellable = self._sellable_quantity(state, request.code, now.date())
                 pending_sell = sum(
@@ -121,61 +130,64 @@ class ArenaService:
             )
             state.orders.append(order)
             self._save_agent_state(state)
-            self._notify_order_submitted(agent, order)
-            return order
+        self.notifier.notify_order_submitted(agent, order)
+        return order
 
     def cancel_order(self, agent_id: str, order_id: str) -> OrderRecord:
+        agent = self.get_agent(agent_id)
         with self._order_lock:
-            agent = self.get_agent(agent_id)
-            state = self._load_or_init_agent_state(agent_id, agent)
+            state = self._state(agent_id)
+            target: OrderRecord | None = None
             for order in state.orders:
                 if order.order_id == order_id:
-                    if order.status != "pending":
-                        raise ConflictError("Only pending orders can be canceled")
-                    order.status = "canceled"
-                    order.canceled_at = now_shanghai()
-                    self._save_agent_state(state)
-                    self._notify_order_canceled(agent, order)
-                    return order
-            raise NotFoundError(f"Unknown order: {order_id}")
+                    target = order
+                    break
+            if target is None:
+                raise NotFoundError(f"Unknown order: {order_id}")
+            if target.status != "pending":
+                raise ConflictError("Only pending orders can be canceled")
+            target.status = "canceled"
+            target.canceled_at = now_shanghai()
+            self._save_agent_state(state)
+        self.notifier.notify_order_canceled(agent, target)
+        return target
 
     def match_pending_orders(self) -> None:
         """
-        Match pending orders against intraday market data for the current trade date.
+        Match pending orders against today's intraday data.
 
-        Orders are checked only against rows returned by `_refresh_intraday_cache`.
-        Matching walks intraday rows in chronological order starting from each order's
-        `activate_after` timestamp. Daily price limits are derived from the latest
-        persisted daily-bar frame returned by `AShareService.get_latest_daily_bar()`.
-
-        Pending orders do not survive overnight. If an order's submission date is not
-        today's Shanghai trade date, it is marked canceled with a rejection reason and
-        skipped from matching.
+        Each tracked code is fetched once per cycle, even when multiple agents
+        hold pending orders against it. Daily price limits come from the last
+        row of `AShareService.get_latest_daily_bar()` — that frame is assumed
+        to already represent the latest persisted day, no date filtering here.
+        Orders submitted on a different Shanghai trade-date are auto-canceled.
         """
         timestamp = now_shanghai()
         today = timestamp.date()
+        self._latest_close_index = None  # rebuild per cycle from market.get_latest_daily_bar()
 
         agent_pairs = self.list_agents()
-        all_tracked_codes: set[str] = set()
         per_agent_codes: dict[str, set[str]] = {}
-        for agent_id, agent in agent_pairs:
-            state = self._load_or_init_agent_state(agent_id, agent)
+        all_tracked_codes: set[str] = set()
+        for agent_id, _ in agent_pairs:
+            state = self._state(agent_id)
             tracked = {
                 order.code for order in state.orders if order.status == "pending"
             } | set(state.positions.keys())
             per_agent_codes[agent_id] = tracked
             all_tracked_codes |= tracked
 
-        intraday_cache_by_code = self._refresh_intraday_cache(all_tracked_codes)
-        daily_close_by_code = self._latest_daily_close_map(all_tracked_codes)
+        intraday_by_code = self._refresh_intraday_cache(all_tracked_codes)
+        close_by_code = self._ensure_latest_close_index()
 
-        for agent_id, agent in agent_pairs:
-            tracked_codes = per_agent_codes[agent_id]
-            if not tracked_codes:
-                continue
-
-            with self._order_lock:
-                state = self._load_or_init_agent_state(agent_id, agent)
+        with self._order_lock:
+            # Group pending orders by code so each code's frame is walked once.
+            pending_by_code: dict[str, list[tuple[str, AgentState, OrderRecord]]] = {}
+            dirty_states: set[str] = set()
+            for agent_id, _ in agent_pairs:
+                if not per_agent_codes[agent_id]:
+                    continue
+                state = self._state(agent_id)
                 for order in state.orders:
                     if order.status != "pending":
                         continue
@@ -183,46 +195,66 @@ class ArenaService:
                         order.status = "canceled"
                         order.canceled_at = timestamp
                         order.rejection_reason = "Order expired overnight"
+                        dirty_states.add(agent_id)
                         continue
+                    pending_by_code.setdefault(order.code, []).append((agent_id, state, order))
 
-                    code_frame = intraday_cache_by_code.get(order.code)
-                    if code_frame is None or code_frame.empty:
-                        order.last_checked_at = timestamp
-                        continue
+            for code, entries in pending_by_code.items():
+                code_frame = intraday_by_code.get(code)
+                close_price = close_by_code.get(code)
+                for agent_id, state, order in entries:
+                    if self._match_one_order(state, order, code_frame, close_price, timestamp):
+                        dirty_states.add(agent_id)
 
-                    order.last_checked_at = timestamp
-                    close_price = daily_close_by_code.get(order.code)
-                    if close_price is None:
-                        continue
-                    limit_up = round(close_price * 1.1, 2)
-                    limit_down = round(close_price * 0.9, 2)
+            for agent_id, _ in agent_pairs:
+                state = self._state(agent_id)
+                if agent_id in dirty_states or per_agent_codes[agent_id]:
+                    self._update_equity_snapshot(state)
+                    self._save_agent_state(state)
 
-                    prices: np.ndarray = code_frame["price"].to_numpy(dtype=np.float64, copy=False)
-                    times: np.ndarray = code_frame["trade_time"].to_numpy(copy=False)
-                    activate_np = np.datetime64(
-                        order.activate_after.astimezone(SHANGHAI_TZ).replace(tzinfo=None),
-                        "ns",
-                    )
-                    start_idx = int(np.searchsorted(times, activate_np, side="left"))
-                    if start_idx >= prices.shape[0]:
-                        continue
-                    window_prices = prices[start_idx:]
-                    if order.side == "buy":
-                        eligible_mask = (window_prices < limit_up) & (window_prices <= order.limit_price)
-                    else:
-                        eligible_mask = (window_prices > limit_down) & (window_prices >= order.limit_price)
-                    if not eligible_mask.any():
-                        continue
-                    matched_idx = start_idx + int(np.argmax(eligible_mask))
-                    market_price = float(prices[matched_idx])
-                    executed_at = pd.Timestamp(times[matched_idx]).to_pydatetime().replace(tzinfo=SHANGHAI_TZ)
-                    trade_date = executed_at.date()
-                    if not self._can_fill(state, order, market_price, trade_date):
-                        continue
-                    self._fill_order(state, order, market_price, executed_at, trade_date)
+        self._rankings_cache = None
 
-                self._update_equity_snapshot(state)
-                self._save_agent_state(state)
+    def _match_one_order(
+        self,
+        state: AgentState,
+        order: OrderRecord,
+        code_frame: pd.DataFrame | None,
+        close_price: float | None,
+        timestamp: datetime,
+    ) -> bool:
+        """Try to fill `order` in place. Returns True if state was mutated."""
+        order.last_checked_at = timestamp
+        if code_frame is None or code_frame.empty:
+            return True  # last_checked_at changed
+        if close_price is None:
+            return True
+        limit_up = round(close_price * 1.1, 2)
+        limit_down = round(close_price * 0.9, 2)
+
+        prices: np.ndarray = code_frame["price"].to_numpy(dtype=np.float64, copy=False)
+        times: np.ndarray = code_frame["trade_time"].to_numpy(copy=False)
+        activate_np = np.datetime64(
+            order.activate_after.astimezone(SHANGHAI_TZ).replace(tzinfo=None),
+            "ns",
+        )
+        start_idx = int(np.searchsorted(times, activate_np, side="right"))
+        if start_idx >= prices.shape[0]:
+            return True
+        window_prices = prices[start_idx:]
+        if order.side == "buy":
+            eligible_mask = (window_prices < limit_up) & (window_prices <= order.limit_price)
+        else:
+            eligible_mask = (window_prices > limit_down) & (window_prices >= order.limit_price)
+        if not eligible_mask.any():
+            return True
+        matched_idx = start_idx + int(np.argmax(eligible_mask))
+        market_price = float(prices[matched_idx])
+        executed_at = pd.Timestamp(times[matched_idx]).to_pydatetime().replace(tzinfo=SHANGHAI_TZ)
+        trade_date = executed_at.date()
+        if not self._can_fill(state, order, market_price, trade_date):
+            return True
+        self._fill_order(state, order, market_price, executed_at, trade_date)
+        return True
 
     async def run(self, polling_interval_seconds: int) -> None:
         """Match pending orders against intraday data during 9:30 to 15:00."""
@@ -235,25 +267,33 @@ class ArenaService:
                     logger.exception("Exception in matching pending orders")
             await asyncio.sleep(polling_interval_seconds)
 
-    def _latest_daily_close_map(self, codes: set[str]) -> dict[str, float]:
-        if not codes:
-            return {}
-        latest_daily_bars = self.market.get_latest_daily_bar()
-        if latest_daily_bars is None or latest_daily_bars.empty:
-            return {}
-        frame = latest_daily_bars
-        code_series = frame["code"].astype(str)
-        close_series = pd.to_numeric(frame["close"], errors="coerce")
-        result: dict[str, float] = {}
-        for code, close in zip(code_series.to_numpy(), close_series.to_numpy(), strict=False):
-            if code in codes and close == close:  # filter NaN
-                result[code] = float(close)
-        return result
+    def _ensure_latest_close_index(self) -> dict[str, float]:
+        """
+        Return (and cache) `code -> last_close` from `get_latest_daily_bar()`.
+
+        Trusts the market service's "latest" contract — the entire frame is
+        treated as a single day's closes. The cache is shared between the
+        matcher's daily-limit lookup and `_build_portfolio`'s price fallback
+        so position pricing is O(1) per code instead of `frame.loc[...]` per
+        position.
+        """
+        if self._latest_close_index is not None:
+            return self._latest_close_index
+        frame = self.market.get_latest_daily_bar()
+        index: dict[str, float] = {}
+        if frame is not None and not frame.empty:
+            code_arr = frame["code"].astype(str).to_numpy()
+            close_arr = pd.to_numeric(frame["close"], errors="coerce").to_numpy()
+            for code, close in zip(code_arr, close_arr, strict=False):
+                if close == close:  # filter NaN
+                    index[code] = float(close)
+        self._latest_close_index = index
+        return index
 
     def get_portfolio(self, agent_id: str) -> PortfolioSnapshot:
-        agent = self.get_agent(agent_id)
-        state = self._load_or_init_agent_state(agent_id, agent)
-        return self._build_portfolio(state)
+        self.get_agent(agent_id)
+        with self._order_lock:
+            return self._build_portfolio(self._state(agent_id))
 
     def list_operations(
         self,
@@ -262,19 +302,20 @@ class ArenaService:
         end: datetime | None = None,
         limit: int | None = None,
     ) -> OperationLog:
-        agent = self.get_agent(agent_id)
-        state = self._load_or_init_agent_state(agent_id, agent)
-        orders = [order for order in state.orders if self._in_range(order.submitted_at, start, end)]
-        fills = [fill for fill in state.fills if self._in_range(fill.executed_at, start, end)]
-        if limit is not None:
-            orders = orders[-limit:]
-            fills = fills[-limit:]
-        return OperationLog(orders=orders, fills=fills)
+        self.get_agent(agent_id)
+        with self._order_lock:
+            state = self._state(agent_id)
+            orders = [order for order in state.orders if self._in_range(order.submitted_at, start, end)]
+            fills = [fill for fill in state.fills if self._in_range(fill.executed_at, start, end)]
+            if limit is not None:
+                orders = orders[-limit:]
+                fills = fills[-limit:]
+            return OperationLog(orders=orders, fills=fills)
 
     def get_equity_curve(self, agent_id: str, start: date | None = None, end: date | None = None) -> list[EquityPoint]:
-        agent = self.get_agent(agent_id)
-        state = self._load_or_init_agent_state(agent_id, agent)
-        points = state.equity_history
+        self.get_agent(agent_id)
+        with self._order_lock:
+            points = list(self._state(agent_id).equity_history)
         if start is not None:
             points = [point for point in points if point.trade_date >= start]
         if end is not None:
@@ -282,12 +323,15 @@ class ArenaService:
         return points
 
     def get_rankings(self, target_date: date | None = None) -> list[RankingSnapshot]:
+        if target_date is None and self._rankings_cache is not None:
+            return self._rankings_cache
         entries: list[RankingSnapshot] = []
         for agent_id, agent in self.list_agents():
-            state = self._load_or_init_agent_state(agent_id, agent)
-            portfolio = self._build_portfolio(state)
-            point = self._resolve_equity_point(state, target_date, portfolio)
-            return_pct = 0.0 if agent.initial_cash == 0 else ((point.total_equity - agent.initial_cash) / agent.initial_cash) * 100.0
+            with self._order_lock:
+                state = self._state(agent_id)
+                portfolio = self._build_portfolio(state)
+                point = self._resolve_equity_point(state, target_date, portfolio)
+            return_pct = ((point.total_equity - agent.initial_cash) / agent.initial_cash) * 100.0
             entries.append(
                 RankingSnapshot(
                     trade_date=point.trade_date,
@@ -301,7 +345,10 @@ class ArenaService:
                     unrealized_pnl=round(point.unrealized_pnl, 2),
                 )
             )
-        return sorted(entries, key=lambda entry: (-entry.total_equity, entry.agent_id))
+        ranked = sorted(entries, key=lambda entry: (-entry.total_equity, entry.agent_id))
+        if target_date is None:
+            self._rankings_cache = ranked
+        return ranked
 
     def _resolve_equity_point(self, state: AgentState, target_date: date | None, portfolio: PortfolioSnapshot) -> EquityPoint:
         if target_date is not None:
@@ -309,9 +356,8 @@ class ArenaService:
                 if point.trade_date == target_date:
                     return point
             raise NotFoundError(f"No equity snapshot for {target_date.isoformat()}")
-        today = now_shanghai().date()
         return EquityPoint(
-            trade_date=today,
+            trade_date=now_shanghai().date(),
             cash=portfolio.cash,
             market_value=portfolio.market_value,
             total_equity=portfolio.total_equity,
@@ -344,8 +390,9 @@ class ArenaService:
         )
         if order.side == "buy":
             state.cash -= notional + commission
+            effective_cost_price = (notional + commission) / order.quantity
             state.positions.setdefault(order.code, []).append(
-                PositionLot(quantity=order.quantity, acquired_date=trade_date, cost_price=market_price)
+                PositionLot(quantity=order.quantity, acquired_date=trade_date, cost_price=effective_cost_price)
             )
         else:
             state.cash += notional - commission - stamp_tax
@@ -354,7 +401,7 @@ class ArenaService:
         order.status = "filled"
         order.filled_at = executed_at
         state.fills.append(fill)
-        self._notify_order_filled(self.get_agent(order.agent_id), order, fill)
+        self.notifier.notify_order_filled(self.get_agent(order.agent_id), order, fill)
 
     def _update_equity_snapshot(self, state: AgentState) -> None:
         portfolio = self._build_portfolio(state)
@@ -370,18 +417,16 @@ class ArenaService:
         for index, existing in enumerate(state.equity_history):
             if existing.trade_date == today:
                 state.equity_history[index] = point
-                break
-        else:
-            state.equity_history.append(point)
+                return
+        state.equity_history.append(point)
 
     def _build_portfolio(self, state: AgentState) -> PortfolioSnapshot:
         today = now_shanghai().date()
-        latest_daily_bars: pd.DataFrame | None = None
+        close_index: dict[str, float] | None = None
 
         positions: list[PositionSnapshot] = []
         market_value = 0.0
         unrealized_pnl = 0.0
-        as_of: datetime | None = None
         for code, lots in sorted(state.positions.items()):
             live_lots = [lot for lot in lots if lot.quantity > 0]
             if not live_lots:
@@ -391,22 +436,16 @@ class ArenaService:
             avg_cost = sum(lot.quantity * lot.cost_price for lot in live_lots) / quantity
             market_price = self._latest_prices.get(code)
             if market_price is None:
-                if latest_daily_bars is None:
-                    latest_daily_bars = self.market.get_latest_daily_bar()
-                if latest_daily_bars is not None and not latest_daily_bars.empty:
-                    matched_rows = latest_daily_bars.loc[latest_daily_bars["code"].astype(str) == code, "close"]
-                    if not matched_rows.empty:
-                        market_price = float(matched_rows.iloc[-1])
+                if close_index is None:
+                    close_index = self._ensure_latest_close_index()
+                market_price = close_index.get(code)
             if market_price is None:
                 logger.warning("No live or daily fallback price available for %s, using 0.0", code)
                 market_price = 0.0
-            position_value = (market_price or 0.0) * quantity
-            position_unrealized = ((market_price or avg_cost) - avg_cost) * quantity
+            position_value = market_price * quantity
+            position_unrealized = (market_price - avg_cost) * quantity
             market_value += position_value
             unrealized_pnl += position_unrealized
-            cached_as_of = self._latest_price_times.get(code)
-            if cached_as_of is not None:
-                as_of = cached_as_of if as_of is None else max(as_of, cached_as_of)
             positions.append(
                 PositionSnapshot(
                     code=code,
@@ -429,18 +468,18 @@ class ArenaService:
             unrealized_pnl=round(unrealized_pnl, 2),
             positions=positions,
             pending_orders=pending_orders,
-            as_of=as_of,
+            as_of=self._intraday_as_of,
         )
 
     def _refresh_intraday_cache(self, codes: set[str]) -> dict[str, pd.DataFrame]:
         """
-        Refresh per-code intraday frames in parallel and update latest prices.
+        Refresh per-code intraday frames in parallel and update `self._latest_prices`.
 
-        Returns a `dict[code, DataFrame]` keyed by code. Each frame is sorted by
-        `trade_time` ascending and has tz-naive `trade_time` (Shanghai wall clock)
-        plus numeric `price`. Skipping the global `pd.concat` + `groupby` round trip
-        keeps GIL pressure off the main event loop, and parallel HTTP fetches
-        collapse the wall-clock cost of a polling cycle.
+        Returns a `dict[code, DataFrame]` keyed by code. Each frame is sorted
+        by `trade_time` ascending with tz-naive timestamps (Shanghai wall
+        clock) plus numeric `price`. Per-code parallel HTTP fetches collapse
+        the wall-clock cost of a polling cycle. `self._intraday_as_of` is
+        updated to the maximum tick time observed in this cycle.
         """
         if not codes:
             return {}
@@ -457,6 +496,7 @@ class ArenaService:
             return code, frame
 
         result: dict[str, pd.DataFrame] = {}
+        max_tick: pd.Timestamp | None = None
         for code, frame in self._intraday_executor.map(_fetch_one, list(codes)):
             if frame is None or frame.empty:
                 continue
@@ -469,10 +509,13 @@ class ArenaService:
             result[code] = normalized
 
             if prices.size > 0:
-                last_price = float(prices[-1])
-                last_time = pd.Timestamp(trade_time[-1]).to_pydatetime().replace(tzinfo=SHANGHAI_TZ)
-                self._latest_prices[code] = last_price
-                self._latest_price_times[code] = last_time
+                self._latest_prices[code] = float(prices[-1])
+                last_tick = pd.Timestamp(trade_time[-1])
+                if max_tick is None or last_tick > max_tick:
+                    max_tick = last_tick
+
+        if max_tick is not None:
+            self._intraday_as_of = max_tick.to_pydatetime().replace(tzinfo=SHANGHAI_TZ)
 
         return result
 
@@ -481,9 +524,11 @@ class ArenaService:
         return sum(lot.quantity for lot in lots if lot.quantity > 0 and lot.acquired_date < trade_date)
 
     def _consume_sell_lots(self, state: AgentState, code: str, quantity: int, trade_date: date) -> float:
+        eligible = [lot for lot in state.positions.get(code, []) if lot.quantity > 0 and lot.acquired_date < trade_date]
+        if sum(lot.quantity for lot in eligible) < quantity:
+            raise ConflictError("Insufficient sellable quantity for T+1")
         remaining = quantity
         total_cost = 0.0
-        eligible = [lot for lot in state.positions.get(code, []) if lot.quantity > 0 and lot.acquired_date < trade_date]
         for lot in eligible:
             if remaining <= 0:
                 break
@@ -491,8 +536,6 @@ class ArenaService:
             lot.quantity -= used
             remaining -= used
             total_cost += used * lot.cost_price
-        if remaining > 0:
-            raise ConflictError("Insufficient sellable quantity for T+1")
         state.positions[code] = [lot for lot in state.positions.get(code, []) if lot.quantity > 0]
         return total_cost
 
@@ -514,40 +557,56 @@ class ArenaService:
             return False
         return True
 
-    @staticmethod
-    def _default_agent_state(agent_id: str, initial_cash: float) -> AgentState:
-        return AgentState(agent_id=agent_id, cash=initial_cash)
-
-    def _load_or_init_agent_state(self, agent_id: str, agent: AgentConfig) -> AgentState:
+    def _state(self, agent_id: str) -> AgentState:
+        state = self._states.get(agent_id)
+        if state is not None:
+            return state
+        agent = self.get_agent(agent_id)
         path = self._state_path(agent_id)
         if path.exists():
             with path.open("r", encoding="utf-8") as handle:
-                return AgentState.model_validate(json.load(handle))
-        state = self._default_agent_state(agent_id, agent.initial_cash)
-        self._save_agent_state(state)
+                state = AgentState.model_validate(json.load(handle))
+        else:
+            state = AgentState(agent_id=agent_id, cash=agent.initial_cash)
+            self._save_agent_state(state)
+        self._states[agent_id] = state
         return state
 
-    def _load_agents(self) -> dict[str, AgentConfig]:
-        agents: dict[str, AgentConfig] = {}
+    def _load_agents(self) -> None:
         for agent_dir in sorted(path for path in self.agents_root.iterdir() if path.is_dir()):
             config_path = agent_dir / "config.json"
             if not config_path.exists():
                 continue
             with config_path.open("r", encoding="utf-8") as handle:
-                agents[agent_dir.name] = AgentConfig.model_validate(json.load(handle))
-        return agents
+                self._agents[agent_dir.name] = AgentConfig.model_validate(json.load(handle))
+            state_path = agent_dir / "state.json"
+            if state_path.exists():
+                with state_path.open("r", encoding="utf-8") as handle:
+                    self._states[agent_dir.name] = AgentState.model_validate(json.load(handle))
 
     def _save_agent_config(self, agent_id: str, agent: AgentConfig) -> None:
         self._agent_dir(agent_id).mkdir(parents=True, exist_ok=True)
-        with self._config_path(agent_id).open("w", encoding="utf-8") as handle:
-            json.dump(agent.model_dump(mode="json"), handle, ensure_ascii=False, indent="\t")
-            handle.write("\n")
+        self._atomic_write_json(self._config_path(agent_id), agent.model_dump(mode="json"))
 
     def _save_agent_state(self, state: AgentState) -> None:
+        self._states[state.agent_id] = state
         self._agent_dir(state.agent_id).mkdir(parents=True, exist_ok=True)
-        with self._state_path(state.agent_id).open("w", encoding="utf-8") as handle:
-            json.dump(state.model_dump(mode="json"), handle, ensure_ascii=False, indent="\t")
-            handle.write("\n")
+        self._atomic_write_json(self._state_path(state.agent_id), state.model_dump(mode="json"))
+
+    @staticmethod
+    def _atomic_write_json(path: Path, payload: object) -> None:
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent="\t")
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, path)
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
     def _agent_dir(self, agent_id: str) -> Path:
         return self.agents_root / agent_id
@@ -557,18 +616,3 @@ class ArenaService:
 
     def _state_path(self, agent_id: str) -> Path:
         return self._agent_dir(agent_id) / "state.json"
-
-    def _notify_order_submitted(self, agent: AgentConfig, order: OrderRecord) -> None:
-        if self.notifier is None:
-            return
-        self.notifier.notify_order_submitted(agent, order)
-
-    def _notify_order_canceled(self, agent: AgentConfig, order: OrderRecord) -> None:
-        if self.notifier is None:
-            return
-        self.notifier.notify_order_canceled(agent, order)
-
-    def _notify_order_filled(self, agent: AgentConfig, order: OrderRecord, fill: FillRecord) -> None:
-        if self.notifier is None:
-            return
-        self.notifier.notify_order_filled(agent, order, fill)
