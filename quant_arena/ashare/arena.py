@@ -1,5 +1,6 @@
 """Trading simulation engine."""
 
+import asyncio
 import json
 import shutil
 from concurrent.futures import ThreadPoolExecutor
@@ -11,7 +12,7 @@ import threading
 import numpy as np
 import pandas as pd
 
-from quant_arena.ashare import AShareService
+from quant_arena.ashare.service import AShareService
 from quant_arena.clock import SHANGHAI_TZ, now_shanghai
 from quant_arena.config import AgentConfig, FeeConfig
 from quant_arena.errors import BadRequestError, ConflictError, NotFoundError
@@ -93,6 +94,21 @@ class ArenaService:
             if request.code not in self._latest_prices:
                 raise NotFoundError(f"No intraday market data available for {request.code}")
             state = self._load_or_init_agent_state(agent_id, agent)
+            if request.side == "sell":
+                sellable = self._sellable_quantity(state, request.code, now.date())
+                pending_sell = sum(
+                    pending.quantity
+                    for pending in state.orders
+                    if pending.status == "pending"
+                    and pending.side == "sell"
+                    and pending.code == request.code
+                )
+                available = sellable - pending_sell
+                if request.quantity > available:
+                    raise BadRequestError(
+                        f"Sell quantity {request.quantity} exceeds T+1 sellable {available} "
+                        f"(sellable={sellable}, encumbered_by_pending_sells={pending_sell})"
+                    )
             order = OrderRecord(
                 agent_id=agent_id,
                 code=request.code,
@@ -207,6 +223,17 @@ class ArenaService:
 
                 self._update_equity_snapshot(state)
                 self._save_agent_state(state)
+
+    async def run(self, polling_interval_seconds: int) -> None:
+        """Match pending orders against intraday data during 9:30 to 15:00."""
+        while True:
+            now = now_shanghai()
+            if time(9, 30) <= now.time() <= time(15, 0):
+                try:
+                    await asyncio.to_thread(self.match_pending_orders)
+                except Exception:
+                    logger.exception("Exception in matching pending orders")
+            await asyncio.sleep(polling_interval_seconds)
 
     def _latest_daily_close_map(self, codes: set[str]) -> dict[str, float]:
         if not codes:

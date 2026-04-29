@@ -6,7 +6,7 @@ import os
 import secrets
 from contextlib import AsyncExitStack
 from contextlib import asynccontextmanager
-from datetime import date, datetime, time, timedelta
+from datetime import date
 from pathlib import Path
 
 import uvicorn
@@ -16,18 +16,20 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from quant_arena.schemas import AgentCreatedResponse, AgentResponse, AgentSnapshotResponse, CreateAgentRequest, OperationListResponse, PathsResponse, PortfolioResponse
-from quant_arena.ashare_arena import ArenaService
+from quant_arena.ashare import (
+    ArenaService,
+    AShareService,
+    create_ashare_mcp_server,
+    wrap_mcp_with_agent_auth,
+)
 from quant_arena.config import AgentConfig, AppConfig, load_app_config
 from quant_arena.errors import ServiceError
-from quant_arena.ashare import AShareService
-from quant_arena.ashare_mcp import create_ashare_mcp_server, wrap_mcp_with_agent_auth
 from quant_arena.ib_mcp import create_ib_mcp_server, wrap_ib_mcp_with_token_auth
 from quant_arena.ib_service import IBService
 from quant_arena.models import RankingSnapshot
 from quant_arena.notifier import NotifierService
 from quant_arena.napcat import NapCatNotifier
 from quant_arena.qq_open import QQOpenNotifier
-from quant_arena.clock import now_shanghai
 
 logger = getLogger(__name__)
 
@@ -54,7 +56,7 @@ class AppState:
         self.notifier = notifier
         self.ib_paper = ib_paper
         self.ib_real = ib_real
-        self.background_task: asyncio.Task[None] | None = None
+        self.background_tasks: list[asyncio.Task[None]] = []
 
 
 def _load_app_state(config_path: Path, market_service: AShareService | None = None) -> AppState:
@@ -98,63 +100,6 @@ def _load_app_state(config_path: Path, market_service: AShareService | None = No
     )
 
 
-async def _poll_market(state: AppState) -> None:
-    """
-    Poll market data.
-
-    From 9:30 to 15:00, poll intraday and match orders.
-    After 17:30, finalize today's daily bars using baostock.
-    After 20:00, finalize today's 5min bars using baostock.
-    Note that do not use multiple workers or restart the
-    server frequently when finalizing.
-    TODO: implement built-in continuation of finalization
-    """
-    last_refreshed_date: date | None = None
-    last_finalized_daily_date: date | None = None
-    last_finalized_5min_date: date | None = None
-    is_trading_day = True
-    while True:
-        now = now_shanghai()
-        today = now.date()
-        if last_refreshed_date != today:
-            logger.debug("Refreshing today's trading status")
-            last_refreshed_date = today
-            trade_date_frame = state.market.fetch_trade_dates(today, today)
-            if not trade_date_frame.empty:
-                is_trading_day = str(trade_date_frame.iloc[-1]["is_trading_day"]) == "1"
-                logger.info("Today's trading status is: %r", is_trading_day)
-            else:
-                logger.error("Cannot fetch today's trading status. Defaulting to False")
-                is_trading_day = False
-
-            if not is_trading_day:
-                tomorrow = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=now.tzinfo)
-                await asyncio.sleep(max((tomorrow - now).total_seconds(), 0.0))
-                continue
-
-        if now.time() >= time(17, 30) and last_finalized_daily_date != today:
-            try:
-                await asyncio.to_thread(state.market.finalize_market_data_daily, today)
-            except Exception:
-                logger.exception("Exception in finalizing today's daily bars")
-            last_finalized_daily_date = today
-
-        if now.time() >= time(20, 0) and last_finalized_5min_date != today:
-            try:
-                await asyncio.to_thread(state.market.finalize_market_data_5min, today)
-            except Exception:
-                logger.exception("Exception in finalizing today's 5min bars")
-            last_finalized_5min_date = today
-
-        if time(9, 30) <= now.time() <= time(15,00):
-            try:
-                await asyncio.to_thread(state.arena.match_pending_orders)
-            except Exception:
-                logger.exception("Exception in matching pending orders")
-
-        await asyncio.sleep(state.config.polling_interval_seconds)
-
-
 def create_app(
     config_path: Path | None = None,
     market_service: AShareService | None = None
@@ -190,14 +135,24 @@ def create_app(
             if state.ib_real is not None:
                 state.ib_real.start()
             if state.config.enable_background_polling and state.config.polling_interval_seconds > 0:
-                state.background_task = asyncio.create_task(_poll_market(state))
+                state.background_tasks.append(
+                    asyncio.create_task(
+                        state.market.run(state.config.polling_interval_seconds)
+                    )
+                )
+                state.background_tasks.append(
+                    asyncio.create_task(
+                        state.arena.run(state.config.polling_interval_seconds)
+                    )
+                )
             try:
                 yield
             finally:
-                if state.background_task is not None:
-                    state.background_task.cancel()
+                for task in state.background_tasks:
+                    task.cancel()
+                for task in state.background_tasks:
                     try:
-                        await state.background_task
+                        await task
                     except asyncio.CancelledError:
                         pass
                 if state.ib_paper is not None:

@@ -45,6 +45,8 @@ def main() -> None:
     parser.add_argument("--market-data-dir", type=Path, default=None,
                         help="Override config's market_data_root.")
     parser.add_argument("--persist-every", type=int, default=100)
+    parser.add_argument("--verbose", action="store_true",
+                        help="Log each fetched code and bar kind at INFO level.")
     args = parser.parse_args()
 
     start_date, end_date = _resolve_dates(args)
@@ -59,6 +61,7 @@ def main() -> None:
         overwrite=args.overwrite,
         persist_every=args.persist_every,
         show_progress=True,
+        verbose=args.verbose,
     )
 
 

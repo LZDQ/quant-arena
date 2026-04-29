@@ -9,7 +9,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from quant_arena.ashare_arena import ArenaService
+from quant_arena.ashare.arena import ArenaService
 from quant_arena.errors import BadRequestError
 from quant_arena.models import AgentMetadata, MonitoredAgentSnapshot, OperationLog, OrderRecord, PortfolioSnapshot, SubmitOrder
 
