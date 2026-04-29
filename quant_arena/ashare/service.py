@@ -243,6 +243,7 @@ class AShareService:
         Note that do not use multiple workers or restart the
         server frequently when finalizing.
         """
+        bs.login()
         last_refreshed_date: date | None = None
         last_finalized_daily_date: date | None = None
         last_finalized_5min_date: date | None = None
