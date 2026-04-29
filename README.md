@@ -67,6 +67,10 @@ To change mount path, for example to `/quant-arena/`, do these:
 1. Set `VITE_BASE_URL=/quant-arena` and build frontend.
 2. Set `QUANT_ARENA_BASE_URL=/quant-arena` and run the backend server.
 
+The frontend itself routes per-market under the mount path:
+- `/quant-arena/` — market picker (A-share, with US and HK coming later)
+- `/quant-arena/A-share` — A-share trading board
+
 ## Frontend
 
 The frontend lives in `frontend/` as a Vite React TypeScript app. Built assets are written to the repo-root `static/` directory, which the Python backend serves in production.
