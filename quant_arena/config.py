@@ -35,6 +35,11 @@ class AShareConfig(BaseModel):
         default=150,
         description="Seconds between A-share market sync and order-matching cycles.",
     )
+    intraday_fetch_workers: int = Field(
+        default=8,
+        gt=0,
+        description="Thread-pool size used for parallel per-code intraday fetches.",
+    )
     fees: AShareFeeConfig = Field(
         default_factory=AShareFeeConfig,
         description="Trading fee settings used by the A-share simulator.",

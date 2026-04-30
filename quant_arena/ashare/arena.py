@@ -44,6 +44,7 @@ class ArenaService:
         market: AShareService,
         fees: AShareFeeConfig,
         notifier: NotifierService,
+        intraday_fetch_workers: int = 8,
     ):
         self.agents_root = agents_root
         self.market = market
@@ -58,7 +59,10 @@ class ArenaService:
         self._states: dict[str, AgentState] = {}
         self._load_agents()
         self._order_lock = threading.RLock()
-        self._intraday_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="intraday-fetch")
+        self._intraday_executor = ThreadPoolExecutor(
+            max_workers=intraday_fetch_workers,
+            thread_name_prefix="intraday-fetch",
+        )
 
     def list_agents(self) -> list[tuple[str, AgentConfig]]:
         return sorted(self._agents.items(), key=lambda item: item[0])

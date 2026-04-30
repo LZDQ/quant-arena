@@ -78,6 +78,7 @@ def _load_app_state(config_path: Path, market_service: AShareService | None = No
         market=market,
         fees=config.ashare.fees,
         notifier=notifier,
+        intraday_fetch_workers=config.ashare.intraday_fetch_workers,
     )
     ib_paper: IBService | None = None
     ib_real: IBService | None = None
@@ -187,7 +188,7 @@ def create_app(
     static_dir = Path(__file__).resolve().parent.parent / "static"
     app.mount(f"{base_url}/assets" if base_url else "/assets", StaticFiles(directory=static_dir / "assets", check_dir=False), name="assets")
     app.mount(
-        f"{base_url}/mcp/" if base_url else "/mcp/",
+        f"{base_url}/A-share/mcp/" if base_url else "/A-share/mcp/",
         wrap_mcp_with_agent_auth(
             mcp_server.streamable_http_app(),
             lambda: app.state.app_state.arena,
@@ -266,9 +267,9 @@ def create_app(
         target_date = date.fromisoformat(date_value) if date_value else None
         return get_state().arena.get_rankings(target_date)
 
-    @api.api_route("/mcp", methods=["GET", "POST", "DELETE"])
+    @api.api_route("/A-share/mcp", methods=["GET", "POST", "DELETE"])
     def mcp_redirect() -> RedirectResponse:
-        target = f"{base_url}/mcp/" if base_url else "/mcp/"
+        target = f"{base_url}/A-share/mcp/" if base_url else "/A-share/mcp/"
         return RedirectResponse(url=target, status_code=307)
 
     @api.api_route("/ib/mcp", methods=["GET", "POST", "DELETE"])
