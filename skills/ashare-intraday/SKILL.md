@@ -1,7 +1,6 @@
 ---
 name: ashare-intraday
 description: Fetch live intraday tick data for A-share stocks using akshare's stock_intraday_sina.
-allowed-tools: Bash, Read
 ---
 
 # A-Share Intraday Quote Fetching
