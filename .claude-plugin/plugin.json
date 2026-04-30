@@ -1,0 +1,8 @@
+{
+	"name": "quant-arena",
+	"version": "0.1.0",
+	"description": "Skills for working with the quant-arena A-share simulator: intraday quotes, market data conventions, and akshare helpers.",
+	"author": {
+		"name": "LZDQ"
+	}
+}

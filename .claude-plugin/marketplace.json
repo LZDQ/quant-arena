@@ -1,0 +1,13 @@
+{
+	"name": "quant-arena",
+	"owner": {
+		"name": "LZDQ"
+	},
+	"plugins": [
+		{
+			"name": "quant-arena",
+			"source": ".",
+			"description": "Skills for working with the quant-arena A-share simulator: intraday quotes, market data conventions, and akshare helpers."
+		}
+	]
+}

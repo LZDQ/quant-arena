@@ -1,4 +1,4 @@
-# Market Data Usage Guide
+# A-Share Market Data Usage Guide
 
 Directory structure:
 
@@ -31,25 +31,7 @@ date,code,open,high,low,close,preclose,volume,amount
 
 ## Data Sources and Updates
 
-The data is from baostock and updates every day after 9PM.
-
-Live intraday data is not supported. To query code you are interested in, use this example (install `akshare` beforehand):
-
-```py
-# Example to fetch intraday data
-# Only available after 9:25 AM
-import akshare as ak
-
-code = '600726'
-symbol = ak.stock_a_code_to_symbol(code)
-print(symbol)  # sh600726
-
-frame = ak.stock_intraday_sina(
-    symbol=symbol,
-    date='20260410',
-)
-print(frame)
-```
+The data is from baostock and updates every day at 17:30 for daily bars and at 20:00 for five minutes bars. Market data does not update during market hours — use the corresponding skill (see `ashare-intraday`) to fetch live intraday quotes.
 
 ## Usage Guidelines
 
@@ -57,6 +39,6 @@ These data are read-only. You can use them for analysis and backtesting.
 
 Do not make your own writable copy because it is a waste of disk space.
 
-Do not go to baostock to fetch your own data unless they are not provided in this directory. Even if you do so, only fetch recent statistics and make no more than 1000 requests per day, focusing on only a small set of codes.
+Do not go to baostock to fetch your own data at any cost.
 
 Within the limits, you can use whatever methods to analyze the data.
