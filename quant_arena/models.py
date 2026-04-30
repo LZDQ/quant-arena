@@ -53,10 +53,6 @@ class OrderRecord(BaseModel):
     activate_after: datetime = Field(
         description="订单最早可被撮合检查的时间，用来避免刚提交就被同一时刻的数据立刻成交"
     )
-    last_checked_at: datetime | None = Field(
-        default=None,
-        description="最近一次用市场数据检查这笔订单是否可成交的时间"
-    )
     filled_at: datetime | None = Field(
         default=None,
         description="订单实际成交时间"

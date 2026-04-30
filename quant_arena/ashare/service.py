@@ -86,6 +86,19 @@ class AShareService:
     def _fetch_five_minute_bars(self, code: str, start_date: date, end_date: date) -> pd.DataFrame:
         return self._fetch_baostock_bars(code, start_date, end_date, "5")
 
+    def fetch_price_limits(self, code: str) -> tuple[float, float, float]:
+        """
+        Return (limit_down, limit_up, prev_close) for `code` from EM.
+
+        Single attempt against `stock_bid_ask_em` — no retries, EM is too
+        unstable to wait on. Callers must catch and fall back when this raises.
+        """
+        frame = ak.stock_bid_ask_em(symbol=code)
+        if frame is None or frame.empty:
+            raise RuntimeError(f"stock_bid_ask_em returned empty frame for {code}")
+        lookup = dict(zip(frame["item"].astype(str), frame["value"]))
+        return float(lookup["跌停"]), float(lookup["涨停"]), float(lookup["昨收"])
+
     def fetch_intraday(self, code: str, today: date | None = None) -> pd.DataFrame:
         """Live intraday ticks from AKShare sina; columns include ticktime, price, volume, code."""
         now = now_shanghai()

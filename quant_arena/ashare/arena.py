@@ -54,6 +54,7 @@ class ArenaService:
         self._intraday_as_of: datetime | None = None
         self._latest_close_index: dict[str, float] | None = None
         self._rankings_cache: list[RankingSnapshot] | None = None
+        self._today_equity_points: dict[str, EquityPoint] = {}
         self.agents_root.mkdir(parents=True, exist_ok=True)
         self._agents: dict[str, AgentConfig] = {}
         self._states: dict[str, AgentState] = {}
@@ -90,7 +91,7 @@ class ArenaService:
         shutil.rmtree(self._agent_dir(agent_id), ignore_errors=True)
         self._rankings_cache = None
 
-    def submit_order(
+    async def submit_order(
         self,
         agent_id: str,
         request: SubmitOrder,
@@ -102,9 +103,39 @@ class ArenaService:
             raise BadRequestError("Buy order quantity must be a multiple of 100")
         if not (time(9, 30) <= now.time() <= time(15, 0)):
             raise BadRequestError("You can only submit an order between 9:30 and 15:00.")
-        self._refresh_intraday_cache({request.code})
-        if request.code not in self._latest_prices:
-            raise NotFoundError(f"No intraday market data available for {request.code}")
+        if not self._is_main_board(request.code):
+            raise BadRequestError(
+                f"Only main-board codes are supported (SH 60xxxx, SZ 000/001/002/003 xxxx). "
+                f"{request.code} is on STAR / ChiNext / BJEX and is not accepted."
+            )
+        try:
+            limit_down, limit_up, prev_close = self.market.fetch_price_limits(request.code)
+        except Exception as exc:
+            persisted_close = self._ensure_latest_close_index().get(request.code)
+            if persisted_close is None:
+                raise NotFoundError(
+                    f"Could not resolve daily price limits for {request.code}: "
+                    f"EM lookup failed ({exc}) and no persisted prev close available."
+                ) from exc
+            logger.warning(
+                "stock_bid_ask_em failed for %s (%s); falling back to ±10%% of persisted close %.2f",
+                request.code, exc, persisted_close,
+            )
+            prev_close = persisted_close
+            limit_up = round(prev_close * 1.1, 2)
+            limit_down = round(prev_close * 0.9, 2)
+        if request.limit_price > limit_up:
+            raise BadRequestError(
+                f"Limit price {request.limit_price} exceeds today's limit-up "
+                f"{limit_up} for {request.code} (prev close {prev_close}); "
+                f"order would never fill."
+            )
+        if request.limit_price < limit_down:
+            raise BadRequestError(
+                f"Limit price {request.limit_price} is below today's limit-down "
+                f"{limit_down} for {request.code} (prev close {prev_close}); "
+                f"order would never fill."
+            )
         with self._order_lock:
             state = self._state(agent_id)
             if request.side == "sell":
@@ -161,14 +192,14 @@ class ArenaService:
         Match pending orders against today's intraday data.
 
         Each tracked code is fetched once per cycle, even when multiple agents
-        hold pending orders against it. Daily price limits come from the last
-        row of `AShareService.get_latest_daily_bar()` — that frame is assumed
-        to already represent the latest persisted day, no date filtering here.
-        Orders submitted on a different Shanghai trade-date are auto-canceled.
+        hold pending orders against it. Daily price-limit bands are checked at
+        submit time via `fetch_price_limits`, so the matcher only walks the
+        intraday tick stream for the order's limit price. End-of-session
+        cleanup (overnight expiration, equity finalization) lives in
+        `finalize_session`, not here.
         """
         timestamp = now_shanghai()
-        today = timestamp.date()
-        self._latest_close_index = None  # rebuild per cycle from market.get_latest_daily_bar()
+        self._latest_close_index = None  # rebuild per cycle for portfolio fallback pricing
 
         agent_pairs = self.list_agents()
         per_agent_codes: dict[str, set[str]] = {}
@@ -182,7 +213,6 @@ class ArenaService:
             all_tracked_codes |= tracked
 
         intraday_by_code = self._refresh_intraday_cache(all_tracked_codes)
-        close_by_code = self._ensure_latest_close_index()
 
         with self._order_lock:
             # Group pending orders by code so each code's frame is walked once.
@@ -195,27 +225,52 @@ class ArenaService:
                 for order in state.orders:
                     if order.status != "pending":
                         continue
-                    if order.submitted_at.date() != today:
-                        order.status = "canceled"
-                        order.canceled_at = timestamp
-                        order.rejection_reason = "Order expired overnight"
-                        dirty_states.add(agent_id)
-                        continue
                     pending_by_code.setdefault(order.code, []).append((agent_id, state, order))
 
             for code, entries in pending_by_code.items():
                 code_frame = intraday_by_code.get(code)
-                close_price = close_by_code.get(code)
                 for agent_id, state, order in entries:
-                    if self._match_one_order(state, order, code_frame, close_price, timestamp):
+                    if self._match_one_order(state, order, code_frame, timestamp):
                         dirty_states.add(agent_id)
 
             for agent_id, _ in agent_pairs:
                 state = self._state(agent_id)
-                if agent_id in dirty_states or per_agent_codes[agent_id]:
-                    self._update_equity_snapshot(state)
+                self._update_today_equity_point(state)
+                if agent_id in dirty_states:
                     self._save_agent_state(state)
 
+        self._rankings_cache = None
+
+    def finalize_session(self) -> None:
+        """
+        End-of-session cleanup, run once per trade-date after 15:00.
+
+        For each agent: cancel any still-pending orders (today's leftovers and
+        any stragglers from previous sessions that didn't get finalized), then
+        freeze the in-memory `_today_equity_points` entry into
+        `state.equity_history` and persist once.
+        """
+        timestamp = now_shanghai()
+        today = timestamp.date()
+        with self._order_lock:
+            for agent_id, _ in self.list_agents():
+                state = self._state(agent_id)
+                for order in state.orders:
+                    if order.status == "pending":
+                        order.status = "canceled"
+                        order.canceled_at = timestamp
+                        order.rejection_reason = "Order expired at end of session"
+                point = self._build_today_equity_point(state)
+                self._today_equity_points[agent_id] = point
+                replaced = False
+                for index, existing in enumerate(state.equity_history):
+                    if existing.trade_date == today:
+                        state.equity_history[index] = point
+                        replaced = True
+                        break
+                if not replaced:
+                    state.equity_history.append(point)
+                self._save_agent_state(state)
         self._rankings_cache = None
 
     def _match_one_order(
@@ -223,17 +278,11 @@ class ArenaService:
         state: AgentState,
         order: OrderRecord,
         code_frame: pd.DataFrame | None,
-        close_price: float | None,
         timestamp: datetime,
     ) -> bool:
-        """Try to fill `order` in place. Returns True if state was mutated."""
-        order.last_checked_at = timestamp
+        """Try to fill `order` in place. Returns True only if a fill occurred."""
         if code_frame is None or code_frame.empty:
-            return True  # last_checked_at changed
-        if close_price is None:
-            return True
-        limit_up = round(close_price * 1.1, 2)
-        limit_down = round(close_price * 0.9, 2)
+            return False
 
         prices: np.ndarray = code_frame["price"].to_numpy(dtype=np.float64, copy=False)
         times: np.ndarray = code_frame["trade_time"].to_numpy(copy=False)
@@ -243,32 +292,47 @@ class ArenaService:
         )
         start_idx = int(np.searchsorted(times, activate_np, side="right"))
         if start_idx >= prices.shape[0]:
-            return True
+            return False
         window_prices = prices[start_idx:]
         if order.side == "buy":
-            eligible_mask = (window_prices < limit_up) & (window_prices <= order.limit_price)
+            eligible_mask = window_prices <= order.limit_price
         else:
-            eligible_mask = (window_prices > limit_down) & (window_prices >= order.limit_price)
+            eligible_mask = window_prices >= order.limit_price
         if not eligible_mask.any():
-            return True
+            return False
         matched_idx = start_idx + int(np.argmax(eligible_mask))
         market_price = float(prices[matched_idx])
         executed_at = pd.Timestamp(times[matched_idx]).to_pydatetime().replace(tzinfo=SHANGHAI_TZ)
         trade_date = executed_at.date()
         if not self._can_fill(state, order, market_price, trade_date):
-            return True
+            return False
         self._fill_order(state, order, market_price, executed_at, trade_date)
         return True
 
     async def run(self, polling_interval_seconds: int) -> None:
-        """Match pending orders against intraday data during 9:30 to 15:00."""
+        """
+        Match pending orders during 9:30 to 15:00, then finalize the session
+        once after 15:00 each trade-date.
+
+        `last_finalized_date` is a local that resets on process restart, so a
+        server brought up after 15:00 will finalize the current trade-date on
+        its first cycle even if it never ran the matcher that day.
+        """
+        last_finalized_date: date | None = None
         while True:
             now = now_shanghai()
+            today = now.date()
             if time(9, 30) <= now.time() <= time(15, 0):
                 try:
                     await asyncio.to_thread(self.match_pending_orders)
                 except Exception:
                     logger.exception("Exception in matching pending orders")
+            elif now.time() > time(15, 0) and last_finalized_date != today:
+                try:
+                    await asyncio.to_thread(self.finalize_session)
+                    last_finalized_date = today
+                except Exception:
+                    logger.exception("Exception in finalizing session")
             await asyncio.sleep(polling_interval_seconds)
 
     def _ensure_latest_close_index(self) -> dict[str, float]:
@@ -320,6 +384,9 @@ class ArenaService:
         self.get_agent(agent_id)
         with self._order_lock:
             points = list(self._state(agent_id).equity_history)
+            today_point = self._today_equity_points.get(agent_id)
+            if today_point is not None and (not points or points[-1].trade_date != today_point.trade_date):
+                points.append(today_point)
         if start is not None:
             points = [point for point in points if point.trade_date >= start]
         if end is not None:
@@ -407,22 +474,20 @@ class ArenaService:
         state.fills.append(fill)
         self.notifier.notify_order_filled(self.get_agent(order.agent_id), order, fill)
 
-    def _update_equity_snapshot(self, state: AgentState) -> None:
+    def _build_today_equity_point(self, state: AgentState) -> EquityPoint:
         portfolio = self._build_portfolio(state)
-        today = now_shanghai().date()
-        point = EquityPoint(
-            trade_date=today,
+        return EquityPoint(
+            trade_date=now_shanghai().date(),
             cash=portfolio.cash,
             market_value=portfolio.market_value,
             total_equity=portfolio.total_equity,
             realized_pnl=portfolio.realized_pnl,
             unrealized_pnl=portfolio.unrealized_pnl,
         )
-        for index, existing in enumerate(state.equity_history):
-            if existing.trade_date == today:
-                state.equity_history[index] = point
-                return
-        state.equity_history.append(point)
+
+    def _update_today_equity_point(self, state: AgentState) -> None:
+        """In-memory only. Persisted to `state.equity_history` by `finalize_session`."""
+        self._today_equity_points[state.agent_id] = self._build_today_equity_point(state)
 
     def _build_portfolio(self, state: AgentState) -> PortfolioSnapshot:
         today = now_shanghai().date()
@@ -552,6 +617,17 @@ class ArenaService:
         if side != "sell":
             return 0.0
         return round(notional * self.fees.stamp_tax_bps / 10000.0, 2)
+
+    @staticmethod
+    def _is_main_board(code: str) -> bool:
+        """Main board: SH 60xxxx (excluding STAR 688xxx) or SZ 000/001/002/003 xxxx."""
+        if len(code) != 6 or not code.isdigit():
+            return False
+        if code.startswith("688"):
+            return False
+        if code.startswith("60"):
+            return True
+        return code[:3] in {"000", "001", "002", "003"}
 
     @staticmethod
     def _in_range(moment: datetime, start: datetime | None, end: datetime | None) -> bool:

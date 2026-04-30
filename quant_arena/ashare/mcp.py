@@ -108,10 +108,10 @@ def create_ashare_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
         )
 
     @mcp.tool()
-    def submit_operation(code: str, side: str, quantity: int, limit_price: float, comment: str) -> OrderRecord:
+    async def submit_operation(code: str, side: str, quantity: int, limit_price: float, comment: str) -> OrderRecord:
         """Submit a pending buy or sell limit order."""
 
-        order = get_arena().submit_order(
+        order = await get_arena().submit_order(
             _get_current_agent_id(),
             SubmitOrder(
                 code=code,
