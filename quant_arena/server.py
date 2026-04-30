@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from quant_arena.schemas import AgentCreatedResponse, AgentResponse, AgentSnapshotResponse, CreateAgentRequest, OperationListResponse, PathsResponse, PortfolioResponse
+from quant_arena.schemas import AgentCreatedResponse, AgentResponse, AgentSnapshotResponse, CreateAgentRequest, DailyReportPage, OperationListResponse, PathsResponse, PortfolioResponse
 from quant_arena.ashare import (
     ArenaService,
     AShareService,
@@ -26,7 +26,7 @@ from quant_arena.config import AgentConfig, AppConfig, load_app_config
 from quant_arena.errors import ServiceError
 from quant_arena.ib_mcp import create_ib_mcp_server, wrap_ib_mcp_with_token_auth
 from quant_arena.ib_service import IBService
-from quant_arena.models import RankingSnapshot
+from quant_arena.models import DailyReport, RankingSnapshot
 from quant_arena.notifier import NotifierService
 from quant_arena.napcat import NapCatNotifier
 from quant_arena.qq_open import QQOpenNotifier
@@ -261,6 +261,15 @@ def create_app(
     @api.delete("/api/agents/{agent_id}", status_code=204)
     def delete_agent(agent_id: str) -> None:
         get_state().arena.delete_agent(agent_id)
+
+    @api.get("/api/agents/{agent_id}/daily-reports", response_model=DailyReportPage)
+    def list_daily_reports(agent_id: str, page: int = 1, page_size: int = 20) -> DailyReportPage:
+        items, total = get_state().arena.list_daily_reports(agent_id, page=page, page_size=page_size)
+        return DailyReportPage(items=items, total=total, page=page, page_size=page_size)
+
+    @api.get("/api/agents/{agent_id}/daily-reports/{trade_date}", response_model=DailyReport)
+    def get_daily_report(agent_id: str, trade_date: date) -> DailyReport:
+        return get_state().arena.get_daily_report(agent_id, trade_date)
 
     @api.get("/api/rankings")
     def get_rankings(date_value: str | None = None) -> list[RankingSnapshot]:

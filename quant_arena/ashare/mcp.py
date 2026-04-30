@@ -12,7 +12,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from quant_arena.ashare.arena import ArenaService
 from quant_arena.clock import SHANGHAI_TZ
 from quant_arena.errors import BadRequestError
-from quant_arena.models import AgentMetadata, MonitoredAgentSnapshot, OperationLog, OrderRecord, PortfolioSnapshot, SubmitOrder
+from quant_arena.models import AgentMetadata, DailyReport, MonitoredAgentSnapshot, OperationLog, OrderRecord, PortfolioSnapshot, SubmitOrder
 
 
 _CURRENT_AGENT_ID: ContextVar[str | None] = ContextVar("quant_arena_current_agent_id", default=None)
@@ -129,6 +129,18 @@ def create_ashare_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
 
         order = get_arena().cancel_order(_get_current_agent_id(), order_id)
         return order
+
+    @mcp.tool()
+    def submit_daily_report(content: str) -> DailyReport:
+        """Create or overwrite today's daily report (markdown) for the calling agent."""
+
+        return get_arena().submit_daily_report(_get_current_agent_id(), content)
+
+    @mcp.tool()
+    def get_last_daily_report_before_today() -> DailyReport | None:
+        """Return the agent's most recent daily report whose trade date is strictly before today."""
+
+        return get_arena().get_last_daily_report_before_today(_get_current_agent_id())
 
     @mcp.tool()
     def get_current_rankings() -> list[MonitoredAgentSnapshot]:

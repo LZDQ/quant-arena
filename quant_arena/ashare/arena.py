@@ -21,6 +21,8 @@ from quant_arena.errors import BadRequestError, ConflictError, NotFoundError
 from quant_arena.notifier import NotifierService
 from quant_arena.models import (
     AgentState,
+    DailyReport,
+    DailyReportSummary,
     EquityPoint,
     FillRecord,
     OperationLog,
@@ -628,6 +630,106 @@ class ArenaService:
         if code.startswith("60"):
             return True
         return code[:3] in {"000", "001", "002", "003"}
+
+    _DAILY_REPORT_MAX_BYTES = 256 * 1024
+
+    def submit_daily_report(self, agent_id: str, content: str) -> DailyReport:
+        """Create or overwrite today's markdown report for the agent."""
+        self.get_agent(agent_id)
+        if not content.strip():
+            raise BadRequestError("Daily report content must not be empty")
+        if len(content.encode("utf-8")) > self._DAILY_REPORT_MAX_BYTES:
+            raise BadRequestError(
+                f"Daily report exceeds {self._DAILY_REPORT_MAX_BYTES} bytes"
+            )
+        today = now_shanghai().date()
+        path = self._daily_report_path(agent_id, today)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._atomic_write_text(path, content)
+        return self._load_daily_report(path, today)
+
+    def get_daily_report(self, agent_id: str, trade_date: date) -> DailyReport:
+        """Return one specific daily report; raises NotFoundError if absent."""
+        self.get_agent(agent_id)
+        path = self._daily_report_path(agent_id, trade_date)
+        if not path.exists():
+            raise NotFoundError(f"No daily report on {trade_date.isoformat()}")
+        return self._load_daily_report(path, trade_date)
+
+    def get_last_daily_report_before_today(self, agent_id: str) -> DailyReport | None:
+        """Return the most recent report whose trade_date is strictly before today."""
+        self.get_agent(agent_id)
+        today = now_shanghai().date()
+        for trade_date, path in self._iter_daily_report_paths(agent_id):
+            if trade_date < today:
+                return self._load_daily_report(path, trade_date)
+        return None
+
+    def list_daily_reports(
+        self, agent_id: str, page: int = 1, page_size: int = 20
+    ) -> tuple[list[DailyReportSummary], int]:
+        """Return (page_items_newest_first, total_count) for an agent's reports."""
+        self.get_agent(agent_id)
+        if page < 1:
+            raise BadRequestError("page must be >= 1")
+        if page_size < 1 or page_size > 100:
+            raise BadRequestError("page_size must be in [1, 100]")
+        entries = list(self._iter_daily_report_paths(agent_id))
+        total = len(entries)
+        start = (page - 1) * page_size
+        end = start + page_size
+        items = [
+            DailyReportSummary(
+                trade_date=trade_date,
+                updated_at=datetime.fromtimestamp(path.stat().st_mtime, tz=SHANGHAI_TZ),
+            )
+            for trade_date, path in entries[start:end]
+        ]
+        return items, total
+
+    def _daily_reports_dir(self, agent_id: str) -> Path:
+        return self._agent_dir(agent_id) / "daily-reports"
+
+    def _daily_report_path(self, agent_id: str, trade_date: date) -> Path:
+        return self._daily_reports_dir(agent_id) / f"{trade_date.isoformat()}.md"
+
+    def _iter_daily_report_paths(self, agent_id: str) -> list[tuple[date, Path]]:
+        directory = self._daily_reports_dir(agent_id)
+        if not directory.exists():
+            return []
+        entries: list[tuple[date, Path]] = []
+        for path in directory.iterdir():
+            if path.suffix != ".md" or not path.is_file():
+                continue
+            try:
+                trade_date = date.fromisoformat(path.stem)
+            except ValueError:
+                continue
+            entries.append((trade_date, path))
+        entries.sort(key=lambda item: item[0], reverse=True)
+        return entries
+
+    @staticmethod
+    def _load_daily_report(path: Path, trade_date: date) -> DailyReport:
+        return DailyReport(
+            trade_date=trade_date,
+            content=path.read_text(encoding="utf-8"),
+            updated_at=datetime.fromtimestamp(path.stat().st_mtime, tz=SHANGHAI_TZ),
+        )
+
+    @staticmethod
+    def _atomic_write_text(path: Path, content: str) -> None:
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, path)
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
     @staticmethod
     def _in_range(moment: datetime, start: datetime | None, end: datetime | None) -> bool:

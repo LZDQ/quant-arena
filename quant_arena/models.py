@@ -213,6 +213,21 @@ class AgentMetadata(BaseModel):
     role: Literal["normal", "monitor"]
 
 
+class DailyReport(BaseModel):
+    """One agent's full daily report for a given trade date."""
+
+    trade_date: date = Field(description="报告对应的日期")
+    content: str = Field(description="Markdown 正文")
+    updated_at: datetime = Field(description="该报告最近一次写入的时间")
+
+
+class DailyReportSummary(BaseModel):
+    """Lightweight daily-report descriptor used in listings."""
+
+    trade_date: date
+    updated_at: datetime
+
+
 class AgentState(BaseModel):
     """Private persisted runtime state for one agent."""
 

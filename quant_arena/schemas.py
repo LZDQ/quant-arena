@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from quant_arena.models import EquityPoint, FillRecord, OrderRecord
+from quant_arena.models import DailyReportSummary, EquityPoint, FillRecord, OrderRecord
 
 
 class PositionView(BaseModel):
@@ -73,6 +73,15 @@ class AgentCreatedResponse(BaseModel):
 
     agent: AgentResponse
     token_secret: str
+
+
+class DailyReportPage(BaseModel):
+    """Paginated listing of an agent's daily reports (newest first)."""
+
+    items: list[DailyReportSummary]
+    total: int
+    page: int
+    page_size: int
 
 
 class AgentSnapshotResponse(BaseModel):
