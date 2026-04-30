@@ -43,6 +43,8 @@ class AppState:
         self,
         config_path: Path,
         config: AppConfig,
+        ashare_agents_root: Path,
+        ashare_market_data_root: Path,
         market: AShareService,
         arena: ArenaService,
         notifier: NotifierService,
@@ -51,6 +53,8 @@ class AppState:
     ):
         self.config_path = config_path
         self.config = config
+        self.ashare_agents_root = ashare_agents_root
+        self.ashare_market_data_root = ashare_market_data_root
         self.market = market
         self.arena = arena
         self.notifier = notifier
@@ -61,15 +65,18 @@ class AppState:
 
 def _load_app_state(config_path: Path, market_service: AShareService | None = None) -> AppState:
     config = load_app_config(config_path)
-    market = market_service or AShareService(Path(config.market_data_root).resolve())
+    ashare_root = (config_path.parent / "A-share").resolve()
+    agents_root = ashare_root / "agents"
+    market_data_root = Path(config.ashare.market_data_root).resolve()
+    market = market_service or AShareService(market_data_root)
     notifier = NotifierService(
-        napcat=NapCatNotifier(config.napcat, Path(config.agents_root).resolve()),
+        napcat=NapCatNotifier(config.napcat, agents_root),
         qq_open=QQOpenNotifier(config.qq_open),
     )
     arena = ArenaService(
-        agents_root=Path(config.agents_root).resolve(),
+        agents_root=agents_root,
         market=market,
-        fees=config.fees,
+        fees=config.ashare.fees,
         notifier=notifier,
     )
     ib_paper: IBService | None = None
@@ -92,6 +99,8 @@ def _load_app_state(config_path: Path, market_service: AShareService | None = No
     return AppState(
         config_path=config_path,
         config=config,
+        ashare_agents_root=agents_root,
+        ashare_market_data_root=market_data_root,
         market=market,
         arena=arena,
         notifier=notifier,
@@ -134,15 +143,15 @@ def create_app(
                 state.ib_paper.start()
             if state.ib_real is not None:
                 state.ib_real.start()
-            if state.config.enable_background_polling and state.config.polling_interval_seconds > 0:
+            if state.config.ashare.polling_interval_seconds > 0:
                 state.background_tasks.append(
                     asyncio.create_task(
-                        state.market.run(state.config.polling_interval_seconds)
+                        state.market.run(state.config.ashare.polling_interval_seconds)
                     )
                 )
                 state.background_tasks.append(
                     asyncio.create_task(
-                        state.arena.run(state.config.polling_interval_seconds)
+                        state.arena.run(state.config.ashare.polling_interval_seconds)
                     )
                 )
             try:
@@ -202,7 +211,6 @@ def create_app(
             agent_id=agent_id,
             display_name=agent.display_name,
             initial_cash=agent.initial_cash,
-            sell_constraint=agent.sell_constraint,
             enabled=agent.enabled,
             role=agent.role,
         )
@@ -216,8 +224,8 @@ def create_app(
         state = get_state()
         return PathsResponse(
             config_path=str(state.config_path),
-            agents_root=state.config.agents_root,
-            market_data_root=state.config.market_data_root,
+            agents_root=str(state.ashare_agents_root),
+            market_data_root=str(state.ashare_market_data_root),
         )
 
     @api.get("/api/agents")

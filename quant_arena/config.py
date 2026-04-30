@@ -7,8 +7,8 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field
 
 
-class FeeConfig(BaseModel):
-    """Trading fee configuration."""
+class AShareFeeConfig(BaseModel):
+    """A-share trading fee configuration."""
 
     commission_bps: float = Field(
         default=3.0,
@@ -21,6 +21,23 @@ class FeeConfig(BaseModel):
     stamp_tax_bps: float = Field(
         default=10.0,
         description="Stamp tax in basis points applied to sell fills.",
+    )
+
+
+class AShareConfig(BaseModel):
+    """A-share simulator settings."""
+
+    market_data_root: str = Field(
+        default=str(Path.home() / ".quant-arena" / "A-share" / "market-data"),
+        description="Public root directory for shared A-share market data files.",
+    )
+    polling_interval_seconds: int = Field(
+        default=150,
+        description="Seconds between A-share market sync and order-matching cycles.",
+    )
+    fees: AShareFeeConfig = Field(
+        default_factory=AShareFeeConfig,
+        description="Trading fee settings used by the A-share simulator.",
     )
 
 
@@ -223,29 +240,9 @@ class AppConfig(BaseModel):
         default=18792,
         description="TCP port the FastAPI server listens on.",
     )
-    agents_root: str = Field(
-        default=str(Path.home() / ".quant-arena" / "agents"),
-        description="Private root directory for per-agent config and state files.",
-    )
-    market_data_root: str = Field(
-        default=str(Path.home() / ".quant-arena" / "market-data"),
-        description="Public root directory for shared market data files, usually configured to a shared directory.",
-    )
-    enable_code_name_refresh: bool = Field(
-        default=False,
-        description="Whether the server should automatically refresh the shared codes.csv reference file when it becomes stale.",
-    )
-    polling_interval_seconds: int = Field(
-        default=60,
-        description="Seconds between background market sync and order-matching cycles.",
-    )
-    enable_background_polling: bool = Field(
-        default=True,
-        description="Whether the server should run periodic market sync and order matching in the background.",
-    )
-    fees: FeeConfig = Field(
-        default_factory=FeeConfig,
-        description="Trading fee settings used by the simulation engine.",
+    ashare: AShareConfig = Field(
+        default_factory=AShareConfig,
+        description="A-share simulator settings.",
     )
     napcat: NapCatConfig = Field(
         default_factory=NapCatConfig,
@@ -273,10 +270,6 @@ class AgentConfig(BaseModel):
     initial_cash: float = Field(
         gt=0,
         description="Starting cash balance, in CNY, used when the agent state is first created.",
-    )
-    sell_constraint: Literal["t_plus_one"] = Field(
-        default="t_plus_one",
-        description="Sell constraint policy enforced by the simulator.",
     )
     enabled: bool = Field(
         default=True,

@@ -7,7 +7,7 @@ from quant_arena.ashare import AShareService
 
 logging.basicConfig(level=logging.INFO)
 
-market = AShareService(market_data_root=Path("/Users/ldq/.quant-arena/market-data"))
+market = AShareService(market_data_root=Path.home() / ".quant-arena" / "A-share" / "market-data")
 market.refresh_code_names()
 print(market.get_code_names())
 while True:

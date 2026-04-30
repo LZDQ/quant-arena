@@ -4,7 +4,6 @@ type AgentResponse = {
   agent_id: string;
   display_name: string;
   initial_cash: number;
-  sell_constraint: string;
   enabled: boolean;
   role: "normal" | "monitor";
 };
@@ -103,7 +102,7 @@ type CreateAgentForm = {
 };
 
 const BASE_URL = import.meta.env.BASE_URL.replace(/\/+$/, "");
-const API_BASE = import.meta.env.VITE_API_BASE ?? BASE_URL;
+const API_BASE = (import.meta.env.VITE_API_BASE ?? BASE_URL).replace(/\/+$/, "");
 
 const defaultCreateAgentForm: CreateAgentForm = {
   agent_id: "",

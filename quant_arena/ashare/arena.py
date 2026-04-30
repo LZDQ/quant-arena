@@ -16,7 +16,7 @@ import pandas as pd
 
 from quant_arena.ashare.service import AShareService
 from quant_arena.clock import SHANGHAI_TZ, now_shanghai
-from quant_arena.config import AgentConfig, FeeConfig
+from quant_arena.config import AgentConfig, AShareFeeConfig
 from quant_arena.errors import BadRequestError, ConflictError, NotFoundError
 from quant_arena.notifier import NotifierService
 from quant_arena.models import (
@@ -42,7 +42,7 @@ class ArenaService:
         self,
         agents_root: Path,
         market: AShareService,
-        fees: FeeConfig,
+        fees: AShareFeeConfig,
         notifier: NotifierService,
     ):
         self.agents_root = agents_root
@@ -96,8 +96,8 @@ class ArenaService:
         now = submitted_at or now_shanghai()
         if request.side == "buy" and request.quantity % 100 != 0:
             raise BadRequestError("Buy order quantity must be a multiple of 100")
-        if not (time(9, 25) <= now.time() <= time(15, 0)):
-            raise BadRequestError("You can only submit an order between 9:25 and 15:00.")
+        if not (time(9, 30) <= now.time() <= time(15, 0)):
+            raise BadRequestError("You can only submit an order between 9:30 and 15:00.")
         self._refresh_intraday_cache({request.code})
         if request.code not in self._latest_prices:
             raise NotFoundError(f"No intraday market data available for {request.code}")

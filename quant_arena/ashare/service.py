@@ -268,6 +268,11 @@ class AShareService:
                     await asyncio.sleep(max((tomorrow - now).total_seconds(), 0.0))
                     continue
 
+                try:
+                    await asyncio.to_thread(self.refresh_code_names)
+                except Exception:
+                    logger.exception("Failed to refresh code_names.csv")
+
             if now.time() >= time(17, 30) and last_finalized_daily_date != today:
                 try:
                     await asyncio.to_thread(

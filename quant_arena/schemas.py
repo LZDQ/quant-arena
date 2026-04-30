@@ -1,6 +1,6 @@
 """FastAPI request and response models."""
 
-from datetime import datetime, date
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -55,7 +55,6 @@ class CreateAgentRequest(BaseModel):
     agent_id: str
     display_name: str
     initial_cash: float = Field(gt=0)
-    sell_constraint: Literal["t_plus_one"] = "t_plus_one"
     enabled: bool = True
     role: Literal["normal", "monitor"] = "normal"
 
@@ -65,7 +64,6 @@ class AgentResponse(BaseModel):
     agent_id: str
     display_name: str
     initial_cash: float
-    sell_constraint: Literal["t_plus_one"]
     enabled: bool
     role: Literal["normal", "monitor"]
 
