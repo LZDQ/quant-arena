@@ -103,6 +103,8 @@ class ArenaService:
             raise BadRequestError("Buy order quantity must be a multiple of 100")
         if not (time(9, 30) <= now.time() <= time(15, 0)):
             raise BadRequestError("You can only submit an order between 9:30 and 15:00.")
+        if not self.market.is_today_trading_day():
+            raise BadRequestError(f"{now.date().isoformat()} is not an A-share trading day.")
         if not self._is_main_board(request.code):
             raise BadRequestError(
                 f"Only main-board codes are supported (SH 60xxxx, SZ 000/001/002/003 xxxx). "

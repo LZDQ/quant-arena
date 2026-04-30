@@ -45,6 +45,7 @@ class AShareService:
         self._code_names_path = market_data_root / "code_names.csv"
         self._code_names: pd.DataFrame | None = None
         self._latest_daily_frame: pd.DataFrame | None = None
+        self._today_is_trading_day: tuple[date, bool] | None = None
         self.market_bars_dir.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(
             resources.files("quant_arena.resources").joinpath("README-market-data.md"),
@@ -247,6 +248,16 @@ class AShareService:
             if buffers[kind]:
                 persisters[kind](pd.concat(buffers[kind], ignore_index=True, copy=False))
 
+    def is_today_trading_day(self) -> bool:
+        """Return today's trading-day flag, reusing the value cached by ``run()``."""
+        today = now_shanghai().date()
+        if self._today_is_trading_day is not None and self._today_is_trading_day[0] == today:
+            return self._today_is_trading_day[1]
+        frame = self.fetch_trade_dates(today, today)
+        flag = str(frame.iloc[-1]["is_trading_day"]) == "1"
+        self._today_is_trading_day = (today, flag)
+        return flag
+
     async def run(self, polling_interval_seconds: int) -> None:
         """
         Persist today's bars after the market closes.
@@ -273,6 +284,7 @@ class AShareService:
                 except RuntimeError:
                     logger.exception("Cannot fetch today's trading status. Defaulting to False")
                     is_trading_day = False
+                self._today_is_trading_day = (today, is_trading_day)
 
                 if not is_trading_day:
                     tomorrow = datetime.combine(
