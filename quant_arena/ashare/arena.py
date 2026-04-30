@@ -198,7 +198,6 @@ class ArenaService:
         cleanup (overnight expiration, equity finalization) lives in
         `finalize_session`, not here.
         """
-        timestamp = now_shanghai()
         self._latest_close_index = None  # rebuild per cycle for portfolio fallback pricing
 
         agent_pairs = self.list_agents()
@@ -230,7 +229,7 @@ class ArenaService:
             for code, entries in pending_by_code.items():
                 code_frame = intraday_by_code.get(code)
                 for agent_id, state, order in entries:
-                    if self._match_one_order(state, order, code_frame, timestamp):
+                    if self._match_one_order(state, order, code_frame):
                         dirty_states.add(agent_id)
 
             for agent_id, _ in agent_pairs:
@@ -278,7 +277,6 @@ class ArenaService:
         state: AgentState,
         order: OrderRecord,
         code_frame: pd.DataFrame | None,
-        timestamp: datetime,
     ) -> bool:
         """Try to fill `order` in place. Returns True only if a fill occurred."""
         if code_frame is None or code_frame.empty:
