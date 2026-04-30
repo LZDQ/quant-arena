@@ -1,4 +1,6 @@
 import { startTransition, useEffect, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 type AgentResponse = {
   agent_id: string;
@@ -82,6 +84,24 @@ type AgentSnapshotResponse = {
   equity: EquityPoint[];
 };
 
+type DailyReportSummary = {
+  trade_date: string;
+  updated_at: string;
+};
+
+type DailyReport = {
+  trade_date: string;
+  content: string;
+  updated_at: string;
+};
+
+type DailyReportPage = {
+  items: DailyReportSummary[];
+  total: number;
+  page: number;
+  page_size: number;
+};
+
 type RankingEntry = {
   trade_date: string;
   agent_id: string;
@@ -112,6 +132,7 @@ const defaultCreateAgentForm: CreateAgentForm = {
 };
 
 const ORDERS_PAGE_SIZE = 8;
+const REPORTS_PAGE_SIZE = 10;
 
 function getAgentIdFromUrl(): string {
   return new URLSearchParams(window.location.search).get("agent-id") ?? "";
@@ -283,6 +304,12 @@ export function AShareApp() {
   const [createdAgentId, setCreatedAgentId] = useState<string>("");
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [ordersPage, setOrdersPage] = useState(1);
+  const [reportsPage, setReportsPage] = useState(1);
+  const [reportsList, setReportsList] = useState<DailyReportPage | null>(null);
+  const [loadingReportsList, setLoadingReportsList] = useState(false);
+  const [selectedReportDate, setSelectedReportDate] = useState<string>("");
+  const [selectedReport, setSelectedReport] = useState<DailyReport | null>(null);
+  const [loadingReportDetail, setLoadingReportDetail] = useState(false);
 
   useEffect(() => {
     void refreshAgents(getAgentIdFromUrl());
@@ -303,11 +330,24 @@ export function AShareApp() {
     setAgentIdInUrl(selectedAgentId);
     if (!selectedAgentId) {
       setSnapshot(null);
+      setReportsList(null);
+      setSelectedReport(null);
+      setSelectedReportDate("");
       return;
     }
     setOrdersPage(1);
+    setReportsPage(1);
+    setSelectedReport(null);
+    setSelectedReportDate("");
     void refreshSnapshot(selectedAgentId);
   }, [selectedAgentId]);
+
+  useEffect(() => {
+    if (!selectedAgentId) {
+      return;
+    }
+    void refreshReports(selectedAgentId, reportsPage);
+  }, [selectedAgentId, reportsPage]);
 
   async function refreshAgents(preferredAgentId?: string) {
     setLoadingAgents(true);
@@ -340,6 +380,37 @@ export function AShareApp() {
       setSnapshot(null);
     } finally {
       setLoadingSnapshot(false);
+    }
+  }
+
+  async function refreshReports(agentId: string, page: number) {
+    setLoadingReportsList(true);
+    try {
+      const data = await apiFetch<DailyReportPage>(
+        `/api/agents/${agentId}/daily-reports?page=${page}&page_size=${REPORTS_PAGE_SIZE}`,
+      );
+      setReportsList(data);
+    } catch (fetchError) {
+      setError((fetchError as Error).message);
+      setReportsList(null);
+    } finally {
+      setLoadingReportsList(false);
+    }
+  }
+
+  async function loadReportDetail(agentId: string, tradeDate: string) {
+    setSelectedReportDate(tradeDate);
+    setLoadingReportDetail(true);
+    try {
+      const data = await apiFetch<DailyReport>(
+        `/api/agents/${agentId}/daily-reports/${tradeDate}`,
+      );
+      setSelectedReport(data);
+    } catch (fetchError) {
+      setError((fetchError as Error).message);
+      setSelectedReport(null);
+    } finally {
+      setLoadingReportDetail(false);
     }
   }
 
@@ -414,6 +485,10 @@ export function AShareApp() {
     currentOrdersPage * ORDERS_PAGE_SIZE,
   );
   const stamp = todayStamp();
+  const reportsTotal = reportsList?.total ?? 0;
+  const reportsTotalPages = Math.max(1, Math.ceil(reportsTotal / REPORTS_PAGE_SIZE));
+  const reportsCurrentPage = Math.min(reportsPage, reportsTotalPages);
+  const reportsItems = reportsList?.items ?? [];
 
   return (
     <div className="wrap reveal">
@@ -853,6 +928,94 @@ export function AShareApp() {
                     )}
                   </tbody>
                 </table>
+              </section>
+
+              <section className="table-block">
+                <div className="table-head">
+                  <h4>Daily Reports</h4>
+                  <div className="table-tools">
+                    <span>{reportsTotal} entries</span>
+                    {reportsTotal > REPORTS_PAGE_SIZE && (
+                      <div className="pager" aria-label="Daily reports pagination">
+                        <button
+                          type="button"
+                          onClick={() => setReportsPage((page) => Math.max(1, page - 1))}
+                          disabled={reportsCurrentPage === 1 || loadingReportsList}
+                        >
+                          ← Prev
+                        </button>
+                        <span className="pager-label">
+                          {reportsCurrentPage} / {reportsTotalPages}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setReportsPage((page) => Math.min(reportsTotalPages, page + 1))
+                          }
+                          disabled={
+                            reportsCurrentPage === reportsTotalPages || loadingReportsList
+                          }
+                        >
+                          Next →
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="reports">
+                  <ul className="reports-list">
+                    {loadingReportsList && reportsItems.length === 0 && (
+                      <li className="reports-empty">Loading…</li>
+                    )}
+                    {!loadingReportsList && reportsItems.length === 0 && (
+                      <li className="reports-empty">No reports yet</li>
+                    )}
+                    {reportsItems.map((item) => {
+                      const isActive = selectedReportDate === item.trade_date;
+                      return (
+                        <li key={item.trade_date}>
+                          <button
+                            type="button"
+                            className={`reports-item ${isActive ? "is-active" : ""}`}
+                            onClick={() =>
+                              void loadReportDetail(snapshot.agent.agent_id, item.trade_date)
+                            }
+                          >
+                            <span className="reports-item-date">{item.trade_date}</span>
+                            <span className="reports-item-meta">
+                              {formatDateTime(item.updated_at)}
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  <div className="reports-detail">
+                    {loadingReportDetail ? (
+                      <div className="reports-empty">Loading report…</div>
+                    ) : selectedReport ? (
+                      <>
+                        <div className="reports-detail-head">
+                          <span className="reports-detail-date">
+                            {selectedReport.trade_date}
+                          </span>
+                          <span className="reports-detail-meta">
+                            Updated {formatDateTime(selectedReport.updated_at)}
+                          </span>
+                        </div>
+                        <div className="reports-detail-body">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {selectedReport.content}
+                          </ReactMarkdown>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="reports-empty">
+                        — pick a date on the left to read the report —
+                      </div>
+                    )}
+                  </div>
+                </div>
               </section>
             </>
           ) : (
