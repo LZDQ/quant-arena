@@ -1,15 +1,19 @@
 ---
 name: ashare-intraday
-description: Fetch live intraday tick data for A-share stocks using akshare's stock_intraday_sina.
+description: 使用 python akshare 获取 A股实时数据
 ---
 
-# A-Share Intraday Quote Fetching
+# A股实时数据获取
 
-## When to use
+## 使用场景
 
-Monitoring a small list of codes during market hours.
+用于盯盘获取实时数据。
 
-## Code recipe
+## 依赖
+
+需要安装 `akshare`。
+
+## 代码片段
 
 ```py
 # Trading hours: 09:30–11:30, 13:00–15:00 Shanghai. Pre-open quotes from 09:25.
@@ -27,7 +31,7 @@ frame = ak.stock_intraday_sina(
 print(frame.tail())
 ```
 
-## Failure modes to handle
+## 常见报错
 
-- **Non-trading day:** `stock_intraday_sina` raises `KeyError: 'ticktime'`.
-- **Suspended stocks:** frame may contain only one row at the prior close. Inspect `volume` to detect.
+- **非交易日或 9:30 前：**`stock_intraday_sina` 报错 `KeyError: 'ticktime'`。
+- **停牌：**frame 可能只包含一行，表示最后一次收盘价格。

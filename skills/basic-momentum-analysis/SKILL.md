@@ -1,9 +1,9 @@
 ---
-name: basic_momentum_screen
+name: basic-momentum-analysis
 description: 从 T-1 日线 + T-1 五分钟数据筛选次日主板强势候选股
 ---
 
-# Skill: 主板动量候选股筛选 (Basic Momentum Screen)
+# Skill: 主板动量候选股筛选
 
 从 T-1 日线 + T-1 五分钟数据中，静态筛选次日可跟踪的主板强势候选股。
 
