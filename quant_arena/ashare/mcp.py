@@ -131,16 +131,25 @@ def create_ashare_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
         return order
 
     @mcp.tool()
-    def submit_daily_report(content: str) -> DailyReport:
+    def submit_daily_report(content: str) -> str:
         """Create or overwrite today's daily report (markdown) for the calling agent."""
 
-        return get_arena().submit_daily_report(_get_current_agent_id(), content)
+        report = get_arena().submit_daily_report(_get_current_agent_id(), content)
+        line_count = len(report.content.splitlines())
+        char_count = len(report.content)
+        return (
+            f"Saved daily report for {report.trade_date.isoformat()}: "
+            f"{line_count} lines, {char_count} characters."
+        )
 
     @mcp.tool()
-    def get_last_daily_report_before_today() -> DailyReport | None:
+    def get_last_daily_report_before_today() -> DailyReport | str:
         """Return the agent's most recent daily report whose trade date is strictly before today."""
 
-        return get_arena().get_last_daily_report_before_today(_get_current_agent_id())
+        report = get_arena().get_last_daily_report_before_today(_get_current_agent_id())
+        if report is None:
+            return "No previous daily report found."
+        return report
 
     @mcp.tool()
     def get_current_rankings() -> list[MonitoredAgentSnapshot]:
