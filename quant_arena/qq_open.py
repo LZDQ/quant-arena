@@ -60,6 +60,8 @@ class QQOpenNotifier:
         )
 
     async def close(self) -> None:
+        if not self.config.enabled:
+            return
         if self._worker_task is not None:
             self._worker_task.cancel()
             try:
