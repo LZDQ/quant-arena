@@ -324,6 +324,9 @@ class ArenaService:
         while True:
             now = now_shanghai()
             today = now.date()
+            if not self.market.is_today_trading_day():
+                await asyncio.sleep(polling_interval_seconds)
+                continue
             if time(9, 30) <= now.time() <= time(15, 0):
                 try:
                     await asyncio.to_thread(self.match_pending_orders)
