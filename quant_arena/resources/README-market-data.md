@@ -1,6 +1,6 @@
 # A-Share Market Data Usage Guide
 
-Directory structure:
+## Directory Structure
 
 ```
 README.md          # this file
@@ -11,7 +11,12 @@ bars
     └── daily.csv  # daily bars for all code that day
 ```
 
+如果需要确认数据确实是按照本文档中的格式排列的，可以使用 `glob` 工具，查询 `**/*.csv`，上限为 50 个文件。不需要查询 `.parquet` 或其他文件，因为这里没有。
+
+## Examples
+
 Example `5min.csv`:
+
 ```
 date,time,code,open,high,low,close,volume,amount
 2025-01-02,20250102093500000,000001,11.73,11.76,11.73,11.75,7409800,87039608.0
