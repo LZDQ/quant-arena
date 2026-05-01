@@ -668,6 +668,13 @@ class ArenaService:
                 return self._load_daily_report(path, trade_date)
         return None
 
+    def get_latest_daily_report(self, agent_id: str) -> DailyReport | None:
+        """Return the most recent daily report for the agent, including today's if present."""
+        self.get_agent(agent_id)
+        for trade_date, path in self._iter_daily_report_paths(agent_id):
+            return self._load_daily_report(path, trade_date)
+        return None
+
     def list_daily_reports(
         self, agent_id: str, page: int = 1, page_size: int = 20
     ) -> tuple[list[DailyReportSummary], int]:

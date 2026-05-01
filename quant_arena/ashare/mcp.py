@@ -70,7 +70,7 @@ def create_ashare_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
     @mcp.tool()
     def list_operations(
         agent_id: str | None = None,
-        limit: int = 5,
+        limit: int = 10,
         start: str | None = None,
         end: str | None = None,
     ) -> OperationLog:
@@ -78,7 +78,7 @@ def create_ashare_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
 
         Normal agents can only inspect themselves.
         `start` and `end` are optional ISO 8601 datetime filters applied to order submit time
-        and fill execution time. `limit` defaults to the last 5 matching orders and fills.
+        and fill execution time. `limit` defaults to the last 10 matching orders and fills.
         """
 
         current_agent_id = _get_current_agent_id()
@@ -96,7 +96,7 @@ def create_ashare_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
 
     @mcp.tool()
     def get_self_metadata() -> AgentMetadata:
-        """Get the authenticated agent's own metadata."""
+        """Get the current agent's metadata."""
 
         agent_id = _get_current_agent_id()
         agent = get_arena().get_agent(agent_id)
@@ -144,11 +144,21 @@ def create_ashare_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
 
     @mcp.tool()
     def get_last_daily_report_before_today() -> DailyReport | str:
-        """Return the agent's most recent daily report whose trade date is strictly before today."""
+        """Return the current agent's most recent daily report whose trade date is strictly before today."""
 
         report = get_arena().get_last_daily_report_before_today(_get_current_agent_id())
         if report is None:
             return "No previous daily report found."
+        return report
+
+    @mcp.tool()
+    def get_agent_last_daily_report(agent_id: str) -> DailyReport | str:
+        """Return the latest daily report (including today's, if any) for the given agent. Only available for monitor agents."""
+
+        _require_monitor_agent(get_arena)
+        report = get_arena().get_latest_daily_report(agent_id)
+        if report is None:
+            return f"No daily report found for agent {agent_id}."
         return report
 
     @mcp.tool()
