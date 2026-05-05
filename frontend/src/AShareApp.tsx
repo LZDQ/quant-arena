@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useState } from "react";
+import { startTransition, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -132,7 +132,16 @@ const defaultCreateAgentForm: CreateAgentForm = {
 };
 
 const ORDERS_PAGE_SIZE = 8;
-const REPORTS_PAGE_SIZE = 10;
+const REPORTS_PAGE_SIZE = 100;
+const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function pad2(value: number): string {
+  return value.toString().padStart(2, "0");
+}
+
+function formatDateKey(year: number, month: number, day: number): string {
+  return `${year}-${pad2(month + 1)}-${pad2(day)}`;
+}
 
 function getAgentIdFromUrl(): string {
   return new URLSearchParams(window.location.search).get("agent-id") ?? "";
@@ -304,12 +313,15 @@ export function AShareApp() {
   const [createdAgentId, setCreatedAgentId] = useState<string>("");
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [ordersPage, setOrdersPage] = useState(1);
-  const [reportsPage, setReportsPage] = useState(1);
   const [reportsList, setReportsList] = useState<DailyReportPage | null>(null);
   const [loadingReportsList, setLoadingReportsList] = useState(false);
   const [selectedReportDate, setSelectedReportDate] = useState<string>("");
   const [selectedReport, setSelectedReport] = useState<DailyReport | null>(null);
   const [loadingReportDetail, setLoadingReportDetail] = useState(false);
+  const [calendarMonth, setCalendarMonth] = useState<{ year: number; month: number }>(() => {
+    const now = new Date();
+    return { year: now.getFullYear(), month: now.getMonth() };
+  });
 
   useEffect(() => {
     void refreshAgents(getAgentIdFromUrl());
@@ -336,9 +348,10 @@ export function AShareApp() {
       return;
     }
     setOrdersPage(1);
-    setReportsPage(1);
     setSelectedReport(null);
     setSelectedReportDate("");
+    const now = new Date();
+    setCalendarMonth({ year: now.getFullYear(), month: now.getMonth() });
     void refreshSnapshot(selectedAgentId);
   }, [selectedAgentId]);
 
@@ -346,8 +359,8 @@ export function AShareApp() {
     if (!selectedAgentId) {
       return;
     }
-    void refreshReports(selectedAgentId, reportsPage);
-  }, [selectedAgentId, reportsPage]);
+    void refreshReports(selectedAgentId);
+  }, [selectedAgentId]);
 
   async function refreshAgents(preferredAgentId?: string) {
     setLoadingAgents(true);
@@ -383,11 +396,11 @@ export function AShareApp() {
     }
   }
 
-  async function refreshReports(agentId: string, page: number) {
+  async function refreshReports(agentId: string) {
     setLoadingReportsList(true);
     try {
       const data = await apiFetch<DailyReportPage>(
-        `/api/agents/${agentId}/daily-reports?page=${page}&page_size=${REPORTS_PAGE_SIZE}`,
+        `/api/agents/${agentId}/daily-reports?page=1&page_size=${REPORTS_PAGE_SIZE}`,
       );
       setReportsList(data);
     } catch (fetchError) {
@@ -486,9 +499,41 @@ export function AShareApp() {
   );
   const stamp = todayStamp();
   const reportsTotal = reportsList?.total ?? 0;
-  const reportsTotalPages = Math.max(1, Math.ceil(reportsTotal / REPORTS_PAGE_SIZE));
-  const reportsCurrentPage = Math.min(reportsPage, reportsTotalPages);
   const reportsItems = reportsList?.items ?? [];
+  const reportsByDate = useMemo(() => {
+    const map = new Map<string, DailyReportSummary>();
+    for (const item of reportsItems) {
+      map.set(item.trade_date, item);
+    }
+    return map;
+  }, [reportsItems]);
+  const calendarCells = useMemo(() => {
+    const { year, month } = calendarMonth;
+    const firstWeekday = new Date(year, month, 1).getDay();
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const cells: ({ key: string; day: number } | null)[] = [];
+    for (let i = 0; i < firstWeekday; i += 1) {
+      cells.push(null);
+    }
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      cells.push({ key: formatDateKey(year, month, day), day });
+    }
+    while (cells.length % 7 !== 0) {
+      cells.push(null);
+    }
+    return cells;
+  }, [calendarMonth]);
+  const todayKey = useMemo(() => {
+    const now = new Date();
+    return formatDateKey(now.getFullYear(), now.getMonth(), now.getDate());
+  }, []);
+  const calendarMonthLabel = `${calendarMonth.year}-${pad2(calendarMonth.month + 1)}`;
+  function shiftCalendarMonth(delta: number) {
+    setCalendarMonth(({ year, month }) => {
+      const next = new Date(year, month + delta, 1);
+      return { year: next.getFullYear(), month: next.getMonth() };
+    });
+  }
 
   return (
     <div className="wrap reveal">
@@ -935,61 +980,73 @@ export function AShareApp() {
                   <h4>Daily Reports</h4>
                   <div className="table-tools">
                     <span>{reportsTotal} entries</span>
-                    {reportsTotal > REPORTS_PAGE_SIZE && (
-                      <div className="pager" aria-label="Daily reports pagination">
-                        <button
-                          type="button"
-                          onClick={() => setReportsPage((page) => Math.max(1, page - 1))}
-                          disabled={reportsCurrentPage === 1 || loadingReportsList}
-                        >
-                          ← Prev
-                        </button>
-                        <span className="pager-label">
-                          {reportsCurrentPage} / {reportsTotalPages}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setReportsPage((page) => Math.min(reportsTotalPages, page + 1))
-                          }
-                          disabled={
-                            reportsCurrentPage === reportsTotalPages || loadingReportsList
-                          }
-                        >
-                          Next →
-                        </button>
-                      </div>
-                    )}
                   </div>
                 </div>
                 <div className="reports">
-                  <ul className="reports-list">
-                    {loadingReportsList && reportsItems.length === 0 && (
-                      <li className="reports-empty">Loading…</li>
-                    )}
-                    {!loadingReportsList && reportsItems.length === 0 && (
-                      <li className="reports-empty">No reports yet</li>
-                    )}
-                    {reportsItems.map((item) => {
-                      const isActive = selectedReportDate === item.trade_date;
-                      return (
-                        <li key={item.trade_date}>
+                  <div className="reports-calendar">
+                    <div className="calendar-head">
+                      <button
+                        type="button"
+                        className="calendar-nav"
+                        onClick={() => shiftCalendarMonth(-1)}
+                        aria-label="Previous month"
+                      >
+                        ←
+                      </button>
+                      <span className="calendar-title">{calendarMonthLabel}</span>
+                      <button
+                        type="button"
+                        className="calendar-nav"
+                        onClick={() => shiftCalendarMonth(1)}
+                        aria-label="Next month"
+                      >
+                        →
+                      </button>
+                    </div>
+                    <div className="calendar-grid">
+                      {WEEKDAY_LABELS.map((label) => (
+                        <span key={label} className="calendar-dow">
+                          {label}
+                        </span>
+                      ))}
+                      {calendarCells.map((cell, idx) => {
+                        if (!cell) {
+                          return <span key={`blank-${idx}`} className="calendar-cell is-blank" />;
+                        }
+                        const hasReport = reportsByDate.has(cell.key);
+                        const isActive = selectedReportDate === cell.key;
+                        const isToday = cell.key === todayKey;
+                        const classes = [
+                          "calendar-cell",
+                          hasReport ? "has-report" : "no-report",
+                          isActive ? "is-active" : "",
+                          isToday ? "is-today" : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ");
+                        return (
                           <button
+                            key={cell.key}
                             type="button"
-                            className={`reports-item ${isActive ? "is-active" : ""}`}
+                            className={classes}
+                            disabled={!hasReport || loadingReportDetail}
                             onClick={() =>
-                              void loadReportDetail(snapshot.agent.agent_id, item.trade_date)
+                              void loadReportDetail(snapshot.agent.agent_id, cell.key)
                             }
                           >
-                            <span className="reports-item-date">{item.trade_date}</span>
-                            <span className="reports-item-meta">
-                              {formatDateTime(item.updated_at)}
-                            </span>
+                            {cell.day}
                           </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
+                        );
+                      })}
+                    </div>
+                    <div className="calendar-meta">
+                      {loadingReportsList
+                        ? "Loading…"
+                        : reportsTotal === 0
+                          ? "No reports yet"
+                          : "· filled days have reports ·"}
+                    </div>
+                  </div>
                   <div className="reports-detail">
                     {loadingReportDetail ? (
                       <div className="reports-empty">Loading report…</div>
@@ -1011,7 +1068,7 @@ export function AShareApp() {
                       </>
                     ) : (
                       <div className="reports-empty">
-                        — pick a date on the left to read the report —
+                        — pick a date on the calendar to read the report —
                       </div>
                     )}
                   </div>
