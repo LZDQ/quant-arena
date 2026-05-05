@@ -8,6 +8,7 @@ from contextlib import AsyncExitStack
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
+from typing import Callable
 
 import uvicorn
 from fastapi import APIRouter, FastAPI, Request
@@ -16,6 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from quant_arena.schemas import AgentCreatedResponse, AgentResponse, AgentSnapshotResponse, CreateAgentRequest, DailyReportPage, OperationListResponse, PathsResponse, PortfolioResponse
+from quant_arena.arena_base import BaseArenaService
 from quant_arena.ashare import (
     ArenaService,
     AShareService,
@@ -271,118 +273,81 @@ def create_app(
             market_data_root=str(state.ashare_market_data_root),
         )
 
-    @api.get("/api/agents")
-    def list_agents() -> list[AgentResponse]:
-        return [to_agent_response(agent_id, agent) for agent_id, agent in get_state().arena.list_agents()]
+    def _register_arena_routes(prefix: str, get_arena: Callable[[], BaseArenaService]) -> None:
+        """Register the standard /agents/{,/...}/rankings endpoints for one arena.
 
-    @api.post("/api/agents", response_model=AgentCreatedResponse)
-    def create_agent(request: CreateAgentRequest) -> AgentCreatedResponse:
-        token_secret = secrets.token_urlsafe(24)
-        agent = AgentConfig.model_validate(
-            {
-                **request.model_dump(exclude={"agent_id"}),
-                "token_secret": token_secret,
-            }
+        Mounts the same routes that A-share has historically exposed under
+        `/api/agents/...` against any `BaseArenaService`. The first call
+        (with prefix `""`) preserves the legacy A-share paths; later calls
+        attach the same handlers under a per-broker prefix like `/futumoo`.
+        """
+
+        @api.get(f"/api{prefix}/agents")
+        def list_arena_agents() -> list[AgentResponse]:
+            return [
+                to_agent_response(agent_id, agent)
+                for agent_id, agent in get_arena().list_agents()
+            ]
+
+        @api.post(f"/api{prefix}/agents", response_model=AgentCreatedResponse)
+        def create_arena_agent(request: CreateAgentRequest) -> AgentCreatedResponse:
+            token_secret = secrets.token_urlsafe(24)
+            agent = AgentConfig.model_validate(
+                {
+                    **request.model_dump(exclude={"agent_id"}),
+                    "token_secret": token_secret,
+                }
+            )
+            created = get_arena().add_agent(request.agent_id, agent)
+            return AgentCreatedResponse(
+                agent=to_agent_response(request.agent_id, created),
+                token_secret=token_secret,
+            )
+
+        @api.get(f"/api{prefix}/agents/{{agent_id}}", response_model=AgentSnapshotResponse)
+        def get_arena_agent(agent_id: str) -> AgentSnapshotResponse:
+            arena = get_arena()
+            return AgentSnapshotResponse(
+                agent=to_agent_response(agent_id, arena.get_agent(agent_id)),
+                portfolio=PortfolioResponse.model_validate(
+                    arena.get_portfolio(agent_id).model_dump(mode="json")
+                ),
+                operations=OperationListResponse.model_validate(
+                    arena.list_operations(agent_id).model_dump(mode="json")
+                ),
+                equity=arena.get_equity_curve(agent_id),
+            )
+
+        @api.delete(f"/api{prefix}/agents/{{agent_id}}", status_code=204)
+        def delete_arena_agent(agent_id: str) -> None:
+            get_arena().delete_agent(agent_id)
+
+        @api.get(
+            f"/api{prefix}/agents/{{agent_id}}/daily-reports",
+            response_model=DailyReportPage,
         )
-        created = get_state().arena.add_agent(request.agent_id, agent)
-        return AgentCreatedResponse(
-            agent=to_agent_response(request.agent_id, created),
-            token_secret=token_secret,
+        def list_arena_daily_reports(
+            agent_id: str, page: int = 1, page_size: int = 20
+        ) -> DailyReportPage:
+            items, total = get_arena().list_daily_reports(
+                agent_id, page=page, page_size=page_size
+            )
+            return DailyReportPage(items=items, total=total, page=page, page_size=page_size)
+
+        @api.get(
+            f"/api{prefix}/agents/{{agent_id}}/daily-reports/{{trade_date}}",
+            response_model=DailyReport,
         )
+        def get_arena_daily_report(agent_id: str, trade_date: date) -> DailyReport:
+            return get_arena().get_daily_report(agent_id, trade_date)
 
-    @api.get("/api/agents/{agent_id}", response_model=AgentSnapshotResponse)
-    def get_agent(agent_id: str) -> AgentSnapshotResponse:
-        arena = get_state().arena
-        return AgentSnapshotResponse(
-            agent=to_agent_response(agent_id, arena.get_agent(agent_id)),
-            portfolio=PortfolioResponse.model_validate(arena.get_portfolio(agent_id).model_dump(mode="json")),
-            operations=OperationListResponse.model_validate(arena.list_operations(agent_id).model_dump(mode="json")),
-            equity=arena.get_equity_curve(agent_id),
-        )
+        @api.get(f"/api{prefix}/rankings")
+        def get_arena_rankings(date_value: str | None = None) -> list[RankingSnapshot]:
+            target_date = date.fromisoformat(date_value) if date_value else None
+            return get_arena().get_rankings(target_date)
 
-    @api.delete("/api/agents/{agent_id}", status_code=204)
-    def delete_agent(agent_id: str) -> None:
-        get_state().arena.delete_agent(agent_id)
-
-    @api.get("/api/agents/{agent_id}/daily-reports", response_model=DailyReportPage)
-    def list_daily_reports(agent_id: str, page: int = 1, page_size: int = 20) -> DailyReportPage:
-        items, total = get_state().arena.list_daily_reports(agent_id, page=page, page_size=page_size)
-        return DailyReportPage(items=items, total=total, page=page, page_size=page_size)
-
-    @api.get("/api/agents/{agent_id}/daily-reports/{trade_date}", response_model=DailyReport)
-    def get_daily_report(agent_id: str, trade_date: date) -> DailyReport:
-        return get_state().arena.get_daily_report(agent_id, trade_date)
-
-    @api.get("/api/rankings")
-    def get_rankings(date_value: str | None = None) -> list[RankingSnapshot]:
-        target_date = date.fromisoformat(date_value) if date_value else None
-        return get_state().arena.get_rankings(target_date)
-
-    # ----- Futumoo (offline paper) endpoints -----
-
-    @api.get("/api/futumoo/agents")
-    def list_futumoo_agents() -> list[AgentResponse]:
-        return [
-            to_agent_response(agent_id, agent)
-            for agent_id, agent in get_state().futumoo_arena.list_agents()
-        ]
-
-    @api.post("/api/futumoo/agents", response_model=AgentCreatedResponse)
-    def create_futumoo_agent(request: CreateAgentRequest) -> AgentCreatedResponse:
-        token_secret = secrets.token_urlsafe(24)
-        agent = AgentConfig.model_validate(
-            {
-                **request.model_dump(exclude={"agent_id"}),
-                "token_secret": token_secret,
-            }
-        )
-        created = get_state().futumoo_arena.add_agent(request.agent_id, agent)
-        return AgentCreatedResponse(
-            agent=to_agent_response(request.agent_id, created),
-            token_secret=token_secret,
-        )
-
-    @api.get("/api/futumoo/agents/{agent_id}", response_model=AgentSnapshotResponse)
-    def get_futumoo_agent(agent_id: str) -> AgentSnapshotResponse:
-        arena = get_state().futumoo_arena
-        return AgentSnapshotResponse(
-            agent=to_agent_response(agent_id, arena.get_agent(agent_id)),
-            portfolio=PortfolioResponse.model_validate(
-                arena.get_portfolio(agent_id).model_dump(mode="json")
-            ),
-            operations=OperationListResponse.model_validate(
-                arena.list_operations(agent_id).model_dump(mode="json")
-            ),
-            equity=arena.get_equity_curve(agent_id),
-        )
-
-    @api.delete("/api/futumoo/agents/{agent_id}", status_code=204)
-    def delete_futumoo_agent(agent_id: str) -> None:
-        get_state().futumoo_arena.delete_agent(agent_id)
-
-    @api.get(
-        "/api/futumoo/agents/{agent_id}/daily-reports",
-        response_model=DailyReportPage,
-    )
-    def list_futumoo_daily_reports(
-        agent_id: str, page: int = 1, page_size: int = 20
-    ) -> DailyReportPage:
-        items, total = get_state().futumoo_arena.list_daily_reports(
-            agent_id, page=page, page_size=page_size
-        )
-        return DailyReportPage(items=items, total=total, page=page, page_size=page_size)
-
-    @api.get(
-        "/api/futumoo/agents/{agent_id}/daily-reports/{trade_date}",
-        response_model=DailyReport,
-    )
-    def get_futumoo_daily_report(agent_id: str, trade_date: date) -> DailyReport:
-        return get_state().futumoo_arena.get_daily_report(agent_id, trade_date)
-
-    @api.get("/api/futumoo/rankings")
-    def get_futumoo_rankings(date_value: str | None = None) -> list[RankingSnapshot]:
-        target_date = date.fromisoformat(date_value) if date_value else None
-        return get_state().futumoo_arena.get_rankings(target_date)
+    _register_arena_routes("", lambda: get_state().arena)
+    _register_arena_routes("/futumoo", lambda: get_state().futumoo_arena)
 
     @api.api_route("/A-share/mcp", methods=["GET", "POST", "DELETE"])
     def mcp_redirect() -> RedirectResponse:

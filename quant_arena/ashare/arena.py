@@ -1,43 +1,42 @@
-"""Trading simulation engine."""
+"""A-share trading simulation engine.
+
+Inherits common scaffolding (agent registry, equity curve, daily
+reports, persistence) from `BaseArenaService`. The A-share-specific
+parts are: T+1 lot accounting, intraday-tick order matching against
+AKShare-sina data, daily price-band gating, 100-lot rule, main-board
+gating, and the 9:30 / 15:00 session window.
+"""
 
 import asyncio
-import json
-import os
-import shutil
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time
 from logging import getLogger
 from pathlib import Path
 
-import threading
 import numpy as np
 import pandas as pd
 
+from quant_arena.arena_base import BaseArenaService
 from quant_arena.ashare.service import AShareService
 from quant_arena.clock import SHANGHAI_TZ, now_shanghai
-from quant_arena.config import AgentConfig, AShareFeeConfig
+from quant_arena.config import AShareFeeConfig
 from quant_arena.errors import BadRequestError, ConflictError, NotFoundError
 from quant_arena.notifier import NotifierService
 from quant_arena.models import (
     AgentState,
-    DailyReport,
-    DailyReportSummary,
     EquityPoint,
     FillRecord,
-    OperationLog,
     OrderRecord,
     PortfolioSnapshot,
     PositionLot,
     PositionSnapshot,
-    RankingSnapshot,
     SubmitOrder,
 )
 
 logger = getLogger(__name__)
 
 
-class ArenaService:
+class ArenaService(BaseArenaService[AgentState]):
     """A-share trading simulator: agent state, order matching, ranking."""
 
     def __init__(
@@ -48,50 +47,25 @@ class ArenaService:
         notifier: NotifierService,
         intraday_fetch_workers: int = 8,
     ):
-        self.agents_root = agents_root
+        super().__init__(
+            agents_root=agents_root,
+            notifier=notifier,
+            state_cls=AgentState,
+        )
         self.market = market
         self.fees = fees
-        self.notifier = notifier
         self._latest_prices: dict[str, float] = {}
         self._intraday_as_of: datetime | None = None
         self._latest_close_index: dict[str, float] | None = None
-        self._rankings_cache: list[RankingSnapshot] | None = None
-        self._today_equity_points: dict[str, EquityPoint] = {}
-        self.agents_root.mkdir(parents=True, exist_ok=True)
-        self._agents: dict[str, AgentConfig] = {}
-        self._states: dict[str, AgentState] = {}
-        self._load_agents()
-        self._order_lock = threading.RLock()
         self._intraday_executor = ThreadPoolExecutor(
             max_workers=intraday_fetch_workers,
             thread_name_prefix="intraday-fetch",
         )
 
-    def list_agents(self) -> list[tuple[str, AgentConfig]]:
-        return sorted(self._agents.items(), key=lambda item: item[0])
+    def _now(self) -> datetime:
+        return now_shanghai()
 
-    def get_agent(self, agent_id: str) -> AgentConfig:
-        agent = self._agents.get(agent_id)
-        if agent is None:
-            raise NotFoundError(f"Unknown agent: {agent_id}")
-        return agent
-
-    def add_agent(self, agent_id: str, agent: AgentConfig) -> AgentConfig:
-        if agent_id in self._agents:
-            raise ConflictError(f"Agent already exists: {agent_id}")
-        self._agents[agent_id] = agent
-        self._save_agent_config(agent_id, agent)
-        state = AgentState(agent_id=agent_id, cash=agent.initial_cash)
-        self._save_agent_state(state)
-        self._rankings_cache = None
-        return agent
-
-    def delete_agent(self, agent_id: str) -> None:
-        self.get_agent(agent_id)
-        del self._agents[agent_id]
-        self._states.pop(agent_id, None)
-        shutil.rmtree(self._agent_dir(agent_id), ignore_errors=True)
-        self._rankings_cache = None
+    # ----- order entry -----
 
     async def submit_order(
         self,
@@ -100,7 +74,7 @@ class ArenaService:
         submitted_at: datetime | None = None,
     ) -> OrderRecord:
         agent = self.get_agent(agent_id)
-        now = submitted_at or now_shanghai()
+        now = submitted_at or self._now()
         if request.side == "buy" and request.quantity % 100 != 0:
             raise BadRequestError("Buy order quantity must be a multiple of 100")
         if not (time(9, 30) <= now.time() <= time(15, 0)):
@@ -172,24 +146,7 @@ class ArenaService:
         self.notifier.notify_order_submitted(agent, order)
         return order
 
-    def cancel_order(self, agent_id: str, order_id: str) -> OrderRecord:
-        agent = self.get_agent(agent_id)
-        with self._order_lock:
-            state = self._state(agent_id)
-            target: OrderRecord | None = None
-            for order in state.orders:
-                if order.order_id == order_id:
-                    target = order
-                    break
-            if target is None:
-                raise NotFoundError(f"Unknown order: {order_id}")
-            if target.status != "pending":
-                raise ConflictError("Only pending orders can be canceled")
-            target.status = "canceled"
-            target.canceled_at = now_shanghai()
-            self._save_agent_state(state)
-        self.notifier.notify_order_canceled(agent, target)
-        return target
+    # ----- matching loop -----
 
     def match_pending_orders(self) -> None:
         """
@@ -218,7 +175,6 @@ class ArenaService:
         intraday_by_code = self._refresh_intraday_cache(all_tracked_codes)
 
         with self._order_lock:
-            # Group pending orders by code so each code's frame is walked once.
             pending_by_code: dict[str, list[tuple[str, AgentState, OrderRecord]]] = {}
             dirty_states: set[str] = set()
             for agent_id, _ in agent_pairs:
@@ -253,8 +209,7 @@ class ArenaService:
         freeze the in-memory `_today_equity_points` entry into
         `state.equity_history` and persist once.
         """
-        timestamp = now_shanghai()
-        today = timestamp.date()
+        timestamp = self._now()
         with self._order_lock:
             for agent_id, _ in self.list_agents():
                 state = self._state(agent_id)
@@ -263,16 +218,7 @@ class ArenaService:
                         order.status = "canceled"
                         order.canceled_at = timestamp
                         order.rejection_reason = "Order expired at end of session"
-                point = self._build_today_equity_point(state)
-                self._today_equity_points[agent_id] = point
-                replaced = False
-                for index, existing in enumerate(state.equity_history):
-                    if existing.trade_date == today:
-                        state.equity_history[index] = point
-                        replaced = True
-                        break
-                if not replaced:
-                    state.equity_history.append(point)
+                self._freeze_today_equity(state)
                 self._save_agent_state(state)
         self._rankings_cache = None
 
@@ -315,14 +261,10 @@ class ArenaService:
         """
         Match pending orders during 9:30 to 15:00, then finalize the session
         once after 15:00 each trade-date.
-
-        `last_finalized_date` is a local that resets on process restart, so a
-        server brought up after 15:00 will finalize the current trade-date on
-        its first cycle even if it never ran the matcher that day.
         """
         last_finalized_date: date | None = None
         while True:
-            now = now_shanghai()
+            now = self._now()
             today = now.date()
             if not self.market.is_today_trading_day():
                 await asyncio.sleep(polling_interval_seconds)
@@ -346,9 +288,7 @@ class ArenaService:
 
         Trusts the market service's "latest" contract — the entire frame is
         treated as a single day's closes. The cache is shared between the
-        matcher's daily-limit lookup and `_build_portfolio`'s price fallback
-        so position pricing is O(1) per code instead of `frame.loc[...]` per
-        position.
+        matcher's daily-limit lookup and `_build_portfolio`'s price fallback.
         """
         if self._latest_close_index is not None:
             return self._latest_close_index
@@ -358,90 +298,20 @@ class ArenaService:
             code_arr = frame["code"].astype(str).to_numpy()
             close_arr = pd.to_numeric(frame["close"], errors="coerce").to_numpy()
             for code, close in zip(code_arr, close_arr, strict=False):
-                if close == close:  # filter NaN
+                if close == close:
                     index[code] = float(close)
         self._latest_close_index = index
         return index
 
-    def get_portfolio(self, agent_id: str) -> PortfolioSnapshot:
-        self.get_agent(agent_id)
-        with self._order_lock:
-            return self._build_portfolio(self._state(agent_id))
+    # ----- portfolio + fills (T+1 lots) -----
 
-    def list_operations(
+    def _can_fill(
         self,
-        agent_id: str,
-        start: datetime | None = None,
-        end: datetime | None = None,
-        limit: int | None = None,
-    ) -> OperationLog:
-        self.get_agent(agent_id)
-        with self._order_lock:
-            state = self._state(agent_id)
-            orders = [order for order in state.orders if self._in_range(order.submitted_at, start, end)]
-            fills = [fill for fill in state.fills if self._in_range(fill.executed_at, start, end)]
-            if limit is not None:
-                orders = orders[-limit:]
-                fills = fills[-limit:]
-            return OperationLog(orders=orders, fills=fills)
-
-    def get_equity_curve(self, agent_id: str, start: date | None = None, end: date | None = None) -> list[EquityPoint]:
-        self.get_agent(agent_id)
-        with self._order_lock:
-            points = list(self._state(agent_id).equity_history)
-            today_point = self._today_equity_points.get(agent_id)
-            if today_point is not None and (not points or points[-1].trade_date != today_point.trade_date):
-                points.append(today_point)
-        if start is not None:
-            points = [point for point in points if point.trade_date >= start]
-        if end is not None:
-            points = [point for point in points if point.trade_date <= end]
-        return points
-
-    def get_rankings(self, target_date: date | None = None) -> list[RankingSnapshot]:
-        if target_date is None and self._rankings_cache is not None:
-            return self._rankings_cache
-        entries: list[RankingSnapshot] = []
-        for agent_id, agent in self.list_agents():
-            with self._order_lock:
-                state = self._state(agent_id)
-                portfolio = self._build_portfolio(state)
-                point = self._resolve_equity_point(state, target_date, portfolio)
-            return_pct = ((point.total_equity - agent.initial_cash) / agent.initial_cash) * 100.0
-            entries.append(
-                RankingSnapshot(
-                    trade_date=point.trade_date,
-                    agent_id=agent_id,
-                    display_name=agent.display_name,
-                    cash=round(portfolio.cash, 2),
-                    market_value=round(portfolio.market_value, 2),
-                    total_equity=round(point.total_equity, 2),
-                    return_pct=round(return_pct, 4),
-                    realized_pnl=round(point.realized_pnl, 2),
-                    unrealized_pnl=round(point.unrealized_pnl, 2),
-                )
-            )
-        ranked = sorted(entries, key=lambda entry: (-entry.total_equity, entry.agent_id))
-        if target_date is None:
-            self._rankings_cache = ranked
-        return ranked
-
-    def _resolve_equity_point(self, state: AgentState, target_date: date | None, portfolio: PortfolioSnapshot) -> EquityPoint:
-        if target_date is not None:
-            for point in state.equity_history:
-                if point.trade_date == target_date:
-                    return point
-            raise NotFoundError(f"No equity snapshot for {target_date.isoformat()}")
-        return EquityPoint(
-            trade_date=now_shanghai().date(),
-            cash=portfolio.cash,
-            market_value=portfolio.market_value,
-            total_equity=portfolio.total_equity,
-            realized_pnl=portfolio.realized_pnl,
-            unrealized_pnl=portfolio.unrealized_pnl,
-        )
-
-    def _can_fill(self, state: AgentState, order: OrderRecord, market_price: float, trade_date: date) -> bool:
+        state: AgentState,
+        order: OrderRecord,
+        market_price: float,
+        trade_date: date,
+    ) -> bool:
         notional = market_price * order.quantity
         commission = self._commission(notional)
         if order.side == "buy":
@@ -449,7 +319,14 @@ class ArenaService:
         sellable = self._sellable_quantity(state, order.code, trade_date)
         return sellable >= order.quantity
 
-    def _fill_order(self, state: AgentState, order: OrderRecord, market_price: float, executed_at: datetime, trade_date: date) -> None:
+    def _fill_order(
+        self,
+        state: AgentState,
+        order: OrderRecord,
+        market_price: float,
+        executed_at: datetime,
+        trade_date: date,
+    ) -> None:
         notional = market_price * order.quantity
         commission = self._commission(notional)
         stamp_tax = self._stamp_tax(notional, order.side)
@@ -468,34 +345,25 @@ class ArenaService:
             state.cash -= notional + commission
             effective_cost_price = (notional + commission) / order.quantity
             state.positions.setdefault(order.code, []).append(
-                PositionLot(quantity=order.quantity, acquired_date=trade_date, cost_price=effective_cost_price)
+                PositionLot(
+                    quantity=order.quantity,
+                    acquired_date=trade_date,
+                    cost_price=effective_cost_price,
+                )
             )
         else:
             state.cash += notional - commission - stamp_tax
             consumed_cost = self._consume_sell_lots(state, order.code, order.quantity, trade_date)
-            state.realized_pnl += (market_price * order.quantity) - consumed_cost - commission - stamp_tax
+            state.realized_pnl += (
+                (market_price * order.quantity) - consumed_cost - commission - stamp_tax
+            )
         order.status = "filled"
         order.filled_at = executed_at
         state.fills.append(fill)
         self.notifier.notify_order_filled(self.get_agent(order.agent_id), order, fill)
 
-    def _build_today_equity_point(self, state: AgentState) -> EquityPoint:
-        portfolio = self._build_portfolio(state)
-        return EquityPoint(
-            trade_date=now_shanghai().date(),
-            cash=portfolio.cash,
-            market_value=portfolio.market_value,
-            total_equity=portfolio.total_equity,
-            realized_pnl=portfolio.realized_pnl,
-            unrealized_pnl=portfolio.unrealized_pnl,
-        )
-
-    def _update_today_equity_point(self, state: AgentState) -> None:
-        """In-memory only. Persisted to `state.equity_history` by `finalize_session`."""
-        self._today_equity_points[state.agent_id] = self._build_today_equity_point(state)
-
     def _build_portfolio(self, state: AgentState) -> PortfolioSnapshot:
-        today = now_shanghai().date()
+        today = self._now().date()
         close_index: dict[str, float] | None = None
 
         positions: list[PositionSnapshot] = []
@@ -548,17 +416,11 @@ class ArenaService:
     def _refresh_intraday_cache(self, codes: set[str]) -> dict[str, pd.DataFrame]:
         """
         Refresh per-code intraday frames in parallel and update `self._latest_prices`.
-
-        Returns a `dict[code, DataFrame]` keyed by code. Each frame is sorted
-        by `trade_time` ascending with tz-naive timestamps (Shanghai wall
-        clock) plus numeric `price`. Per-code parallel HTTP fetches collapse
-        the wall-clock cost of a polling cycle. `self._intraday_as_of` is
-        updated to the maximum tick time observed in this cycle.
         """
         if not codes:
             return {}
 
-        today = now_shanghai().date()
+        today = self._now().date()
         date_prefix = today.strftime("%Y-%m-%d") + " "
 
         def _fetch_one(code: str) -> tuple[str, pd.DataFrame | None]:
@@ -597,8 +459,13 @@ class ArenaService:
         lots = state.positions.get(code, [])
         return sum(lot.quantity for lot in lots if lot.quantity > 0 and lot.acquired_date < trade_date)
 
-    def _consume_sell_lots(self, state: AgentState, code: str, quantity: int, trade_date: date) -> float:
-        eligible = [lot for lot in state.positions.get(code, []) if lot.quantity > 0 and lot.acquired_date < trade_date]
+    def _consume_sell_lots(
+        self, state: AgentState, code: str, quantity: int, trade_date: date
+    ) -> float:
+        eligible = [
+            lot for lot in state.positions.get(code, [])
+            if lot.quantity > 0 and lot.acquired_date < trade_date
+        ]
         if sum(lot.quantity for lot in eligible) < quantity:
             raise ConflictError("Insufficient sellable quantity for T+1")
         remaining = quantity
@@ -633,178 +500,3 @@ class ArenaService:
         if code.startswith("60"):
             return True
         return code[:3] in {"000", "001", "002", "003"}
-
-    _DAILY_REPORT_MAX_BYTES = 256 * 1024
-
-    def submit_daily_report(self, agent_id: str, content: str) -> DailyReport:
-        """Create or overwrite today's markdown report for the agent."""
-        self.get_agent(agent_id)
-        if not content.strip():
-            raise BadRequestError("Daily report content must not be empty")
-        if len(content.encode("utf-8")) > self._DAILY_REPORT_MAX_BYTES:
-            raise BadRequestError(
-                f"Daily report exceeds {self._DAILY_REPORT_MAX_BYTES} bytes"
-            )
-        today = now_shanghai().date()
-        path = self._daily_report_path(agent_id, today)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._atomic_write_text(path, content)
-        return self._load_daily_report(path, today)
-
-    def get_daily_report(self, agent_id: str, trade_date: date) -> DailyReport:
-        """Return one specific daily report; raises NotFoundError if absent."""
-        self.get_agent(agent_id)
-        path = self._daily_report_path(agent_id, trade_date)
-        if not path.exists():
-            raise NotFoundError(f"No daily report on {trade_date.isoformat()}")
-        return self._load_daily_report(path, trade_date)
-
-    def get_last_daily_report_before_today(self, agent_id: str) -> DailyReport | None:
-        """Return the most recent report whose trade_date is strictly before today."""
-        self.get_agent(agent_id)
-        today = now_shanghai().date()
-        for trade_date, path in self._iter_daily_report_paths(agent_id):
-            if trade_date < today:
-                return self._load_daily_report(path, trade_date)
-        return None
-
-    def get_latest_daily_report(self, agent_id: str) -> DailyReport | None:
-        """Return the most recent daily report for the agent, including today's if present."""
-        self.get_agent(agent_id)
-        for trade_date, path in self._iter_daily_report_paths(agent_id):
-            return self._load_daily_report(path, trade_date)
-        return None
-
-    def list_daily_reports(
-        self, agent_id: str, page: int = 1, page_size: int = 20
-    ) -> tuple[list[DailyReportSummary], int]:
-        """Return (page_items_newest_first, total_count) for an agent's reports."""
-        self.get_agent(agent_id)
-        if page < 1:
-            raise BadRequestError("page must be >= 1")
-        if page_size < 1 or page_size > 100:
-            raise BadRequestError("page_size must be in [1, 100]")
-        entries = list(self._iter_daily_report_paths(agent_id))
-        total = len(entries)
-        start = (page - 1) * page_size
-        end = start + page_size
-        items = [
-            DailyReportSummary(
-                trade_date=trade_date,
-                updated_at=datetime.fromtimestamp(path.stat().st_mtime, tz=SHANGHAI_TZ),
-            )
-            for trade_date, path in entries[start:end]
-        ]
-        return items, total
-
-    def _daily_reports_dir(self, agent_id: str) -> Path:
-        return self._agent_dir(agent_id) / "daily-reports"
-
-    def _daily_report_path(self, agent_id: str, trade_date: date) -> Path:
-        return self._daily_reports_dir(agent_id) / f"{trade_date.isoformat()}.md"
-
-    def _iter_daily_report_paths(self, agent_id: str) -> list[tuple[date, Path]]:
-        directory = self._daily_reports_dir(agent_id)
-        if not directory.exists():
-            return []
-        entries: list[tuple[date, Path]] = []
-        for path in directory.iterdir():
-            if path.suffix != ".md" or not path.is_file():
-                continue
-            try:
-                trade_date = date.fromisoformat(path.stem)
-            except ValueError:
-                continue
-            entries.append((trade_date, path))
-        entries.sort(key=lambda item: item[0], reverse=True)
-        return entries
-
-    @staticmethod
-    def _load_daily_report(path: Path, trade_date: date) -> DailyReport:
-        return DailyReport(
-            trade_date=trade_date,
-            content=path.read_text(encoding="utf-8"),
-            updated_at=datetime.fromtimestamp(path.stat().st_mtime, tz=SHANGHAI_TZ),
-        )
-
-    @staticmethod
-    def _atomic_write_text(path: Path, content: str) -> None:
-        fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-        tmp_path = Path(tmp_name)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp_path, path)
-        except BaseException:
-            tmp_path.unlink(missing_ok=True)
-            raise
-
-    @staticmethod
-    def _in_range(moment: datetime, start: datetime | None, end: datetime | None) -> bool:
-        if start is not None and moment < start:
-            return False
-        if end is not None and moment > end:
-            return False
-        return True
-
-    def _state(self, agent_id: str) -> AgentState:
-        state = self._states.get(agent_id)
-        if state is not None:
-            return state
-        agent = self.get_agent(agent_id)
-        path = self._state_path(agent_id)
-        if path.exists():
-            with path.open("r", encoding="utf-8") as handle:
-                state = AgentState.model_validate(json.load(handle))
-        else:
-            state = AgentState(agent_id=agent_id, cash=agent.initial_cash)
-            self._save_agent_state(state)
-        self._states[agent_id] = state
-        return state
-
-    def _load_agents(self) -> None:
-        for agent_dir in sorted(path for path in self.agents_root.iterdir() if path.is_dir()):
-            config_path = agent_dir / "config.json"
-            if not config_path.exists():
-                continue
-            with config_path.open("r", encoding="utf-8") as handle:
-                self._agents[agent_dir.name] = AgentConfig.model_validate(json.load(handle))
-            state_path = agent_dir / "state.json"
-            if state_path.exists():
-                with state_path.open("r", encoding="utf-8") as handle:
-                    self._states[agent_dir.name] = AgentState.model_validate(json.load(handle))
-
-    def _save_agent_config(self, agent_id: str, agent: AgentConfig) -> None:
-        self._agent_dir(agent_id).mkdir(parents=True, exist_ok=True)
-        self._atomic_write_json(self._config_path(agent_id), agent.model_dump(mode="json"))
-
-    def _save_agent_state(self, state: AgentState) -> None:
-        self._states[state.agent_id] = state
-        self._agent_dir(state.agent_id).mkdir(parents=True, exist_ok=True)
-        self._atomic_write_json(self._state_path(state.agent_id), state.model_dump(mode="json"))
-
-    @staticmethod
-    def _atomic_write_json(path: Path, payload: object) -> None:
-        fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-        tmp_path = Path(tmp_name)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, ensure_ascii=False, indent="\t")
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp_path, path)
-        except BaseException:
-            tmp_path.unlink(missing_ok=True)
-            raise
-
-    def _agent_dir(self, agent_id: str) -> Path:
-        return self.agents_root / agent_id
-
-    def _config_path(self, agent_id: str) -> Path:
-        return self._agent_dir(agent_id) / "config.json"
-
-    def _state_path(self, agent_id: str) -> Path:
-        return self._agent_dir(agent_id) / "state.json"
