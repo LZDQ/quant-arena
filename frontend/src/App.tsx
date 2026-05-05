@@ -1,4 +1,5 @@
 import { AShareApp } from "./AShareApp";
+import { FutumooApp } from "./FutumooApp";
 
 const BASE_URL = import.meta.env.BASE_URL.replace(/\/+$/, "");
 
@@ -12,9 +13,30 @@ type Market = {
 };
 
 const MARKETS: Market[] = [
-  { slug: "A-share", no: "01", name: "A-Share", hanzi: "沪 · 深 · 京", tagline: "Shanghai · Shenzhen · Beijing", status: "live" },
-  { slug: "US-share", no: "02", name: "US Equities", hanzi: "纽约 · 纳斯达克", tagline: "NYSE · NASDAQ · AMEX", status: "coming" },
-  { slug: "HK-share", no: "03", name: "Hong Kong", hanzi: "香 港", tagline: "HKEX Main Board", status: "coming" },
+  {
+    slug: "A-share",
+    no: "01",
+    name: "A-Share",
+    hanzi: "沪 · 深 · 京",
+    tagline: "Akshare · Shanghai · Shenzhen · Beijing",
+    status: "live",
+  },
+  {
+    slug: "futumoo",
+    no: "02",
+    name: "Futu Moo",
+    hanzi: "富途 · 离线",
+    tagline: "Offline paper · HK · US · CN via OpenD",
+    status: "live",
+  },
+  {
+    slug: "ib",
+    no: "03",
+    name: "Interactive Brokers",
+    hanzi: "盈 透",
+    tagline: "Online paper · Real · Gateway",
+    status: "coming",
+  },
 ];
 
 function currentSlug(): string {
@@ -151,6 +173,9 @@ export function App() {
   const slug = currentSlug();
   if (slug === "A-share") {
     return <AShareApp />;
+  }
+  if (slug === "futumoo") {
+    return <FutumooApp />;
   }
   return <MarketPicker />;
 }

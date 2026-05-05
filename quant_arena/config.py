@@ -234,6 +234,51 @@ class IBConfig(BaseModel):
     )
 
 
+class FutumooFeeConfig(BaseModel):
+    """Futumoo offline-paper-trading fee configuration.
+
+    Markets are mixed (HK/US/CN/etc); fees are applied uniformly as basis
+    points for simplicity. Set both to 0 to disable.
+    """
+
+    commission_bps: float = Field(
+        default=0.0,
+        description="Commission in basis points applied to each filled order, in the order's currency.",
+    )
+    min_commission: float = Field(
+        default=0.0,
+        description="Minimum commission charged per filled order, in the order's currency.",
+    )
+
+
+class FutumooConfig(BaseModel):
+    """Futumoo offline paper trading settings.
+
+    Trading is fully offline — orders are filled instantly at the user's
+    limit price and never reach OpenD. The Futu OpenD `OpenQuoteContext`
+    is used only to snapshot current prices once per day for equity
+    history. Symbols are passed through verbatim with their region
+    prefix, e.g. `US.AAPL`, `HK.00700`, `SH.600519`.
+    """
+
+    host: str = Field(
+        default="127.0.0.1",
+        description="Hostname or IP of the Futu OpenD gateway.",
+    )
+    port: int = Field(
+        default=11111,
+        description="TCP port of the Futu OpenD gateway.",
+    )
+    polling_interval_seconds: int = Field(
+        default=300,
+        description="Seconds between Futumoo equity-snapshot refresh cycles.",
+    )
+    fees: FutumooFeeConfig = Field(
+        default_factory=FutumooFeeConfig,
+        description="Trading fee settings used by the Futumoo simulator.",
+    )
+
+
 class AppConfig(BaseModel):
     """Top-level server configuration."""
 
@@ -248,6 +293,10 @@ class AppConfig(BaseModel):
     ashare: AShareConfig = Field(
         default_factory=AShareConfig,
         description="A-share simulator settings.",
+    )
+    futumoo: FutumooConfig = Field(
+        default_factory=FutumooConfig,
+        description="Futumoo offline paper trading settings.",
     )
     napcat: NapCatConfig = Field(
         default_factory=NapCatConfig,

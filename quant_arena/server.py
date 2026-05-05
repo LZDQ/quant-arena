@@ -24,6 +24,12 @@ from quant_arena.ashare import (
 )
 from quant_arena.config import AgentConfig, AppConfig, load_app_config
 from quant_arena.errors import ServiceError
+from quant_arena.futumoo import (
+    FutumooArenaService,
+    FutumooService,
+    create_futumoo_mcp_server,
+    wrap_futumoo_mcp_with_agent_auth,
+)
 from quant_arena.ib_mcp import create_ib_mcp_server, wrap_ib_mcp_with_token_auth
 from quant_arena.ib_service import IBService
 from quant_arena.models import DailyReport, RankingSnapshot
@@ -47,6 +53,9 @@ class AppState:
         ashare_market_data_root: Path,
         market: AShareService,
         arena: ArenaService,
+        futumoo_agents_root: Path,
+        futumoo_market: FutumooService,
+        futumoo_arena: FutumooArenaService,
         notifier: NotifierService,
         ib_paper: IBService | None,
         ib_real: IBService | None,
@@ -57,6 +66,9 @@ class AppState:
         self.ashare_market_data_root = ashare_market_data_root
         self.market = market
         self.arena = arena
+        self.futumoo_agents_root = futumoo_agents_root
+        self.futumoo_market = futumoo_market
+        self.futumoo_arena = futumoo_arena
         self.notifier = notifier
         self.ib_paper = ib_paper
         self.ib_real = ib_real
@@ -79,6 +91,15 @@ def _load_app_state(config_path: Path, market_service: AShareService | None = No
         fees=config.ashare.fees,
         notifier=notifier,
         intraday_fetch_workers=config.ashare.intraday_fetch_workers,
+    )
+    futumoo_root = (config_path.parent / "futumoo").resolve()
+    futumoo_agents_root = futumoo_root / "agents"
+    futumoo_market = FutumooService(host=config.futumoo.host, port=config.futumoo.port)
+    futumoo_arena = FutumooArenaService(
+        agents_root=futumoo_agents_root,
+        market=futumoo_market,
+        fees=config.futumoo.fees,
+        notifier=notifier,
     )
     ib_paper: IBService | None = None
     ib_real: IBService | None = None
@@ -104,6 +125,9 @@ def _load_app_state(config_path: Path, market_service: AShareService | None = No
         ashare_market_data_root=market_data_root,
         market=market,
         arena=arena,
+        futumoo_agents_root=futumoo_agents_root,
+        futumoo_market=futumoo_market,
+        futumoo_arena=futumoo_arena,
         notifier=notifier,
         ib_paper=ib_paper,
         ib_real=ib_real,
@@ -118,6 +142,7 @@ def create_app(
 
     resolved_config = (config_path or DEFAULT_CONFIG_PATH).resolve()
     mcp_server = create_ashare_mcp_server(lambda: app.state.app_state.arena)
+    futumoo_mcp_server = create_futumoo_mcp_server(lambda: app.state.app_state.futumoo_arena)
     ib_mcp_server = create_ib_mcp_server()
 
     def _require_ib_paper() -> IBService:
@@ -138,6 +163,7 @@ def create_app(
             state = _load_app_state(resolved_config, market_service=market_service)
             app.state.app_state = state
             await stack.enter_async_context(mcp_server.session_manager.run())
+            await stack.enter_async_context(futumoo_mcp_server.session_manager.run())
             await stack.enter_async_context(ib_mcp_server.session_manager.run())
             await state.notifier.start()
             if state.ib_paper is not None:
@@ -155,6 +181,14 @@ def create_app(
                         state.arena.run(state.config.ashare.polling_interval_seconds)
                     )
                 )
+            if state.config.futumoo.polling_interval_seconds > 0:
+                state.background_tasks.append(
+                    asyncio.create_task(
+                        state.futumoo_arena.run(
+                            state.config.futumoo.polling_interval_seconds
+                        )
+                    )
+                )
             try:
                 yield
             finally:
@@ -169,6 +203,7 @@ def create_app(
                     state.ib_paper.close()
                 if state.ib_real is not None:
                     state.ib_real.close()
+                state.futumoo_market.close()
                 await state.notifier.close()
 
     app = FastAPI(title="quant-arena", lifespan=lifespan)
@@ -192,6 +227,13 @@ def create_app(
         wrap_mcp_with_agent_auth(
             mcp_server.streamable_http_app(),
             lambda: app.state.app_state.arena,
+        ),
+    )
+    app.mount(
+        f"{base_url}/futumoo/mcp/" if base_url else "/futumoo/mcp/",
+        wrap_futumoo_mcp_with_agent_auth(
+            futumoo_mcp_server.streamable_http_app(),
+            lambda: app.state.app_state.futumoo_arena,
         ),
     )
     app.mount(
@@ -276,9 +318,80 @@ def create_app(
         target_date = date.fromisoformat(date_value) if date_value else None
         return get_state().arena.get_rankings(target_date)
 
+    # ----- Futumoo (offline paper) endpoints -----
+
+    @api.get("/api/futumoo/agents")
+    def list_futumoo_agents() -> list[AgentResponse]:
+        return [
+            to_agent_response(agent_id, agent)
+            for agent_id, agent in get_state().futumoo_arena.list_agents()
+        ]
+
+    @api.post("/api/futumoo/agents", response_model=AgentCreatedResponse)
+    def create_futumoo_agent(request: CreateAgentRequest) -> AgentCreatedResponse:
+        token_secret = secrets.token_urlsafe(24)
+        agent = AgentConfig.model_validate(
+            {
+                **request.model_dump(exclude={"agent_id"}),
+                "token_secret": token_secret,
+            }
+        )
+        created = get_state().futumoo_arena.add_agent(request.agent_id, agent)
+        return AgentCreatedResponse(
+            agent=to_agent_response(request.agent_id, created),
+            token_secret=token_secret,
+        )
+
+    @api.get("/api/futumoo/agents/{agent_id}", response_model=AgentSnapshotResponse)
+    def get_futumoo_agent(agent_id: str) -> AgentSnapshotResponse:
+        arena = get_state().futumoo_arena
+        return AgentSnapshotResponse(
+            agent=to_agent_response(agent_id, arena.get_agent(agent_id)),
+            portfolio=PortfolioResponse.model_validate(
+                arena.get_portfolio(agent_id).model_dump(mode="json")
+            ),
+            operations=OperationListResponse.model_validate(
+                arena.list_operations(agent_id).model_dump(mode="json")
+            ),
+            equity=arena.get_equity_curve(agent_id),
+        )
+
+    @api.delete("/api/futumoo/agents/{agent_id}", status_code=204)
+    def delete_futumoo_agent(agent_id: str) -> None:
+        get_state().futumoo_arena.delete_agent(agent_id)
+
+    @api.get(
+        "/api/futumoo/agents/{agent_id}/daily-reports",
+        response_model=DailyReportPage,
+    )
+    def list_futumoo_daily_reports(
+        agent_id: str, page: int = 1, page_size: int = 20
+    ) -> DailyReportPage:
+        items, total = get_state().futumoo_arena.list_daily_reports(
+            agent_id, page=page, page_size=page_size
+        )
+        return DailyReportPage(items=items, total=total, page=page, page_size=page_size)
+
+    @api.get(
+        "/api/futumoo/agents/{agent_id}/daily-reports/{trade_date}",
+        response_model=DailyReport,
+    )
+    def get_futumoo_daily_report(agent_id: str, trade_date: date) -> DailyReport:
+        return get_state().futumoo_arena.get_daily_report(agent_id, trade_date)
+
+    @api.get("/api/futumoo/rankings")
+    def get_futumoo_rankings(date_value: str | None = None) -> list[RankingSnapshot]:
+        target_date = date.fromisoformat(date_value) if date_value else None
+        return get_state().futumoo_arena.get_rankings(target_date)
+
     @api.api_route("/A-share/mcp", methods=["GET", "POST", "DELETE"])
     def mcp_redirect() -> RedirectResponse:
         target = f"{base_url}/A-share/mcp/" if base_url else "/A-share/mcp/"
+        return RedirectResponse(url=target, status_code=307)
+
+    @api.api_route("/futumoo/mcp", methods=["GET", "POST", "DELETE"])
+    def futumoo_mcp_redirect() -> RedirectResponse:
+        target = f"{base_url}/futumoo/mcp/" if base_url else "/futumoo/mcp/"
         return RedirectResponse(url=target, status_code=307)
 
     @api.api_route("/ib/mcp", methods=["GET", "POST", "DELETE"])
