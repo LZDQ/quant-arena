@@ -270,7 +270,3 @@ Preconfigured agent prompts for `nanobot-soulboard` are under `soulboard/`. Copy
 ## TODO
 
 - 涨停/跌停 is hardcoded to be 10%. This doesn't affect price tracking but affects blocking on other codes. Fix: reject ST orders.
-- 既然 quant-arena 需要实时更新数据，还是要把数据用接口给出，但是因为实时性质不能用文件，可以用 resource 或者 tool。
-- portfolio 同时给出股票名称，加入更多的数据显示。
-- 价格更新似乎有问题，last 并没有显示最后的结果。同时该数据没有任何别的方法显示，所以需要加入对应 MCP 接口同时给出最后的更新时间，并且保证启动时要更新一次。
-- BUG: 需要把 `_poll_market` 改成 non-blocking 然后内置到 market service 里面。断点逻辑也需要在 market service 里面。
