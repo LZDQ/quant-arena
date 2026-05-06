@@ -1006,15 +1006,16 @@ table td.comment-cell {
 
 /* daily reports */
 .reports {
-  display: grid;
-  grid-template-columns: 240px 1fr;
-  gap: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
   margin-top: 18px;
 }
 .reports-calendar {
-  border-right: 1px solid var(--rule-soft);
-  padding-right: 18px;
+  border-bottom: 1px solid var(--rule-soft);
+  padding-bottom: 16px;
   font-family: var(--mono);
+  max-width: 420px;
 }
 .calendar-head {
   display: flex;
@@ -1199,13 +1200,7 @@ table td.comment-cell {
     padding: 24px 0 32px;
   }
   .equity { grid-template-columns: 1fr; }
-  .reports { grid-template-columns: 1fr; }
-  .reports-calendar {
-    border-right: 0;
-    border-bottom: 1px solid var(--rule-soft);
-    padding-right: 0;
-    padding-bottom: 12px;
-  }
+  .reports-calendar { max-width: none; }
   .equity-summary {
     border-right: 0;
     border-bottom: 1px solid var(--rule);
