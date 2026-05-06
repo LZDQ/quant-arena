@@ -267,6 +267,9 @@ curl http://127.0.0.1:18792/ib/mcp \
 
 Preconfigured agent prompts for `nanobot-soulboard` are under `soulboard/`. Copy those markdown files to a workspace and make the agent trade.
 
+SKILL 设计理念：quant-arena不会提供 skills，因为影响上下文对稳定性非常不好。soulboard 里也不要把所有 skill 都配给每个 agent，应该每个 soul 都自己有一份 copy。
+
 ## TODO
 
 - 涨停/跌停 is hardcoded to be 10%. This doesn't affect price tracking but affects blocking on other codes. Fix: reject ST orders.
+- 目前的设定下，100k 的 context window 仍然不够，会触发 consolidatoin。
