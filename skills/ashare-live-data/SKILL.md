@@ -73,3 +73,5 @@ print(prices)
 ```
 
 注意该接口返回的代码带前缀。
+
+高峰期可能会有 `RemoteDisconnect` 报错，可以加入重试逻辑。千万不要用 eastmoney 的接口，因为它非常不稳定。用例子中的这个 `stock_zh_a_spot`。
