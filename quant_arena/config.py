@@ -292,15 +292,6 @@ class FutumooConfig(BaseModel):
         default=30,
         description="Seconds between snapshot refresh / pending-order match cycles.",
     )
-    pdt_equity_threshold_usd: float = Field(
-        default=25_000.0,
-        ge=0,
-        description=(
-            "FINRA pattern-day-trader minimum equity. While a USD agent's total "
-            "equity sits below this value, the US arena allows at most 3 "
-            "day-trades in any rolling 5 US-business-day window."
-        ),
-    )
     pdt_max_day_trades: int = Field(
         default=3,
         ge=0,
@@ -413,3 +404,16 @@ def load_app_config(path: Path) -> AppConfig:
         return _write_default_app_config(path)
     with path.open("r", encoding="utf-8") as handle:
         return AppConfig.model_validate(json.load(handle))
+
+
+def save_app_config(path: Path, config: AppConfig) -> None:
+    """Atomically rewrite `path` with `config`. Used by runtime mutations
+    (e.g. arena enable/disable toggles) so the new value survives a restart.
+    """
+    payload = json.dumps(config.model_dump(mode="json"), ensure_ascii=False, indent="\t")
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        handle.write(payload)
+        handle.write("\n")
+    tmp_path.replace(path)

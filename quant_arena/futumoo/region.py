@@ -338,6 +338,10 @@ class USRegionArena(RegionArena):
 
     _OPEN = time(9, 30)
     _CLOSE = time(16, 0)
+    # FINRA pattern-day-trader minimum equity. Below this, the rolling-window
+    # day-trade limit is enforced. Hardcoded — the value is regulatory, not
+    # a deployment knob.
+    _PDT_EQUITY_THRESHOLD_USD = 25_000.0
 
     def __init__(
         self,
@@ -376,7 +380,7 @@ class USRegionArena(RegionArena):
         snapshot_row: dict,
     ) -> None:
         equity_usd = self._equity_usd(state, snapshot_row, request.code)
-        if equity_usd >= self.config.pdt_equity_threshold_usd:
+        if equity_usd >= self._PDT_EQUITY_THRESHOLD_USD:
             return
         if not self._would_create_new_day_trade(state, request, now.date()):
             return
@@ -384,7 +388,7 @@ class USRegionArena(RegionArena):
         if window_count + 1 > self.config.pdt_max_day_trades:
             raise BadRequestError(
                 f"Pattern-day-trader limit: account equity {equity_usd:.2f} USD "
-                f"is below the {self.config.pdt_equity_threshold_usd:.0f} USD "
+                f"is below the {self._PDT_EQUITY_THRESHOLD_USD:.0f} USD "
                 f"threshold and this order would be the {window_count + 1}th "
                 f"day-trade in the trailing {self.config.pdt_window_business_days} "
                 f"US business days (max {self.config.pdt_max_day_trades})."

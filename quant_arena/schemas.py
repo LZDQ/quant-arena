@@ -87,6 +87,32 @@ class AgentCreatedResponse(BaseModel):
     token_secret: str
 
 
+class ArenaStatus(BaseModel):
+    """Whether one arena is enabled at startup. Persisted in config.json."""
+
+    slug: Literal["ashare", "futumoo"]
+    label: str
+    enabled: bool
+
+
+class ToggleArenaRequest(BaseModel):
+    """Request body for `PATCH /api/arenas/{slug}`."""
+
+    enabled: bool
+
+
+class ToggleArenaResponse(BaseModel):
+    """Response body for `PATCH /api/arenas/{slug}`.
+
+    `restart_required` is always true on success: the enable flag is checked
+    once at startup to gate route registration, MCP mounts, and background
+    tasks, so the new state takes effect on the next server restart.
+    """
+
+    status: ArenaStatus
+    restart_required: bool = True
+
+
 class DailyReportPage(BaseModel):
     """Paginated listing of an agent's daily reports (newest first)."""
 

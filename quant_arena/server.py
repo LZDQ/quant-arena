@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from quant_arena.schemas import AgentCreatedResponse, AgentResponse, AgentSnapshotResponse, CreateAgentRequest, DailyReportPage, OperationListResponse, PathsResponse, PortfolioResponse
+from quant_arena.schemas import AgentCreatedResponse, AgentResponse, AgentSnapshotResponse, ArenaStatus, CreateAgentRequest, DailyReportPage, OperationListResponse, PathsResponse, PortfolioResponse, ToggleArenaRequest, ToggleArenaResponse
 from quant_arena.arena_base import BaseArenaService
 from quant_arena.ashare import (
     ArenaService,
@@ -24,7 +24,7 @@ from quant_arena.ashare import (
     create_ashare_mcp_server,
     wrap_mcp_with_agent_auth,
 )
-from quant_arena.config import AgentConfig, AppConfig, load_app_config
+from quant_arena.config import AgentConfig, AppConfig, load_app_config, save_app_config
 from quant_arena.errors import BadRequestError, ServiceError
 from quant_arena.futumoo import (
     FutumooArenaService,
@@ -294,6 +294,32 @@ def create_app(
             agents_root=str(state.ashare_agents_root),
             market_data_root=str(state.ashare_market_data_root),
         )
+
+    _ARENA_LABELS: dict[str, str] = {"ashare": "A-Share", "futumoo": "Futu Moo"}
+
+    def _arena_statuses(config: AppConfig) -> list[ArenaStatus]:
+        return [
+            ArenaStatus(slug="ashare", label=_ARENA_LABELS["ashare"], enabled=config.ashare.enabled),
+            ArenaStatus(slug="futumoo", label=_ARENA_LABELS["futumoo"], enabled=config.futumoo.enabled),
+        ]
+
+    @api.get("/api/arenas", response_model=list[ArenaStatus])
+    def list_arenas() -> list[ArenaStatus]:
+        return _arena_statuses(get_state().config)
+
+    @api.patch("/api/arenas/{slug}", response_model=ToggleArenaResponse)
+    def toggle_arena(slug: str, request: ToggleArenaRequest) -> ToggleArenaResponse:
+        if slug not in _ARENA_LABELS:
+            raise BadRequestError(f"Unknown arena slug {slug!r}")
+        state = get_state()
+        config = state.config
+        if slug == "ashare":
+            config.ashare.enabled = request.enabled
+        else:
+            config.futumoo.enabled = request.enabled
+        save_app_config(state.config_path, config)
+        status = ArenaStatus(slug=slug, label=_ARENA_LABELS[slug], enabled=request.enabled)
+        return ToggleArenaResponse(status=status, restart_required=True)
 
     def _register_arena_routes(prefix: str, get_arena: Callable[[], BaseArenaService]) -> None:
         """Register the standard /agents/{,/...}/rankings endpoints for one arena.
