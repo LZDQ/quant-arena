@@ -1,4 +1,4 @@
-"""Futumoo MCP server: agent-token auth on top of the offline simulator."""
+"""Futumoo MCP server: agent-token auth on top of the HK/US paper-trading arena."""
 
 from contextvars import ContextVar
 from datetime import timezone
@@ -19,17 +19,25 @@ _CURRENT_AGENT_ID: ContextVar[str | None] = ContextVar(
 def create_futumoo_mcp_server(
     get_arena: Callable[[], FutumooArenaService],
 ) -> FastMCP:
-    """Create the Futumoo offline-paper MCP server."""
+    """Create the Futumoo HK/US paper-trading MCP server."""
 
     return make_arena_mcp_server(
         name="quant-arena-futumoo",
         get_arena=get_arena,
         current_agent_id=_CURRENT_AGENT_ID,
         submit_operation_description=(
-            "Submit a buy or sell order on the Futumoo offline simulator. "
-            "The order fills instantly at `limit_price`. `code` is the "
-            "Futu-namespaced symbol, e.g. `US.AAPL`, `HK.00700`, `SH.600519`. "
-            "There are no per-market lot-size, T+1, or price-band restrictions."
+            "Submit a limit-price buy or sell order on the Futumoo HK/US paper "
+            "arena. Orders are queued as pending and matched against `last_price` "
+            "polled from Futu OpenD. `code` must carry the region prefix `HK.` "
+            "(e.g. `HK.00700`) or `US.` (e.g. `US.AAPL`); other markets are "
+            "rejected. Submissions are validated against the region's session "
+            "window, trading-day calendar, suspension flag, and side-specific "
+            "rules: HK buys must be a multiple of the per-symbol board lot, "
+            "sells require sufficient sellable inventory, and the US side "
+            "enforces the FINRA pattern-day-trader limit (max 3 day-trades in "
+            "any rolling 5 US business days while total USD-equivalent equity "
+            "is below 25,000 USD). Invalid orders are rejected at submission "
+            "and never appear in the agent's order log."
         ),
         fallback_tz=timezone.utc,
     )

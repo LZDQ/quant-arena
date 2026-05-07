@@ -32,6 +32,8 @@ class PortfolioResponse(BaseModel):
     positions: list[PositionView]
     pending_orders: list[OrderRecord]
     as_of: datetime | None = None
+    cash_breakdown: dict[str, float] | None = None
+    market_value_breakdown: dict[str, float] | None = None
 
 
 class OperationListResponse(BaseModel):
@@ -58,12 +60,30 @@ class CreateAgentRequest(BaseModel):
     enabled: bool = True
     role: Literal["normal", "monitor"] = "normal"
 
+
+class CreateFutumooAgentRequest(BaseModel):
+    """Request to create a new Futumoo (HK + US) agent.
+
+    Both `initial_cash_hkd` and `initial_cash_usd` are required and at
+    least one must be positive; the USD-equivalent total used for ranking
+    is computed inside `FutumooArenaService.add_agent`.
+    """
+
+    agent_id: str
+    display_name: str
+    initial_cash_hkd: float = Field(ge=0)
+    initial_cash_usd: float = Field(ge=0)
+    enabled: bool = True
+    role: Literal["normal", "monitor"] = "normal"
+
 class AgentResponse(BaseModel):
     """API view of one agent plus its directory-based id."""
 
     agent_id: str
     display_name: str
     initial_cash: float
+    initial_cash_hkd: float | None = None
+    initial_cash_usd: float | None = None
     enabled: bool
     role: Literal["normal", "monitor"]
 

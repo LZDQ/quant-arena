@@ -234,31 +234,42 @@ class IBConfig(BaseModel):
     )
 
 
-class FutumooFeeConfig(BaseModel):
-    """Futumoo offline-paper-trading fee configuration.
-
-    Markets are mixed (HK/US/CN/etc); fees are applied uniformly as basis
-    points for simplicity. Set both to 0 to disable.
-    """
+class FutumooHKFeeConfig(BaseModel):
+    """HK-side fee configuration for the Futumoo paper-trading arena."""
 
     commission_bps: float = Field(
         default=0.0,
-        description="Commission in basis points applied to each filled order, in the order's currency.",
+        description="Broker commission in basis points applied to each filled HK order, in HKD.",
     )
     min_commission: float = Field(
         default=0.0,
-        description="Minimum commission charged per filled order, in the order's currency.",
+        description="Minimum commission charged per filled HK order, in HKD.",
+    )
+    stamp_tax_bps: float = Field(
+        default=10.0,
+        description="HK stamp duty in basis points applied to both buy and sell consideration. Default 0.10%.",
+    )
+
+
+class FutumooUSFeeConfig(BaseModel):
+    """US-side fee configuration for the Futumoo paper-trading arena."""
+
+    commission_bps: float = Field(
+        default=0.0,
+        description="Broker commission in basis points applied to each filled US order, in USD.",
+    )
+    min_commission: float = Field(
+        default=0.0,
+        description="Minimum commission charged per filled US order, in USD.",
     )
 
 
 class FutumooConfig(BaseModel):
-    """Futumoo offline paper trading settings.
+    """Futumoo HK/US paper-trading arena settings.
 
-    Trading is fully offline — orders are filled instantly at the user's
-    limit price and never reach OpenD. The Futu OpenD `OpenQuoteContext`
-    is used only to snapshot current prices once per day for equity
-    history. Symbols are passed through verbatim with their region
-    prefix, e.g. `US.AAPL`, `HK.00700`, `SH.600519`.
+    Orders are matched against `last_price` snapshots polled from Futu OpenD,
+    not filled instantly. Each agent holds two cash buckets (HKD, USD) and
+    two position books. Symbols must carry the region prefix `HK.` or `US.`.
     """
 
     host: str = Field(
@@ -270,12 +281,43 @@ class FutumooConfig(BaseModel):
         description="TCP port of the Futu OpenD gateway.",
     )
     polling_interval_seconds: int = Field(
-        default=300,
-        description="Seconds between Futumoo equity-snapshot refresh cycles.",
+        default=30,
+        description="Seconds between snapshot refresh / pending-order match cycles.",
     )
-    fees: FutumooFeeConfig = Field(
-        default_factory=FutumooFeeConfig,
-        description="Trading fee settings used by the Futumoo simulator.",
+    fx_hkd_per_usd: float = Field(
+        default=7.80,
+        gt=0,
+        description=(
+            "Static HKD-per-USD conversion rate used to express two-currency portfolios "
+            "as a single USD-equivalent total for rankings and the PDT equity threshold."
+        ),
+    )
+    pdt_equity_threshold_usd: float = Field(
+        default=25_000.0,
+        ge=0,
+        description=(
+            "FINRA pattern-day-trader minimum equity. While the agent's total "
+            "USD-equivalent equity is below this value, the US arena allows at "
+            "most 3 day-trades in any rolling 5 US-business-day window."
+        ),
+    )
+    pdt_max_day_trades: int = Field(
+        default=3,
+        ge=0,
+        description="Max day-trades permitted in the rolling 5 US-business-day window when below the PDT equity threshold.",
+    )
+    pdt_window_business_days: int = Field(
+        default=5,
+        gt=0,
+        description="Length of the rolling US-business-day window the PDT counter looks back over.",
+    )
+    hk_fees: FutumooHKFeeConfig = Field(
+        default_factory=FutumooHKFeeConfig,
+        description="Fee schedule applied to HK fills.",
+    )
+    us_fees: FutumooUSFeeConfig = Field(
+        default_factory=FutumooUSFeeConfig,
+        description="Fee schedule applied to US fills.",
     )
 
 
@@ -322,8 +364,22 @@ class AgentConfig(BaseModel):
         description="Shared secret value expected in the configured authentication header.",
     )
     initial_cash: float = Field(
-        gt=0,
-        description="Starting cash balance, in CNY, used when the agent state is first created.",
+        default=0.0,
+        ge=0,
+        description=(
+            "Single-currency starting balance. Used by the A-share arena (CNY, "
+            "must be > 0 there) and as the USD-equivalent total for ranking on "
+            "the Futumoo arena, where it is derived from `initial_cash_hkd` and "
+            "`initial_cash_usd` inside `FutumooArenaService.add_agent`."
+        ),
+    )
+    initial_cash_hkd: float | None = Field(
+        default=None,
+        description="Starting HKD cash on the Futumoo arena. Required when registering a Futumoo agent.",
+    )
+    initial_cash_usd: float | None = Field(
+        default=None,
+        description="Starting USD cash on the Futumoo arena. Required when registering a Futumoo agent.",
     )
     enabled: bool = Field(
         default=True,

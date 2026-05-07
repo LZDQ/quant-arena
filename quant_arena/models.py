@@ -171,6 +171,14 @@ class PortfolioSnapshot(BaseModel):
     positions: list[PositionSnapshot]
     pending_orders: list[OrderRecord]
     as_of: datetime | None = None
+    cash_breakdown: dict[str, float] | None = Field(
+        default=None,
+        description="Per-currency cash, e.g. {\"HKD\": 80000, \"USD\": 10000} on the futumoo arena. None on single-currency arenas.",
+    )
+    market_value_breakdown: dict[str, float] | None = Field(
+        default=None,
+        description="Per-currency market value. None on single-currency arenas.",
+    )
 
 
 class OperationLog(BaseModel):

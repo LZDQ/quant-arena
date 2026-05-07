@@ -1,17 +1,40 @@
-"""Thin Futu OpenD wrapper used only for snapshot pricing.
+"""Thin Futu OpenD client used by the HK/US paper-trading arena.
 
-Trading is fully offline — orders fill in our own ledger and never
-reach OpenD. The only external dependency is `OpenQuoteContext.
-get_market_snapshot` for daily equity-history mark-to-market.
-The connection is lazy and reused across calls.
+Wraps `OpenQuoteContext` for two operations:
+
+* `get_snapshots(codes)` — returns a per-code dict that includes
+  `last_price`, `lot_size`, `update_time` (region-local: HKT for HK,
+  ET for US), `prev_close_price`, and `suspension`. Used both for
+  pending-order matching and for live portfolio mark-to-market.
+* `request_trading_days(market, start, end)` — returns the set of
+  trading dates Futu reports for the given market, used by the HK/US
+  region arenas as their session calendars.
+
+The connection is opened lazily and reused across calls.
 """
 
 import threading
+from datetime import date, datetime
 from logging import getLogger
 
 from quant_arena.errors import ServiceError
 
 logger = getLogger(__name__)
+
+
+_SNAPSHOT_FIELDS: tuple[str, ...] = (
+    "code",
+    "last_price",
+    "prev_close_price",
+    "open_price",
+    "high_price",
+    "low_price",
+    "ask_price",
+    "bid_price",
+    "lot_size",
+    "suspension",
+    "update_time",
+)
 
 
 class FutumooService:
@@ -36,11 +59,13 @@ class FutumooService:
                 )
         return self._quote_ctx
 
-    def get_snapshot(self, codes: list[str]) -> dict[str, float]:
-        """Return `{code: last_price}` for each requested symbol.
+    def get_snapshots(self, codes: list[str]) -> dict[str, dict]:
+        """Return `{code: row}` for each requested symbol.
 
-        Codes carry their Futu region prefix verbatim, e.g. `US.AAPL`,
-        `HK.00700`. Codes that have no usable last price are omitted.
+        `row` is a plain dict with the subset of columns we use elsewhere
+        (see `_SNAPSHOT_FIELDS`). Codes whose row carries no usable
+        last price are omitted. Raises `ServiceError` if OpenD reports
+        a non-OK return code.
         """
         if not codes:
             return {}
@@ -48,16 +73,56 @@ class FutumooService:
         ret, data = ctx.get_market_snapshot(list(codes))
         if ret != 0:
             raise ServiceError(f"futu get_market_snapshot failed: {data}")
-        out: dict[str, float] = {}
+        out: dict[str, dict] = {}
         for _, row in data.iterrows():
             code = str(row["code"])
             try:
-                price = float(row["last_price"])
+                last_price = float(row["last_price"])
             except (TypeError, ValueError):
                 continue
-            if price > 0:
-                out[code] = price
+            if last_price <= 0:
+                continue
+            entry: dict = {"code": code, "last_price": last_price}
+            for field in _SNAPSHOT_FIELDS:
+                if field in ("code", "last_price"):
+                    continue
+                if field in row.index:
+                    entry[field] = row[field]
+            out[code] = entry
         return out
+
+    def get_last_prices(self, codes: list[str]) -> dict[str, float]:
+        """Convenience wrapper returning only `{code: last_price}`."""
+        return {code: float(row["last_price"]) for code, row in self.get_snapshots(codes).items()}
+
+    def request_trading_days(
+        self, market: str, start: date, end: date
+    ) -> set[date]:
+        """Return the set of trading dates Futu reports for `[start, end]`.
+
+        `market` is one of the strings supported by Futu's `TradeDateMarket`
+        enum — for our purposes, `"HK"` or `"US"`. Raises `ServiceError`
+        on a non-OK return code; callers are expected to catch and fall
+        back to a Mon–Fri heuristic when OpenD is unavailable.
+        """
+        ctx = self._ensure_quote_ctx()
+        ret, data = ctx.request_trading_days(
+            market=market, start=start.isoformat(), end=end.isoformat()
+        )
+        if ret != 0:
+            raise ServiceError(f"futu request_trading_days({market}) failed: {data}")
+        days: set[date] = set()
+        if not data:
+            return days
+        for entry in data:
+            raw = entry.get("time") if isinstance(entry, dict) else None
+            if not raw:
+                continue
+            try:
+                days.add(datetime.fromisoformat(str(raw)[:10]).date())
+            except ValueError:
+                continue
+        return days
 
     def close(self) -> None:
         with self._lock:

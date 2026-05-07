@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from quant_arena.schemas import AgentCreatedResponse, AgentResponse, AgentSnapshotResponse, CreateAgentRequest, DailyReportPage, OperationListResponse, PathsResponse, PortfolioResponse
+from quant_arena.schemas import AgentCreatedResponse, AgentResponse, AgentSnapshotResponse, CreateAgentRequest, CreateFutumooAgentRequest, DailyReportPage, OperationListResponse, PathsResponse, PortfolioResponse
 from quant_arena.arena_base import BaseArenaService
 from quant_arena.ashare import (
     ArenaService,
@@ -100,7 +100,7 @@ def _load_app_state(config_path: Path, market_service: AShareService | None = No
     futumoo_arena = FutumooArenaService(
         agents_root=futumoo_agents_root,
         market=futumoo_market,
-        fees=config.futumoo.fees,
+        config=config.futumoo,
         notifier=notifier,
     )
     ib_paper: IBService | None = None
@@ -256,6 +256,8 @@ def create_app(
             agent_id=agent_id,
             display_name=agent.display_name,
             initial_cash=agent.initial_cash,
+            initial_cash_hkd=agent.initial_cash_hkd,
+            initial_cash_usd=agent.initial_cash_usd,
             enabled=agent.enabled,
             role=agent.role,
         )
@@ -280,6 +282,9 @@ def create_app(
         `/api/agents/...` against any `BaseArenaService`. The first call
         (with prefix `""`) preserves the legacy A-share paths; later calls
         attach the same handlers under a per-broker prefix like `/futumoo`.
+        The create-agent POST is registered separately by the caller because
+        per-broker request shapes differ (CNY single-currency for A-share,
+        HKD+USD dual-currency for Futumoo).
         """
 
         @api.get(f"/api{prefix}/agents")
@@ -288,21 +293,6 @@ def create_app(
                 to_agent_response(agent_id, agent)
                 for agent_id, agent in get_arena().list_agents()
             ]
-
-        @api.post(f"/api{prefix}/agents", response_model=AgentCreatedResponse)
-        def create_arena_agent(request: CreateAgentRequest) -> AgentCreatedResponse:
-            token_secret = secrets.token_urlsafe(24)
-            agent = AgentConfig.model_validate(
-                {
-                    **request.model_dump(exclude={"agent_id"}),
-                    "token_secret": token_secret,
-                }
-            )
-            created = get_arena().add_agent(request.agent_id, agent)
-            return AgentCreatedResponse(
-                agent=to_agent_response(request.agent_id, created),
-                token_secret=token_secret,
-            )
 
         @api.get(f"/api{prefix}/agents/{{agent_id}}", response_model=AgentSnapshotResponse)
         def get_arena_agent(agent_id: str) -> AgentSnapshotResponse:
@@ -348,6 +338,36 @@ def create_app(
 
     _register_arena_routes("", lambda: get_state().arena)
     _register_arena_routes("/futumoo", lambda: get_state().futumoo_arena)
+
+    @api.post("/api/agents", response_model=AgentCreatedResponse)
+    def create_ashare_agent(request: CreateAgentRequest) -> AgentCreatedResponse:
+        token_secret = secrets.token_urlsafe(24)
+        agent = AgentConfig.model_validate(
+            {
+                **request.model_dump(exclude={"agent_id"}),
+                "token_secret": token_secret,
+            }
+        )
+        created = get_state().arena.add_agent(request.agent_id, agent)
+        return AgentCreatedResponse(
+            agent=to_agent_response(request.agent_id, created),
+            token_secret=token_secret,
+        )
+
+    @api.post("/api/futumoo/agents", response_model=AgentCreatedResponse)
+    def create_futumoo_agent(request: CreateFutumooAgentRequest) -> AgentCreatedResponse:
+        token_secret = secrets.token_urlsafe(24)
+        agent = AgentConfig.model_validate(
+            {
+                **request.model_dump(exclude={"agent_id"}),
+                "token_secret": token_secret,
+            }
+        )
+        created = get_state().futumoo_arena.add_agent(request.agent_id, agent)
+        return AgentCreatedResponse(
+            agent=to_agent_response(request.agent_id, created),
+            token_secret=token_secret,
+        )
 
     @api.api_route("/A-share/mcp", methods=["GET", "POST", "DELETE"])
     def mcp_redirect() -> RedirectResponse:

@@ -1,5 +1,7 @@
 # A-Share Market Data Usage Guide
 
+**重要：该目录下不包含今天的实时数据！请阅读其他技能包。**
+
 ## Directory Structure
 
 ```
