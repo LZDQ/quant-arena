@@ -212,6 +212,7 @@ class BaseArenaService(Generic[StateT]):
                     trade_date=point.trade_date,
                     agent_id=agent_id,
                     display_name=agent.display_name,
+                    currency=agent.currency,
                     cash=round(portfolio.cash, 2),
                     market_value=round(portfolio.market_value, 2),
                     total_equity=round(point.total_equity, 2),
@@ -220,7 +221,8 @@ class BaseArenaService(Generic[StateT]):
                     unrealized_pnl=round(point.unrealized_pnl, 2),
                 )
             )
-        ranked = sorted(entries, key=lambda entry: (-entry.total_equity, entry.agent_id))
+        # Rank by % return so HKD and USD agents sit on a comparable scale.
+        ranked = sorted(entries, key=lambda entry: (-entry.return_pct, entry.agent_id))
         if target_date is None:
             self._rankings_cache = ranked
         return ranked

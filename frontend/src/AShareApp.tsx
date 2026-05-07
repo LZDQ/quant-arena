@@ -38,8 +38,8 @@ export function AShareApp() {
     <ArenaDashboard
       apiPrefix=""
       homeUrl={BASE_URL}
-      formatAmount={formatMoney}
-      formatYAxisLabel={formatYAxisLabel}
+      formatAmount={(value) => formatMoney(value)}
+      formatYAxisLabel={(value) => formatYAxisLabel(value)}
       formatDateTime={formatDateTime}
       masthead={{
         title: (
@@ -58,6 +58,7 @@ export function AShareApp() {
       symbolHeader="Code"
       enlistPlaceholders={{ agentId: "trader-01", displayName: "The Iron Pen" }}
       confirmDeletePrefix="Delete agent"
+      currencyOptions={[{ value: "CNY", label: "RMB" }]}
       footer={{
         left: "Composed nightly · Bureau of Simulated Equities",
         right: "量化竞技场 · A-Share Edition",

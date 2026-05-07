@@ -2,10 +2,13 @@ import { ReactNode, startTransition, useEffect, useMemo, useState } from "react"
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+type Currency = "CNY" | "HKD" | "USD";
+
 type AgentResponse = {
   agent_id: string;
   display_name: string;
   initial_cash: number;
+  currency: Currency;
   enabled: boolean;
   role: "normal" | "monitor";
 };
@@ -106,6 +109,7 @@ type RankingEntry = {
   trade_date: string;
   agent_id: string;
   display_name: string;
+  currency: Currency;
   cash: number;
   market_value: number;
   total_equity: number;
@@ -118,6 +122,7 @@ type CreateAgentForm = {
   agent_id: string;
   display_name: string;
   initial_cash: string;
+  currency: Currency;
   role: "normal" | "monitor";
 };
 
@@ -125,12 +130,15 @@ const ORDERS_PAGE_SIZE = 8;
 const REPORTS_PAGE_SIZE = 100;
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-const defaultCreateAgentForm: CreateAgentForm = {
-  agent_id: "",
-  display_name: "",
-  initial_cash: "100000",
-  role: "normal",
-};
+function makeDefaultCreateAgentForm(currency: Currency): CreateAgentForm {
+  return {
+    agent_id: "",
+    display_name: "",
+    initial_cash: "100000",
+    currency,
+    role: "normal",
+  };
+}
 
 function pad2(value: number): string {
   return value.toString().padStart(2, "0");
@@ -254,15 +262,26 @@ function todayStamp() {
   return { iso, label, edition, weekday };
 }
 
+export type CurrencyOption = {
+  /** Backend currency code, e.g. "CNY", "HKD", "USD". */
+  value: Currency;
+  /** Label shown in the form (e.g. "RMB" while value="CNY"). */
+  label: string;
+};
+
 export type ArenaDashboardProps = {
   /** Path prefix for the per-arena REST API, e.g. "" or "/futumoo". */
   apiPrefix: string;
   /** URL of the home / market-picker page. Used by the "← All Markets" link. */
   homeUrl: string;
-  /** Number formatter for cash / equity / market values (handles currency display). */
-  formatAmount: (value: number | null | undefined) => string;
-  /** Y-axis label formatter for the equity chart (e.g. "¥1,200,000" or "120,000"). */
-  formatYAxisLabel: (value: number) => string;
+  /**
+   * Number formatter for cash / equity / market values. Receives the relevant
+   * agent's currency so per-arena formatters can switch glyphs (e.g. ¥ vs HK$
+   * vs $).
+   */
+  formatAmount: (value: number | null | undefined, currency: Currency) => string;
+  /** Y-axis label formatter for the equity chart, currency-aware. */
+  formatYAxisLabel: (value: number, currency: Currency) => string;
   /** ISO datetime → display string. Differs by arena timezone. */
   formatDateTime: (value: string | null | undefined) => string;
   /** Masthead block. */
@@ -281,6 +300,12 @@ export type ArenaDashboardProps = {
   };
   /** Confirmation prefix when deleting an agent (e.g. "Delete futumoo agent"). */
   confirmDeletePrefix: string;
+  /**
+   * Currencies the user may pick when enlisting an agent. A single-option list
+   * locks the picker; a multi-option list renders a dropdown. The first option
+   * is the default selection.
+   */
+  currencyOptions: CurrencyOption[];
   /** Footer text (left + right halves). */
   footer: {
     left: string;
@@ -298,9 +323,14 @@ export function ArenaDashboard({
   symbolHeader,
   enlistPlaceholders,
   confirmDeletePrefix,
+  currencyOptions,
   footer,
 }: ArenaDashboardProps) {
   const apiBase = (import.meta.env.VITE_API_BASE ?? homeUrl).replace(/\/+$/, "");
+  const defaultCurrency = currencyOptions[0]?.value ?? "CNY";
+  const currencyLocked = currencyOptions.length <= 1;
+  const currencyLabel = (value: Currency): string =>
+    currencyOptions.find((option) => option.value === value)?.label ?? value;
 
   async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(`${apiBase}${path}`, {
@@ -324,7 +354,10 @@ export function ArenaDashboard({
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
   const [snapshot, setSnapshot] = useState<AgentSnapshotResponse | null>(null);
   const [rankings, setRankings] = useState<RankingEntry[]>([]);
-  const [createAgentForm, setCreateAgentForm] = useState<CreateAgentForm>(defaultCreateAgentForm);
+  const [createAgentForm, setCreateAgentForm] = useState<CreateAgentForm>(() =>
+    makeDefaultCreateAgentForm(defaultCurrency),
+  );
+  const [currencyMenuOpen, setCurrencyMenuOpen] = useState(false);
   const [loadingAgents, setLoadingAgents] = useState(true);
   const [loadingSnapshot, setLoadingSnapshot] = useState(false);
   const [loadingRankings, setLoadingRankings] = useState(true);
@@ -479,7 +512,7 @@ export function ArenaDashboard({
       });
       setCreatedToken(created.token_secret);
       setCreatedAgentId(created.agent.agent_id);
-      setCreateAgentForm(defaultCreateAgentForm);
+      setCreateAgentForm(makeDefaultCreateAgentForm(defaultCurrency));
       setMessage(`Agent ${created.agent.agent_id} created.`);
       await refreshAgents(created.agent.agent_id);
       await refreshRankings();
@@ -607,7 +640,7 @@ export function ArenaDashboard({
         <aside className="board-rail">
           <div className="section-head">
             <h3>Roster</h3>
-            <span className="meta">Ranked · Total Equity</span>
+            <span className="meta">Ranked · Return %</span>
           </div>
           <div className="roster">
             {rankings.map((entry, index) => {
@@ -618,23 +651,26 @@ export function ArenaDashboard({
                   key={entry.agent_id}
                   type="button"
                   className={`roster-row ${isActive ? "is-active" : ""}`}
+                  data-currency={entry.currency}
                   onClick={() => setSelectedAgentId(entry.agent_id)}
                 >
                   <span className="roster-rank">{String(index + 1).padStart(2, "0")}</span>
                   <span>
                     <div className="roster-name">{entry.display_name}</div>
                     <div className="roster-id">{entry.agent_id}</div>
-                    {agent && (
-                      <span
-                        className={`roster-pill ${agent.enabled ? "live" : ""}`}
-                        style={{ marginTop: 8, display: "inline-block" }}
-                      >
-                        {agent.enabled ? "LIVE" : "OFF"} · {agent.role.toUpperCase()}
+                    <span className="roster-meta-row" style={{ marginTop: 8, display: "inline-flex", gap: 6 }}>
+                      <span className={`roster-pill currency currency-${entry.currency}`}>
+                        {entry.currency}
                       </span>
-                    )}
+                      {agent && (
+                        <span className={`roster-pill ${agent.enabled ? "live" : ""}`}>
+                          {agent.enabled ? "LIVE" : "OFF"} · {agent.role.toUpperCase()}
+                        </span>
+                      )}
+                    </span>
                   </span>
                   <span className="roster-stats">
-                    <span className="roster-equity">{formatAmount(entry.total_equity)}</span>
+                    <span className="roster-equity">{formatAmount(entry.total_equity, entry.currency)}</span>
                     <span className={`roster-return ${percentClass(entry.return_pct)}`}>
                       {signedPct(entry.return_pct)}
                     </span>
@@ -666,7 +702,7 @@ export function ArenaDashboard({
                 />
               </div>
               <div className="field field-half">
-                <label htmlFor="initial_cash">Initial Cash</label>
+                <label htmlFor="initial_cash">Initial Cash · {currencyLabel(createAgentForm.currency)}</label>
                 <input
                   id="initial_cash"
                   value={createAgentForm.initial_cash}
@@ -678,7 +714,7 @@ export function ArenaDashboard({
                   required
                 />
               </div>
-              <div className="field">
+              <div className="field field-half">
                 <label htmlFor="display_name">Display Name</label>
                 <input
                   id="display_name"
@@ -689,6 +725,50 @@ export function ArenaDashboard({
                   placeholder={enlistPlaceholders.displayName}
                   required
                 />
+              </div>
+              <div
+                className="field field-half select-wrap"
+                onBlur={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                    setCurrencyMenuOpen(false);
+                  }
+                }}
+              >
+                <label>Currency</label>
+                {currencyLocked ? (
+                  <button className="select-trigger" type="button" disabled aria-disabled="true">
+                    <span>{currencyLabel(createAgentForm.currency)}</span>
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      className="select-trigger"
+                      type="button"
+                      aria-haspopup="listbox"
+                      aria-expanded={currencyMenuOpen}
+                      onClick={() => setCurrencyMenuOpen((open) => !open)}
+                    >
+                      <span>{currencyLabel(createAgentForm.currency)}</span>
+                    </button>
+                    {currencyMenuOpen && (
+                      <div className="select-menu" role="listbox" aria-label="Trading currency">
+                        {currencyOptions.map((option) => (
+                          <button
+                            key={option.value}
+                            className={`select-option ${createAgentForm.currency === option.value ? "is-active" : ""}`}
+                            type="button"
+                            onClick={() => {
+                              setCreateAgentForm((prev) => ({ ...prev, currency: option.value }));
+                              setCurrencyMenuOpen(false);
+                            }}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
               <div
                 className="field select-wrap"
@@ -783,16 +863,16 @@ export function ArenaDashboard({
             <>
               <section className="stat-row">
                 <article className="stat-tile">
-                  <p className="label">Total Equity</p>
-                  <div className="value">{formatAmount(snapshot.portfolio.total_equity)}</div>
+                  <p className="label">Total Equity · {snapshot.agent.currency}</p>
+                  <div className="value">{formatAmount(snapshot.portfolio.total_equity, snapshot.agent.currency)}</div>
                 </article>
                 <article className="stat-tile">
                   <p className="label">Cash</p>
-                  <div className="value">{formatAmount(snapshot.portfolio.cash)}</div>
+                  <div className="value">{formatAmount(snapshot.portfolio.cash, snapshot.agent.currency)}</div>
                 </article>
                 <article className="stat-tile">
                   <p className="label">Market Value</p>
-                  <div className="value">{formatAmount(snapshot.portfolio.market_value)}</div>
+                  <div className="value">{formatAmount(snapshot.portfolio.market_value, snapshot.agent.currency)}</div>
                 </article>
                 <article className="stat-tile">
                   <p className="label">As Of</p>
@@ -804,7 +884,7 @@ export function ArenaDashboard({
                 <div className="equity-summary">
                   <p className="label">Equity Curve</p>
                   <h3 className="value">
-                    {latestEquity ? formatAmount(latestEquity.total_equity) : "--"}
+                    {latestEquity ? formatAmount(latestEquity.total_equity, snapshot.agent.currency) : "--"}
                   </h3>
                   <p className={`return ${percentClass(selectedRanking?.return_pct ?? 0)}`}>
                     Return {signedPct(selectedRanking?.return_pct ?? 0)}
@@ -813,7 +893,7 @@ export function ArenaDashboard({
                     <p className="span">
                       {formatDateShort(chart.first)} → {formatDateShort(chart.last)}
                       <br />
-                      Range {formatAmount(chart.min)} – {formatAmount(chart.max)}
+                      Range {formatAmount(chart.min, snapshot.agent.currency)} – {formatAmount(chart.max, snapshot.agent.currency)}
                     </p>
                   )}
                 </div>
@@ -841,7 +921,7 @@ export function ArenaDashboard({
                       <path className="path-line" d={chart.pathLine} vectorEffect="non-scaling-stroke" />
                       <circle className="marker" cx={chart.endX} cy={chart.endY} r={4} />
                       <text className="axis-label" x={chart.W - chart.P} y={chart.gridY[0].y - 6} textAnchor="end">
-                        {formatYAxisLabel(chart.gridY[0].value)}
+                        {formatYAxisLabel(chart.gridY[0].value, snapshot.agent.currency)}
                       </text>
                       <text
                         className="axis-label"
@@ -849,7 +929,7 @@ export function ArenaDashboard({
                         y={chart.gridY[chart.gridY.length - 1].y + 14}
                         textAnchor="end"
                       >
-                        {formatYAxisLabel(chart.gridY[chart.gridY.length - 1].value)}
+                        {formatYAxisLabel(chart.gridY[chart.gridY.length - 1].value, snapshot.agent.currency)}
                       </text>
                       <text className="axis-label" x={chart.P} y={chart.H - chart.P + 16}>
                         {formatDateShort(chart.first)}
@@ -896,9 +976,9 @@ export function ArenaDashboard({
                         <td className="num">{position.sellable_quantity}</td>
                         <td className="num">{formatNumber(position.avg_cost, 3)}</td>
                         <td className="num">{formatNumber(position.market_price, 3)}</td>
-                        <td className="num">{formatAmount(position.market_value)}</td>
+                        <td className="num">{formatAmount(position.market_value, snapshot.agent.currency)}</td>
                         <td className={`num ${percentClass(position.unrealized_pnl)}`}>
-                          {formatAmount(position.unrealized_pnl)}
+                          {formatAmount(position.unrealized_pnl, snapshot.agent.currency)}
                         </td>
                       </tr>
                     ))}

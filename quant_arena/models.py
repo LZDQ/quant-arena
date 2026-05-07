@@ -160,7 +160,7 @@ class PositionSnapshot(BaseModel):
 
 
 class PortfolioSnapshot(BaseModel):
-    """Domain portfolio snapshot."""
+    """Domain portfolio snapshot. All monetary fields are in the owning agent's currency."""
 
     agent_id: str
     cash: float
@@ -171,14 +171,6 @@ class PortfolioSnapshot(BaseModel):
     positions: list[PositionSnapshot]
     pending_orders: list[OrderRecord]
     as_of: datetime | None = None
-    cash_breakdown: dict[str, float] | None = Field(
-        default=None,
-        description="Per-currency cash, e.g. {\"HKD\": 80000, \"USD\": 10000} on the futumoo arena. None on single-currency arenas.",
-    )
-    market_value_breakdown: dict[str, float] | None = Field(
-        default=None,
-        description="Per-currency market value. None on single-currency arenas.",
-    )
 
 
 class OperationLog(BaseModel):
@@ -189,11 +181,12 @@ class OperationLog(BaseModel):
 
 
 class RankingSnapshot(BaseModel):
-    """Domain ranking row."""
+    """Domain ranking row. Monetary fields are in the agent's own currency."""
 
     trade_date: date
     agent_id: str
     display_name: str
+    currency: Literal["CNY", "HKD", "USD"]
     cash: float
     market_value: float
     total_equity: float

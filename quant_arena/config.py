@@ -27,6 +27,10 @@ class AShareFeeConfig(BaseModel):
 class AShareConfig(BaseModel):
     """A-share simulator settings."""
 
+    enabled: bool = Field(
+        default=True,
+        description="Whether the A-share arena is enabled. When false, its routes, MCP mount, and background tasks are skipped.",
+    )
     market_data_root: str = Field(
         default=str(Path.home() / ".quant-arena" / "A-share" / "market-data"),
         description="Public root directory for shared A-share market data files.",
@@ -272,6 +276,10 @@ class FutumooConfig(BaseModel):
     two position books. Symbols must carry the region prefix `HK.` or `US.`.
     """
 
+    enabled: bool = Field(
+        default=True,
+        description="Whether the Futumoo arena is enabled. When false, its routes, MCP mount, and background tasks are skipped.",
+    )
     host: str = Field(
         default="127.0.0.1",
         description="Hostname or IP of the Futu OpenD gateway.",
@@ -284,21 +292,13 @@ class FutumooConfig(BaseModel):
         default=30,
         description="Seconds between snapshot refresh / pending-order match cycles.",
     )
-    fx_hkd_per_usd: float = Field(
-        default=7.80,
-        gt=0,
-        description=(
-            "Static HKD-per-USD conversion rate used to express two-currency portfolios "
-            "as a single USD-equivalent total for rankings and the PDT equity threshold."
-        ),
-    )
     pdt_equity_threshold_usd: float = Field(
         default=25_000.0,
         ge=0,
         description=(
-            "FINRA pattern-day-trader minimum equity. While the agent's total "
-            "USD-equivalent equity is below this value, the US arena allows at "
-            "most 3 day-trades in any rolling 5 US-business-day window."
+            "FINRA pattern-day-trader minimum equity. While a USD agent's total "
+            "equity sits below this value, the US arena allows at most 3 "
+            "day-trades in any rolling 5 US-business-day window."
         ),
     )
     pdt_max_day_trades: int = Field(
@@ -354,8 +354,16 @@ class AppConfig(BaseModel):
     )
 
 
+AgentCurrency = Literal["CNY", "HKD", "USD"]
+
+
 class AgentConfig(BaseModel):
-    """One managed trading agent."""
+    """One managed trading agent.
+
+    Each agent operates in exactly one currency. A-share agents are always
+    `CNY`; Futumoo agents pick `HKD` (only `HK.<code>` symbols allowed) or
+    `USD` (only `US.<ticker>` symbols allowed).
+    """
 
     display_name: str = Field(
         description="Human-readable name shown in the UI and rankings.",
@@ -364,22 +372,12 @@ class AgentConfig(BaseModel):
         description="Shared secret value expected in the configured authentication header.",
     )
     initial_cash: float = Field(
-        default=0.0,
-        ge=0,
-        description=(
-            "Single-currency starting balance. Used by the A-share arena (CNY, "
-            "must be > 0 there) and as the USD-equivalent total for ranking on "
-            "the Futumoo arena, where it is derived from `initial_cash_hkd` and "
-            "`initial_cash_usd` inside `FutumooArenaService.add_agent`."
-        ),
+        gt=0,
+        description="Starting cash balance, denominated in the agent's `currency`.",
     )
-    initial_cash_hkd: float | None = Field(
-        default=None,
-        description="Starting HKD cash on the Futumoo arena. Required when registering a Futumoo agent.",
-    )
-    initial_cash_usd: float | None = Field(
-        default=None,
-        description="Starting USD cash on the Futumoo arena. Required when registering a Futumoo agent.",
+    currency: AgentCurrency = Field(
+        default="CNY",
+        description="Single trading currency. CNY for A-share, HKD or USD for Futumoo.",
     )
     enabled: bool = Field(
         default=True,

@@ -26,18 +26,18 @@ def create_futumoo_mcp_server(
         get_arena=get_arena,
         current_agent_id=_CURRENT_AGENT_ID,
         submit_operation_description=(
-            "Submit a limit-price buy or sell order on the Futumoo HK/US paper "
-            "arena. Orders are queued as pending and matched against `last_price` "
-            "polled from Futu OpenD. `code` must carry the region prefix `HK.` "
-            "(e.g. `HK.00700`) or `US.` (e.g. `US.AAPL`); other markets are "
-            "rejected. Submissions are validated against the region's session "
-            "window, trading-day calendar, suspension flag, and side-specific "
-            "rules: HK buys must be a multiple of the per-symbol board lot, "
-            "sells require sufficient sellable inventory, and the US side "
-            "enforces the FINRA pattern-day-trader limit (max 3 day-trades in "
-            "any rolling 5 US business days while total USD-equivalent equity "
-            "is below 25,000 USD). Invalid orders are rejected at submission "
-            "and never appear in the agent's order log."
+            "Submit a limit-price buy or sell order on the Futumoo paper arena. "
+            "Each agent trades in a single currency (HKD or USD); HKD agents "
+            "may only submit `HK.<code>` symbols and USD agents may only submit "
+            "`US.<ticker>` symbols. Orders are queued as pending and matched "
+            "against `last_price` polled from Futu OpenD. Submissions are "
+            "validated against the region's session window, trading-day "
+            "calendar, suspension flag, and side-specific rules: HK buys must "
+            "be a multiple of the per-symbol board lot, sells require "
+            "sufficient sellable inventory, and the US side enforces the FINRA "
+            "pattern-day-trader limit (max 3 day-trades in any rolling 5 US "
+            "business days while total equity is below 25,000 USD). Invalid "
+            "orders are rejected at submission and never appear in the order log."
         ),
         fallback_tz=timezone.utc,
     )

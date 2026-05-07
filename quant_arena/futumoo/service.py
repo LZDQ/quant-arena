@@ -102,19 +102,27 @@ class FutumooService:
 
         `market` is one of the strings supported by Futu's `TradeDateMarket`
         enum — for our purposes, `"HK"` or `"US"`. Raises `ServiceError`
-        on a non-OK return code; callers are expected to catch and fall
-        back to a Mon–Fri heuristic when OpenD is unavailable.
+        on a non-OK return code, with the underlying OpenD error description
+        included in the message so callers can log it; callers are expected
+        to catch and fall back to a Mon–Fri heuristic when OpenD is
+        unavailable. The success payload is a list of dicts shaped like
+        `[{"time": "2020-04-01", "trade_date_type": "WHOLE"}]` per the SDK.
         """
         ctx = self._ensure_quote_ctx()
         ret, data = ctx.request_trading_days(
             market=market, start=start.isoformat(), end=end.isoformat()
         )
         if ret != 0:
-            raise ServiceError(f"futu request_trading_days({market}) failed: {data}")
+            raise ServiceError(
+                f"futu request_trading_days(market={market!r}, "
+                f"{start.isoformat()}..{end.isoformat()}) failed: {data}"
+            )
         days: set[date] = set()
         if not data:
             return days
-        for entry in data:
+        # Some SDK versions return a DataFrame; treat both shapes uniformly.
+        rows = data.to_dict(orient="records") if hasattr(data, "to_dict") else data
+        for entry in rows:
             raw = entry.get("time") if isinstance(entry, dict) else None
             if not raw:
                 continue

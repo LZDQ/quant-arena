@@ -1,33 +1,32 @@
 """Per-region trading rule enforcers for the Futumoo arena.
 
 Each region — HK and US — owns its own session window, calendar source,
-order-validation rules, and accounting view onto `FutumooAgentState`.
-The top-level `FutumooArenaService` is a thin orchestrator that picks
-the right region for an order code and delegates rule checking and
-fill execution. Tests, comments, and reasoning kept in one place per
-region to make the rules easy to audit.
+order-validation rules, and fee schedule. Each agent has a single
+currency (`HKD` or `USD`) and only ever interacts with one region:
+HKD → HK, USD → US. The top-level `FutumooArenaService` picks the
+region by agent currency and rejects any code whose prefix doesn't
+match.
 
 HK:
     * 9:30–12:00 + 13:00–16:00 HKT, Mon–Fri excluding HK holidays.
     * Buy quantity must be a multiple of the per-symbol board lot
       reported in Futu's snapshot (`lot_size`); sell quantity may be
-      any amount up to the held position (odd-lot sells are tolerated).
-    * Stamp duty is configurable via `FutumooHKFeeConfig.stamp_tax_bps`
-      and applied to both sides of a fill (HK rule since 2021).
-    * No T+1 / T+2 sellable holdback — settlement is not modeled.
+      any amount up to the held position (odd-lot sells tolerated).
+    * Stamp duty configurable via `FutumooHKFeeConfig.stamp_tax_bps`
+      (default 0.10% each side, HK rule since 2021).
+    * No T+1 / T+2 settlement holdback.
 
 US:
     * 9:30–16:00 ET, Mon–Fri excluding US holidays.
     * Whole shares only.
-    * Pattern-Day-Trader gate: while total USD-equivalent equity sits
-      below `FutumooConfig.pdt_equity_threshold_usd`, the rolling 5
+    * Pattern-Day-Trader gate: while total equity (USD) sits below
+      `FutumooConfig.pdt_equity_threshold_usd`, the rolling 5
       US-business-day window may contain at most
-      `FutumooConfig.pdt_max_day_trades` day-trades (default 3, i.e.
-      the 4th day-trade is rejected at submission). A "day trade" is
-      counted as one event per (US trading date, code) pair where both
+      `FutumooConfig.pdt_max_day_trades` day-trades. A "day trade"
+      counts as one event per (US trading date, code) pair where both
       a buy and a sell have filled — a deliberate simplification of
-      FINRA Rule 4210(f)(8)'s direction-change counting that's easy
-      to predict from the pending order before it fills.
+      FINRA Rule 4210(f)(8)'s direction-change counting that's easy to
+      predict from the pending order before it fills.
 """
 
 from __future__ import annotations
@@ -58,22 +57,19 @@ US_TZ = ZoneInfo("America/New_York")
 
 
 class RegionArena(ABC):
-    """Abstract base for one regional book inside the Futumoo arena.
-
-    Subclasses encode region-specific session windows, calendar lookups,
-    fee schedules, and rule checks. Both regions read and write the
-    same `FutumooAgentState` — the split is logical, not on disk.
-    """
+    """Abstract base for one regional arena (HK or US)."""
 
     region: str  # "HK" or "US"
     currency: str  # "HKD" or "USD"
     futu_market: str  # value passed to `service.request_trading_days`
     tz: ZoneInfo
 
+    _TRADING_DAY_FAILURE_BACKOFF = timedelta(minutes=15)
+
     def __init__(self, market: FutumooService):
         self.market = market
-        # Cache of trading days, refreshed when a query falls outside the cached window.
         self._trading_day_cache: tuple[date, date, set[date]] | None = None
+        self._trading_day_failure_until: datetime | None = None
 
     # ----- code / clock -----
 
@@ -94,25 +90,43 @@ class RegionArena(ABC):
     def is_trading_day(self, target: date) -> bool:
         """Best-effort trading-day check using OpenD with a Mon–Fri fallback."""
         cache = self._trading_day_cache
-        if cache is None or target < cache[0] or target > cache[1]:
-            window_start = target - timedelta(days=10)
-            window_end = target + timedelta(days=10)
-            try:
-                days = self.market.request_trading_days(
-                    self.futu_market, window_start, window_end
-                )
-            except ServiceError:
-                logger.warning(
-                    "request_trading_days failed for %s; falling back to Mon-Fri",
-                    self.region,
-                )
-                return target.weekday() < 5
-            self._trading_day_cache = (window_start, window_end, days)
-            cache = self._trading_day_cache
-        return target in cache[2]
+        if cache is not None and cache[0] <= target <= cache[1]:
+            return target in cache[2]
+        now = datetime.now(self.tz)
+        if (
+            self._trading_day_failure_until is not None
+            and now < self._trading_day_failure_until
+        ):
+            return target.weekday() < 5
+        window_start = target - timedelta(days=10)
+        window_end = target + timedelta(days=10)
+        try:
+            days = self.market.request_trading_days(
+                self.futu_market, window_start, window_end
+            )
+        except ServiceError as exc:
+            logger.warning(
+                "%s trading-day lookup failed (%s); falling back to Mon-Fri "
+                "for %s",
+                self.region,
+                exc,
+                self._TRADING_DAY_FAILURE_BACKOFF,
+            )
+            self._trading_day_failure_until = now + self._TRADING_DAY_FAILURE_BACKOFF
+            return target.weekday() < 5
+        except Exception:
+            logger.exception(
+                "%s trading-day lookup raised; falling back to Mon-Fri for %s",
+                self.region,
+                self._TRADING_DAY_FAILURE_BACKOFF,
+            )
+            self._trading_day_failure_until = now + self._TRADING_DAY_FAILURE_BACKOFF
+            return target.weekday() < 5
+        self._trading_day_failure_until = None
+        self._trading_day_cache = (window_start, window_end, days)
+        return target in days
 
     def previous_n_trading_days(self, ref: date, n: int) -> list[date]:
-        """Return the `n` most recent trading days strictly on or before `ref`."""
         days: list[date] = []
         cursor = ref
         guard = 0
@@ -123,20 +137,6 @@ class RegionArena(ABC):
             guard += 1
         return days
 
-    # ----- state views -----
-
-    @abstractmethod
-    def cash(self, state: FutumooAgentState) -> float: ...
-
-    @abstractmethod
-    def add_cash(self, state: FutumooAgentState, delta: float) -> None: ...
-
-    @abstractmethod
-    def add_realized_pnl(self, state: FutumooAgentState, delta: float) -> None: ...
-
-    @abstractmethod
-    def positions(self, state: FutumooAgentState) -> dict[str, FutumooPosition]: ...
-
     # ----- order entry -----
 
     def validate_submission(
@@ -146,12 +146,7 @@ class RegionArena(ABC):
         snapshot_row: dict,
         now: datetime,
     ) -> None:
-        """Reject the submission with `BadRequestError` if any rule is violated.
-
-        Order of checks: session/trading-day, snapshot freshness, side-specific
-        constraints (buy: lot/cash; sell: held quantity). Region subclasses may
-        override to add region-only gates (PDT for US, board-lot for HK).
-        """
+        """Reject the submission with `BadRequestError` if any rule is violated."""
         if not self.is_trading_day(now.date()):
             raise BadRequestError(
                 f"{now.date().isoformat()} is not a {self.region} trading day."
@@ -177,15 +172,15 @@ class RegionArena(ABC):
         notional = request.quantity * request.limit_price
         commission, stamp = self.fees_for(notional, side="buy")
         cost = notional + commission + stamp
-        if self.cash(state) < cost:
+        if state.cash < cost:
             raise BadRequestError(
                 f"Insufficient {self.currency} cash to buy {request.quantity} "
                 f"{request.code} @ {request.limit_price}: need "
-                f"{cost:.2f} {self.currency}, have {self.cash(state):.2f}."
+                f"{cost:.2f} {self.currency}, have {state.cash:.2f}."
             )
 
     def _validate_sell(self, state: FutumooAgentState, request: SubmitOrder) -> None:
-        position = self.positions(state).get(request.code)
+        position = state.positions.get(request.code)
         held = position.quantity if position is not None else 0
         pending_sell = sum(
             order.quantity
@@ -214,36 +209,34 @@ class RegionArena(ABC):
         market_price: float,
         executed_at: datetime,
     ) -> FillRecord:
-        """Apply a fill to `state` and return the resulting FillRecord."""
         notional = order.quantity * market_price
         commission, stamp_tax = self.fees_for(notional, side=order.side)
-        positions = self.positions(state)
         if order.side == "buy":
             cost = notional + commission + stamp_tax
-            self.add_cash(state, -cost)
-            existing = positions.get(order.code)
+            state.cash -= cost
+            existing = state.positions.get(order.code)
             if existing is None or existing.quantity == 0:
                 effective_cost = cost / order.quantity
-                positions[order.code] = FutumooPosition(
+                state.positions[order.code] = FutumooPosition(
                     quantity=order.quantity, avg_cost=round(effective_cost, 4)
                 )
             else:
                 new_qty = existing.quantity + order.quantity
                 new_cost = (existing.avg_cost * existing.quantity + cost) / new_qty
-                positions[order.code] = FutumooPosition(
+                state.positions[order.code] = FutumooPosition(
                     quantity=new_qty, avg_cost=round(new_cost, 4)
                 )
         else:
-            position = positions[order.code]
+            position = state.positions[order.code]
             consumed_cost = position.avg_cost * order.quantity
             proceeds = notional - commission - stamp_tax
-            self.add_cash(state, proceeds)
-            self.add_realized_pnl(state, proceeds - consumed_cost)
+            state.cash += proceeds
+            state.realized_pnl += proceeds - consumed_cost
             new_qty = position.quantity - order.quantity
             if new_qty <= 0:
-                del positions[order.code]
+                del state.positions[order.code]
             else:
-                positions[order.code] = FutumooPosition(
+                state.positions[order.code] = FutumooPosition(
                     quantity=new_qty, avg_cost=position.avg_cost
                 )
         order.status = "filled"
@@ -273,7 +266,6 @@ class RegionArena(ABC):
 
     @staticmethod
     def _bps_commission(notional: float, fees) -> float:
-        """Shared commission helper: max(min, notional * bps / 10000)."""
         if notional <= 0 or fees.commission_bps <= 0:
             return 0.0
         return round(
@@ -303,18 +295,6 @@ class HKRegionArena(RegionArena):
         if self._AFTERNOON_OPEN <= local <= self._AFTERNOON_CLOSE:
             return True
         return False
-
-    def cash(self, state: FutumooAgentState) -> float:
-        return state.cash_hkd
-
-    def add_cash(self, state: FutumooAgentState, delta: float) -> None:
-        state.cash_hkd += delta
-
-    def add_realized_pnl(self, state: FutumooAgentState, delta: float) -> None:
-        state.realized_pnl_hkd += delta
-
-    def positions(self, state: FutumooAgentState) -> dict[str, FutumooPosition]:
-        return state.positions_hk
 
     def _validate_buy(
         self,
@@ -373,18 +353,6 @@ class USRegionArena(RegionArena):
         local = moment.astimezone(self.tz).time()
         return self._OPEN <= local <= self._CLOSE
 
-    def cash(self, state: FutumooAgentState) -> float:
-        return state.cash_usd
-
-    def add_cash(self, state: FutumooAgentState, delta: float) -> None:
-        state.cash_usd += delta
-
-    def add_realized_pnl(self, state: FutumooAgentState, delta: float) -> None:
-        state.realized_pnl_usd += delta
-
-    def positions(self, state: FutumooAgentState) -> dict[str, FutumooPosition]:
-        return state.positions_us
-
     def fees_for(self, notional: float, side: str) -> tuple[float, float]:
         return self._bps_commission(notional, self.fees), 0.0
 
@@ -413,16 +381,13 @@ class USRegionArena(RegionArena):
         if not self._would_create_new_day_trade(state, request, now.date()):
             return
         window_count = self._day_trade_count_in_window(state, now.date())
-        # The submission, if filled today, would add 1 — reject when adding it
-        # crosses the maximum.
         if window_count + 1 > self.config.pdt_max_day_trades:
             raise BadRequestError(
-                f"Pattern-day-trader limit: account USD-equivalent equity "
-                f"{equity_usd:.2f} is below the "
-                f"{self.config.pdt_equity_threshold_usd:.0f} USD threshold and "
-                f"this order would be the {window_count + 1}th day-trade in the "
-                f"trailing {self.config.pdt_window_business_days} US business days "
-                f"(max {self.config.pdt_max_day_trades})."
+                f"Pattern-day-trader limit: account equity {equity_usd:.2f} USD "
+                f"is below the {self.config.pdt_equity_threshold_usd:.0f} USD "
+                f"threshold and this order would be the {window_count + 1}th "
+                f"day-trade in the trailing {self.config.pdt_window_business_days} "
+                f"US business days (max {self.config.pdt_max_day_trades})."
             )
 
     def _equity_usd(
@@ -431,31 +396,14 @@ class USRegionArena(RegionArena):
         latest_snapshot_row: dict,
         latest_code: str,
     ) -> float:
-        """Approximate total USD-equivalent equity used for the PDT threshold.
-
-        Cash buckets are folded together via the configured FX rate. US
-        positions are valued at `last_price`; HK positions are valued at
-        `avg_cost` (we do not poll HK snapshots inside the US validator)
-        and converted to USD. Good enough for a sub-25k gate.
-        """
-        fx = self.config.fx_hkd_per_usd
-        hkd_market_value = sum(
-            position.quantity * position.avg_cost
-            for position in state.positions_hk.values()
-        )
-        us_market_value = 0.0
-        for code, position in state.positions_us.items():
+        market_value = 0.0
+        for code, position in state.positions.items():
             if code == latest_code:
                 price = float(latest_snapshot_row.get("last_price", position.avg_cost))
             else:
                 price = position.avg_cost
-            us_market_value += position.quantity * price
-        return (
-            state.cash_usd
-            + state.cash_hkd / fx
-            + hkd_market_value / fx
-            + us_market_value
-        )
+            market_value += position.quantity * price
+        return state.cash + market_value
 
     def _would_create_new_day_trade(
         self,
@@ -468,17 +416,13 @@ class USRegionArena(RegionArena):
         for fill in state.fills:
             if fill.code != request.code:
                 continue
-            if not fill.code.startswith(self.code_prefix()):
-                continue
-            local_date = fill.executed_at.astimezone(self.tz).date()
-            if local_date != today_local:
+            if fill.executed_at.astimezone(self.tz).date() != today_local:
                 continue
             if fill.side == "buy":
                 same_day_buys = True
             else:
                 same_day_sells = True
         if same_day_buys and same_day_sells:
-            # already counted as 1 for the day; no marginal day-trade
             return False
         if request.side == "sell":
             return same_day_buys and not same_day_sells

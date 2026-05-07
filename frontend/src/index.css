@@ -479,6 +479,37 @@ a {
   color: var(--paper-soft);
   border-color: var(--ink);
 }
+.roster-pill.currency {
+  font-weight: 600;
+  letter-spacing: 0.16em;
+}
+.roster-pill.currency-CNY {
+  background: rgba(193, 18, 31, 0.14);
+  border-color: rgba(193, 18, 31, 0.55);
+  color: rgba(120, 14, 22, 1);
+}
+.roster-pill.currency-HKD {
+  background: rgba(20, 80, 160, 0.12);
+  border-color: rgba(20, 80, 160, 0.55);
+  color: rgba(15, 56, 110, 1);
+}
+.roster-pill.currency-USD {
+  background: rgba(34, 110, 64, 0.12);
+  border-color: rgba(34, 110, 64, 0.55);
+  color: rgba(22, 78, 46, 1);
+}
+.roster-row[data-currency="HKD"]::before {
+  background: rgba(20, 80, 160, 0.45);
+}
+.roster-row[data-currency="USD"]::before {
+  background: rgba(34, 110, 64, 0.45);
+}
+.roster-row[data-currency="CNY"]::before {
+  background: rgba(193, 18, 31, 0.35);
+}
+.roster-row.is-active[data-currency]::before {
+  background: var(--vermillion);
+}
 
 .empty-line {
   font-family: var(--mono);

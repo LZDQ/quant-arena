@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from quant_arena.schemas import AgentCreatedResponse, AgentResponse, AgentSnapshotResponse, CreateAgentRequest, CreateFutumooAgentRequest, DailyReportPage, OperationListResponse, PathsResponse, PortfolioResponse
+from quant_arena.schemas import AgentCreatedResponse, AgentResponse, AgentSnapshotResponse, CreateAgentRequest, DailyReportPage, OperationListResponse, PathsResponse, PortfolioResponse
 from quant_arena.arena_base import BaseArenaService
 from quant_arena.ashare import (
     ArenaService,
@@ -25,7 +25,7 @@ from quant_arena.ashare import (
     wrap_mcp_with_agent_auth,
 )
 from quant_arena.config import AgentConfig, AppConfig, load_app_config
-from quant_arena.errors import ServiceError
+from quant_arena.errors import BadRequestError, ServiceError
 from quant_arena.futumoo import (
     FutumooArenaService,
     FutumooService,
@@ -53,11 +53,11 @@ class AppState:
         config: AppConfig,
         ashare_agents_root: Path,
         ashare_market_data_root: Path,
-        market: AShareService,
-        arena: ArenaService,
+        market: AShareService | None,
+        arena: ArenaService | None,
         futumoo_agents_root: Path,
-        futumoo_market: FutumooService,
-        futumoo_arena: FutumooArenaService,
+        futumoo_market: FutumooService | None,
+        futumoo_arena: FutumooArenaService | None,
         notifier: NotifierService,
         ib_paper: IBService | None,
         ib_real: IBService | None,
@@ -82,27 +82,33 @@ def _load_app_state(config_path: Path, market_service: AShareService | None = No
     ashare_root = (config_path.parent / "A-share").resolve()
     agents_root = ashare_root / "agents"
     market_data_root = Path(config.ashare.market_data_root).resolve()
-    market = market_service or AShareService(market_data_root)
     notifier = NotifierService(
         napcat=NapCatNotifier(config.napcat, agents_root),
         qq_open=QQOpenNotifier(config.qq_open),
     )
-    arena = ArenaService(
-        agents_root=agents_root,
-        market=market,
-        fees=config.ashare.fees,
-        notifier=notifier,
-        intraday_fetch_workers=config.ashare.intraday_fetch_workers,
-    )
+    market: AShareService | None = None
+    arena: ArenaService | None = None
+    if config.ashare.enabled:
+        market = market_service or AShareService(market_data_root)
+        arena = ArenaService(
+            agents_root=agents_root,
+            market=market,
+            fees=config.ashare.fees,
+            notifier=notifier,
+            intraday_fetch_workers=config.ashare.intraday_fetch_workers,
+        )
     futumoo_root = (config_path.parent / "futumoo").resolve()
     futumoo_agents_root = futumoo_root / "agents"
-    futumoo_market = FutumooService(host=config.futumoo.host, port=config.futumoo.port)
-    futumoo_arena = FutumooArenaService(
-        agents_root=futumoo_agents_root,
-        market=futumoo_market,
-        config=config.futumoo,
-        notifier=notifier,
-    )
+    futumoo_market: FutumooService | None = None
+    futumoo_arena: FutumooArenaService | None = None
+    if config.futumoo.enabled:
+        futumoo_market = FutumooService(host=config.futumoo.host, port=config.futumoo.port)
+        futumoo_arena = FutumooArenaService(
+            agents_root=futumoo_agents_root,
+            market=futumoo_market,
+            config=config.futumoo,
+            notifier=notifier,
+        )
     ib_paper: IBService | None = None
     ib_real: IBService | None = None
     if config.ib.enabled:
@@ -143,8 +149,11 @@ def create_app(
     """Create the FastAPI app."""
 
     resolved_config = (config_path or DEFAULT_CONFIG_PATH).resolve()
-    mcp_server = create_ashare_mcp_server(lambda: app.state.app_state.arena)
-    futumoo_mcp_server = create_futumoo_mcp_server(lambda: app.state.app_state.futumoo_arena)
+    bootstrap_config = load_app_config(resolved_config)
+    ashare_enabled = bootstrap_config.ashare.enabled
+    futumoo_enabled = bootstrap_config.futumoo.enabled
+    mcp_server = create_ashare_mcp_server(lambda: app.state.app_state.arena) if ashare_enabled else None
+    futumoo_mcp_server = create_futumoo_mcp_server(lambda: app.state.app_state.futumoo_arena) if futumoo_enabled else None
     ib_mcp_server = create_ib_mcp_server()
 
     def _require_ib_paper() -> IBService:
@@ -164,15 +173,21 @@ def create_app(
         async with AsyncExitStack() as stack:
             state = _load_app_state(resolved_config, market_service=market_service)
             app.state.app_state = state
-            await stack.enter_async_context(mcp_server.session_manager.run())
-            await stack.enter_async_context(futumoo_mcp_server.session_manager.run())
+            if mcp_server is not None:
+                await stack.enter_async_context(mcp_server.session_manager.run())
+            if futumoo_mcp_server is not None:
+                await stack.enter_async_context(futumoo_mcp_server.session_manager.run())
             await stack.enter_async_context(ib_mcp_server.session_manager.run())
             await state.notifier.start()
             if state.ib_paper is not None:
                 state.ib_paper.start()
             if state.ib_real is not None:
                 state.ib_real.start()
-            if state.config.ashare.polling_interval_seconds > 0:
+            if (
+                state.arena is not None
+                and state.market is not None
+                and state.config.ashare.polling_interval_seconds > 0
+            ):
                 state.background_tasks.append(
                     asyncio.create_task(
                         state.market.run(state.config.ashare.polling_interval_seconds)
@@ -183,7 +198,10 @@ def create_app(
                         state.arena.run(state.config.ashare.polling_interval_seconds)
                     )
                 )
-            if state.config.futumoo.polling_interval_seconds > 0:
+            if (
+                state.futumoo_arena is not None
+                and state.config.futumoo.polling_interval_seconds > 0
+            ):
                 state.background_tasks.append(
                     asyncio.create_task(
                         state.futumoo_arena.run(
@@ -205,7 +223,8 @@ def create_app(
                     state.ib_paper.close()
                 if state.ib_real is not None:
                     state.ib_real.close()
-                state.futumoo_market.close()
+                if state.futumoo_market is not None:
+                    state.futumoo_market.close()
                 await state.notifier.close()
 
     app = FastAPI(title="quant-arena", lifespan=lifespan)
@@ -224,20 +243,22 @@ def create_app(
     )
     static_dir = Path(__file__).resolve().parent.parent / "static"
     app.mount(f"{base_url}/assets" if base_url else "/assets", StaticFiles(directory=static_dir / "assets", check_dir=False), name="assets")
-    app.mount(
-        f"{base_url}/A-share/mcp/" if base_url else "/A-share/mcp/",
-        wrap_mcp_with_agent_auth(
-            mcp_server.streamable_http_app(),
-            lambda: app.state.app_state.arena,
-        ),
-    )
-    app.mount(
-        f"{base_url}/futumoo/mcp/" if base_url else "/futumoo/mcp/",
-        wrap_futumoo_mcp_with_agent_auth(
-            futumoo_mcp_server.streamable_http_app(),
-            lambda: app.state.app_state.futumoo_arena,
-        ),
-    )
+    if mcp_server is not None:
+        app.mount(
+            f"{base_url}/A-share/mcp/" if base_url else "/A-share/mcp/",
+            wrap_mcp_with_agent_auth(
+                mcp_server.streamable_http_app(),
+                lambda: app.state.app_state.arena,
+            ),
+        )
+    if futumoo_mcp_server is not None:
+        app.mount(
+            f"{base_url}/futumoo/mcp/" if base_url else "/futumoo/mcp/",
+            wrap_futumoo_mcp_with_agent_auth(
+                futumoo_mcp_server.streamable_http_app(),
+                lambda: app.state.app_state.futumoo_arena,
+            ),
+        )
     app.mount(
         f"{base_url}/ib/mcp/" if base_url else "/ib/mcp/",
         wrap_ib_mcp_with_token_auth(
@@ -256,8 +277,7 @@ def create_app(
             agent_id=agent_id,
             display_name=agent.display_name,
             initial_cash=agent.initial_cash,
-            initial_cash_hkd=agent.initial_cash_hkd,
-            initial_cash_usd=agent.initial_cash_usd,
+            currency=agent.currency,
             enabled=agent.enabled,
             role=agent.role,
         )
@@ -336,11 +356,16 @@ def create_app(
             target_date = date.fromisoformat(date_value) if date_value else None
             return get_arena().get_rankings(target_date)
 
-    _register_arena_routes("", lambda: get_state().arena)
-    _register_arena_routes("/futumoo", lambda: get_state().futumoo_arena)
-
-    @api.post("/api/agents", response_model=AgentCreatedResponse)
-    def create_ashare_agent(request: CreateAgentRequest) -> AgentCreatedResponse:
+    def _create_agent_handler(
+        request: CreateAgentRequest,
+        get_arena: Callable[[], BaseArenaService],
+        allowed_currencies: tuple[str, ...],
+    ) -> AgentCreatedResponse:
+        if request.currency not in allowed_currencies:
+            raise BadRequestError(
+                f"Currency {request.currency!r} not allowed on this arena. "
+                f"Choose one of {allowed_currencies}."
+            )
         token_secret = secrets.token_urlsafe(24)
         agent = AgentConfig.model_validate(
             {
@@ -348,36 +373,39 @@ def create_app(
                 "token_secret": token_secret,
             }
         )
-        created = get_state().arena.add_agent(request.agent_id, agent)
+        created = get_arena().add_agent(request.agent_id, agent)
         return AgentCreatedResponse(
             agent=to_agent_response(request.agent_id, created),
             token_secret=token_secret,
         )
 
-    @api.post("/api/futumoo/agents", response_model=AgentCreatedResponse)
-    def create_futumoo_agent(request: CreateFutumooAgentRequest) -> AgentCreatedResponse:
-        token_secret = secrets.token_urlsafe(24)
-        agent = AgentConfig.model_validate(
-            {
-                **request.model_dump(exclude={"agent_id"}),
-                "token_secret": token_secret,
-            }
-        )
-        created = get_state().futumoo_arena.add_agent(request.agent_id, agent)
-        return AgentCreatedResponse(
-            agent=to_agent_response(request.agent_id, created),
-            token_secret=token_secret,
-        )
+    if ashare_enabled:
+        _register_arena_routes("", lambda: get_state().arena)
 
-    @api.api_route("/A-share/mcp", methods=["GET", "POST", "DELETE"])
-    def mcp_redirect() -> RedirectResponse:
-        target = f"{base_url}/A-share/mcp/" if base_url else "/A-share/mcp/"
-        return RedirectResponse(url=target, status_code=307)
+        @api.post("/api/agents", response_model=AgentCreatedResponse)
+        def create_ashare_agent(request: CreateAgentRequest) -> AgentCreatedResponse:
+            return _create_agent_handler(request, lambda: get_state().arena, ("CNY",))
 
-    @api.api_route("/futumoo/mcp", methods=["GET", "POST", "DELETE"])
-    def futumoo_mcp_redirect() -> RedirectResponse:
-        target = f"{base_url}/futumoo/mcp/" if base_url else "/futumoo/mcp/"
-        return RedirectResponse(url=target, status_code=307)
+    if futumoo_enabled:
+        _register_arena_routes("/futumoo", lambda: get_state().futumoo_arena)
+
+        @api.post("/api/futumoo/agents", response_model=AgentCreatedResponse)
+        def create_futumoo_agent(request: CreateAgentRequest) -> AgentCreatedResponse:
+            return _create_agent_handler(
+                request, lambda: get_state().futumoo_arena, ("HKD", "USD")
+            )
+
+    if ashare_enabled:
+        @api.api_route("/A-share/mcp", methods=["GET", "POST", "DELETE"])
+        def mcp_redirect() -> RedirectResponse:
+            target = f"{base_url}/A-share/mcp/" if base_url else "/A-share/mcp/"
+            return RedirectResponse(url=target, status_code=307)
+
+    if futumoo_enabled:
+        @api.api_route("/futumoo/mcp", methods=["GET", "POST", "DELETE"])
+        def futumoo_mcp_redirect() -> RedirectResponse:
+            target = f"{base_url}/futumoo/mcp/" if base_url else "/futumoo/mcp/"
+            return RedirectResponse(url=target, status_code=307)
 
     @api.api_route("/ib/mcp", methods=["GET", "POST", "DELETE"])
     def ib_mcp_redirect() -> RedirectResponse:
