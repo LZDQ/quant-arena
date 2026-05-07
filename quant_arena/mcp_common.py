@@ -128,6 +128,7 @@ def make_arena_mcp_server(
             name=agent_id,
             display_name=agent.display_name,
             role=agent.role,
+            currency=agent.currency,
         )
 
     @mcp.tool(description=submit_operation_description)
@@ -188,16 +189,20 @@ def make_arena_mcp_server(
 
         _require_monitor_agent()
         arena = get_arena()
-        return [
-            MonitoredAgentSnapshot(
-                agent_id=ranking.agent_id,
-                name=ranking.agent_id,
-                display_name=arena.get_agent(ranking.agent_id).display_name,
-                role=arena.get_agent(ranking.agent_id).role,
-                portfolio=arena.get_portfolio(ranking.agent_id),
+        snapshots: list[MonitoredAgentSnapshot] = []
+        for ranking in arena.get_rankings():
+            agent = arena.get_agent(ranking.agent_id)
+            snapshots.append(
+                MonitoredAgentSnapshot(
+                    agent_id=ranking.agent_id,
+                    name=ranking.agent_id,
+                    display_name=agent.display_name,
+                    role=agent.role,
+                    currency=agent.currency,
+                    portfolio=arena.get_portfolio(ranking.agent_id),
+                )
             )
-            for ranking in arena.get_rankings()
-        ]
+        return snapshots
 
     return mcp
 

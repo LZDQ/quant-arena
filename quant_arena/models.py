@@ -160,9 +160,10 @@ class PositionSnapshot(BaseModel):
 
 
 class PortfolioSnapshot(BaseModel):
-    """Domain portfolio snapshot. All monetary fields are in the owning agent's currency."""
+    """Domain portfolio snapshot. All monetary fields are in `currency`."""
 
     agent_id: str
+    currency: Literal["CNY", "HKD", "USD"] = "CNY"
     cash: float
     market_value: float
     total_equity: float
@@ -202,6 +203,7 @@ class MonitoredAgentSnapshot(BaseModel):
     name: str
     display_name: str
     role: Literal["normal", "monitor"]
+    currency: Literal["CNY", "HKD", "USD"]
     portfolio: PortfolioSnapshot
 
 
@@ -212,6 +214,7 @@ class AgentMetadata(BaseModel):
     name: str
     display_name: str
     role: Literal["normal", "monitor"]
+    currency: Literal["CNY", "HKD", "USD"]
 
 
 class DailyReport(BaseModel):

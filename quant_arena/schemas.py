@@ -8,6 +8,9 @@ from pydantic import BaseModel, Field
 from quant_arena.models import DailyReportSummary, EquityPoint, FillRecord, OrderRecord
 
 
+AgentCurrency = Literal["CNY", "HKD", "USD"]
+
+
 class PositionView(BaseModel):
     """API view of one portfolio position."""
 
@@ -21,9 +24,10 @@ class PositionView(BaseModel):
 
 
 class PortfolioResponse(BaseModel):
-    """Portfolio plus pending orders. All monetary fields are in the agent's currency."""
+    """Portfolio plus pending orders. All monetary fields are in `currency`."""
 
     agent_id: str
+    currency: AgentCurrency = "CNY"
     cash: float
     market_value: float
     total_equity: float
@@ -47,9 +51,6 @@ class PathsResponse(BaseModel):
     config_path: str
     agents_root: str
     market_data_root: str
-
-
-AgentCurrency = Literal["CNY", "HKD", "USD"]
 
 
 class CreateAgentRequest(BaseModel):

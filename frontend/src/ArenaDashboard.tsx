@@ -56,6 +56,7 @@ type FillRecord = {
 
 type PortfolioResponse = {
   agent_id: string;
+  currency: Currency;
   cash: number;
   market_value: number;
   total_equity: number;

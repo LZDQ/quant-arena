@@ -401,8 +401,11 @@ class ArenaService(BaseArenaService[AgentState]):
             )
         total_equity = state.cash + market_value
         pending_orders = [order for order in state.orders if order.status == "pending"]
+        agent = self._agents.get(state.agent_id)
+        currency = agent.currency if agent is not None else "CNY"
         return PortfolioSnapshot(
             agent_id=state.agent_id,
+            currency=currency,
             cash=round(state.cash, 2),
             market_value=round(market_value, 2),
             total_equity=round(total_equity, 2),
