@@ -1080,17 +1080,37 @@ table td.comment-cell {
 }
 
 /* daily reports */
-.reports {
+/* ----- daily reports (full-width section) ----- */
+
+.reports-section {
+  margin-top: 36px;
+  padding-top: 24px;
+  border-top: 3px double var(--rule);
+}
+.reports-section-head {
+  margin-bottom: 18px;
+}
+.reports-layout {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 36px;
+  align-items: start;
+}
+.reports-calendar {
+  font-family: var(--mono);
+  position: sticky;
+  top: 24px;
+  align-self: start;
+  padding-right: 24px;
+  border-right: 1px solid var(--rule-fine);
+}
+.reports-detail {
+  min-width: 0;
+}
+.reports-article {
   display: flex;
   flex-direction: column;
   gap: 20px;
-  margin-top: 18px;
-}
-.reports-calendar {
-  border-bottom: 1px solid var(--rule-soft);
-  padding-bottom: 16px;
-  font-family: var(--mono);
-  max-width: 420px;
 }
 .calendar-head {
   display: flex;
@@ -1203,9 +1223,28 @@ table td.comment-cell {
 }
 .reports-detail-body {
   font-family: var(--serif);
-  font-size: 16px;
-  line-height: 1.6;
+  font-size: 17px;
+  line-height: 1.7;
   color: var(--ink);
+  max-width: 76ch;
+}
+.reports-detail-body > *:first-child { margin-top: 0; }
+.reports-detail-body > *:last-child { margin-bottom: 0; }
+.reports-detail-body table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.reports-detail-body th,
+.reports-detail-body td {
+  border: 1px solid var(--rule-fine);
+  padding: 6px 10px;
+  text-align: left;
+}
+.reports-detail-body th {
+  background: var(--paper-soft);
+  font-weight: 600;
 }
 .reports-detail-body h1,
 .reports-detail-body h2,
@@ -1282,6 +1321,18 @@ table td.comment-cell {
     padding: 18px 0;
   }
   .equity-chart { padding-left: 0; }
+  .reports-layout {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+  .reports-calendar {
+    position: static;
+    padding-right: 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--rule-fine);
+    padding-bottom: 18px;
+  }
+  .reports-detail-body { max-width: none; }
   .stat-row { grid-template-columns: repeat(2, 1fr); }
   .stat-tile:nth-child(2) { border-right: 0; }
   .stat-tile:nth-child(-n+2) { border-bottom: 1px solid var(--rule-fine); }

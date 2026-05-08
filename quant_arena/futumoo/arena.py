@@ -104,7 +104,10 @@ class FutumooArenaService(BaseArenaService[FutumooAgentState]):
         now = region.now()
         if submitted_at is not None:
             now = submitted_at.astimezone(region.tz)
-        snapshot = self.market.get_snapshots([request.code])
+        # Snapshot fetch is sync and may stall on OpenD; offload to a worker
+        # so the FastAPI event loop stays responsive (notably the toggle
+        # endpoint that lets the user disable this arena).
+        snapshot = await asyncio.to_thread(self.market.get_snapshots, [request.code])
         snapshot_row = snapshot.get(request.code)
         if snapshot_row is None:
             raise BadRequestError(

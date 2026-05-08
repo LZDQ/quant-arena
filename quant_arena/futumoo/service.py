@@ -10,10 +10,20 @@ Wraps `OpenQuoteContext` for two operations:
   trading dates Futu reports for the given market, used by the HK/US
   region arenas as their session calendars.
 
-The connection is opened lazily and reused across calls.
+The connection is opened lazily and reused across calls. Because
+`OpenQuoteContext()` retries connection synchronously and can stall
+the calling thread for minutes when OpenD is down, every call site
+goes through `_ensure_quote_ctx` which first does a fast TCP probe
+and remembers the failure for `_CONNECT_FAILURE_BACKOFF`. While the
+backoff window is active we raise `ServiceError` immediately instead
+of attempting a fresh connection — keeping the FastAPI event loop
+responsive and letting the user disable the arena even when OpenD is
+unreachable.
 """
 
+import socket
 import threading
+import time
 from datetime import date, datetime
 from logging import getLogger
 
@@ -38,25 +48,78 @@ _SNAPSHOT_FIELDS: tuple[str, ...] = (
 
 
 class FutumooService:
-    """One process-wide Futu `OpenQuoteContext`, lazily connected."""
+    """One process-wide Futu `OpenQuoteContext`, lazily connected.
+
+    Connection failures are cached for `_CONNECT_FAILURE_BACKOFF_SECONDS`;
+    during that window every call short-circuits with `ServiceError` so
+    the event loop never sits inside `OpenQuoteContext()`'s retry loop.
+    """
+
+    _CONNECT_PROBE_TIMEOUT_SECONDS: float = 2.0
+    _CONNECT_FAILURE_BACKOFF_SECONDS: float = 30.0
 
     def __init__(self, host: str, port: int):
         self.host = host
         self.port = port
         self._lock = threading.Lock()
         self._quote_ctx = None  # futu.OpenQuoteContext, lazy
+        # Monotonic timestamp of the last failed connect attempt, used to
+        # gate retries via `_CONNECT_FAILURE_BACKOFF_SECONDS`.
+        self._last_connect_failure_at: float | None = None
+
+    def _probe_port(self) -> bool:
+        """Quick TCP probe: open and close a socket within the timeout.
+
+        OpenD's gateway accepts TCP connections on its configured port; if
+        the port refuses the connection or the host is unreachable, we
+        know `OpenQuoteContext()` will fail too and skip its retry storm.
+        """
+        try:
+            with socket.create_connection(
+                (self.host, self.port),
+                timeout=self._CONNECT_PROBE_TIMEOUT_SECONDS,
+            ):
+                return True
+        except OSError:
+            return False
 
     def _ensure_quote_ctx(self):
         if self._quote_ctx is not None:
             return self._quote_ctx
         with self._lock:
-            if self._quote_ctx is None:
+            if self._quote_ctx is not None:
+                return self._quote_ctx
+            now = time.monotonic()
+            if (
+                self._last_connect_failure_at is not None
+                and now - self._last_connect_failure_at
+                < self._CONNECT_FAILURE_BACKOFF_SECONDS
+            ):
+                raise ServiceError(
+                    f"Futu OpenD at {self.host}:{self.port} is unreachable; "
+                    f"backing off for "
+                    f"{self._CONNECT_FAILURE_BACKOFF_SECONDS:.0f}s before retrying."
+                )
+            if not self._probe_port():
+                self._last_connect_failure_at = now
+                raise ServiceError(
+                    f"Futu OpenD at {self.host}:{self.port} is not accepting "
+                    f"TCP connections (probe timed out after "
+                    f"{self._CONNECT_PROBE_TIMEOUT_SECONDS:.0f}s)."
+                )
+            try:
                 from futu import OpenQuoteContext
 
                 self._quote_ctx = OpenQuoteContext(host=self.host, port=self.port)
-                logger.info(
-                    "Futumoo quote context connected to %s:%d", self.host, self.port
-                )
+            except Exception as exc:
+                self._last_connect_failure_at = now
+                raise ServiceError(
+                    f"Failed to open Futu quote context at {self.host}:{self.port}: {exc}"
+                ) from exc
+            self._last_connect_failure_at = None
+            logger.info(
+                "Futumoo quote context connected to %s:%d", self.host, self.port
+            )
         return self._quote_ctx
 
     def get_snapshots(self, codes: list[str]) -> dict[str, dict]:

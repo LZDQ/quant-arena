@@ -461,6 +461,13 @@ export function ArenaDashboard({
         `/api${apiPrefix}/agents/${agentId}/daily-reports?page=1&page_size=${REPORTS_PAGE_SIZE}`,
       );
       setReportsList(data);
+      // Auto-open today's report when the agent has one — so the dashboard
+      // lands on "today" instead of the empty calendar prompt.
+      const now = new Date();
+      const todayKey = formatDateKey(now.getFullYear(), now.getMonth(), now.getDate());
+      if (data.items.some((item) => item.trade_date === todayKey)) {
+        void loadReportDetail(agentId, todayKey);
+      }
     } catch (fetchError) {
       setError((fetchError as Error).message);
       setReportsList(null);
@@ -1080,111 +1087,108 @@ export function ArenaDashboard({
                 </table>
               </section>
 
-              <section className="table-block">
-                <div className="table-head">
-                  <h4>Daily Reports</h4>
-                  <div className="table-tools">
-                    <span>{reportsTotal} entries</span>
-                  </div>
-                </div>
-                <div className="reports">
-                  <div className="reports-calendar">
-                    <div className="calendar-head">
-                      <button
-                        type="button"
-                        className="calendar-nav"
-                        onClick={() => shiftCalendarMonth(-1)}
-                        aria-label="Previous month"
-                      >
-                        ←
-                      </button>
-                      <span className="calendar-title">{calendarMonthLabel}</span>
-                      <button
-                        type="button"
-                        className="calendar-nav"
-                        onClick={() => shiftCalendarMonth(1)}
-                        aria-label="Next month"
-                      >
-                        →
-                      </button>
-                    </div>
-                    <div className="calendar-grid">
-                      {WEEKDAY_LABELS.map((label) => (
-                        <span key={label} className="calendar-dow">
-                          {label}
-                        </span>
-                      ))}
-                      {calendarCells.map((cell, idx) => {
-                        if (!cell) {
-                          return <span key={`blank-${idx}`} className="calendar-cell is-blank" />;
-                        }
-                        const hasReport = reportsByDate.has(cell.key);
-                        const isActive = selectedReportDate === cell.key;
-                        const isToday = cell.key === todayKey;
-                        const classes = [
-                          "calendar-cell",
-                          hasReport ? "has-report" : "no-report",
-                          isActive ? "is-active" : "",
-                          isToday ? "is-today" : "",
-                        ]
-                          .filter(Boolean)
-                          .join(" ");
-                        return (
-                          <button
-                            key={cell.key}
-                            type="button"
-                            className={classes}
-                            disabled={!hasReport || loadingReportDetail}
-                            onClick={() =>
-                              void loadReportDetail(snapshot.agent.agent_id, cell.key)
-                            }
-                          >
-                            {cell.day}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <div className="calendar-meta">
-                      {loadingReportsList
-                        ? "Loading…"
-                        : reportsTotal === 0
-                          ? "No reports yet"
-                          : "· filled days have reports ·"}
-                    </div>
-                  </div>
-                  <div className="reports-detail">
-                    {loadingReportDetail ? (
-                      <div className="reports-empty">Loading report…</div>
-                    ) : selectedReport ? (
-                      <>
-                        <div className="reports-detail-head">
-                          <span className="reports-detail-date">
-                            {selectedReport.trade_date}
-                          </span>
-                          <span className="reports-detail-meta">
-                            Updated {formatDateTime(selectedReport.updated_at)}
-                          </span>
-                        </div>
-                        <div className="reports-detail-body">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {selectedReport.content}
-                          </ReactMarkdown>
-                        </div>
-                      </>
-                    ) : (
-                      <div className="reports-empty">
-                        — pick a date on the calendar to read the report —
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </section>
             </>
           ) : (
             <div className="snapshot-empty">— pick a name from the roster, the books will open —</div>
           )}
         </section>
       </main>
+
+      {snapshot && (
+        <section className="reports-section">
+          <div className="section-head reports-section-head">
+            <h3>Daily Reports · {snapshot.agent.display_name}</h3>
+            <span className="meta">{reportsTotal} entries</span>
+          </div>
+          <div className="reports-layout">
+            <aside className="reports-calendar">
+              <div className="calendar-head">
+                <button
+                  type="button"
+                  className="calendar-nav"
+                  onClick={() => shiftCalendarMonth(-1)}
+                  aria-label="Previous month"
+                >
+                  ←
+                </button>
+                <span className="calendar-title">{calendarMonthLabel}</span>
+                <button
+                  type="button"
+                  className="calendar-nav"
+                  onClick={() => shiftCalendarMonth(1)}
+                  aria-label="Next month"
+                >
+                  →
+                </button>
+              </div>
+              <div className="calendar-grid">
+                {WEEKDAY_LABELS.map((label) => (
+                  <span key={label} className="calendar-dow">
+                    {label}
+                  </span>
+                ))}
+                {calendarCells.map((cell, idx) => {
+                  if (!cell) {
+                    return <span key={`blank-${idx}`} className="calendar-cell is-blank" />;
+                  }
+                  const hasReport = reportsByDate.has(cell.key);
+                  const isActive = selectedReportDate === cell.key;
+                  const isCellToday = cell.key === todayKey;
+                  const classes = [
+                    "calendar-cell",
+                    hasReport ? "has-report" : "no-report",
+                    isActive ? "is-active" : "",
+                    isCellToday ? "is-today" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ");
+                  return (
+                    <button
+                      key={cell.key}
+                      type="button"
+                      className={classes}
+                      disabled={!hasReport || loadingReportDetail}
+                      onClick={() => void loadReportDetail(snapshot.agent.agent_id, cell.key)}
+                    >
+                      {cell.day}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="calendar-meta">
+                {loadingReportsList
+                  ? "Loading…"
+                  : reportsTotal === 0
+                    ? "No reports yet"
+                    : "· filled days have reports ·"}
+              </div>
+            </aside>
+            <div className="reports-detail">
+              {loadingReportDetail ? (
+                <div className="reports-empty">Loading report…</div>
+              ) : selectedReport ? (
+                <article className="reports-article">
+                  <header className="reports-detail-head">
+                    <span className="reports-detail-date">{selectedReport.trade_date}</span>
+                    <span className="reports-detail-meta">
+                      Updated {formatDateTime(selectedReport.updated_at)}
+                    </span>
+                  </header>
+                  <div className="reports-detail-body">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {selectedReport.content}
+                    </ReactMarkdown>
+                  </div>
+                </article>
+              ) : (
+                <div className="reports-empty">
+                  — pick a date on the calendar to read the report —
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
 
       <footer className="board-foot">
         <span>{footer.left}</span>
