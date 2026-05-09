@@ -551,7 +551,6 @@ export function ArenaDashboard({
   const selectedRanking = snapshot
     ? rankings.find((entry) => entry.agent_id === snapshot.agent.agent_id)
     : null;
-  const latestEquity = snapshot && snapshot.equity.length > 0 ? snapshot.equity[snapshot.equity.length - 1] : null;
   const chart = snapshot ? buildEquityChart(snapshot.equity) : null;
   const agentById = new Map(agents.map((agent) => [agent.agent_id, agent]));
   const orderedOrders = snapshot ? [...snapshot.operations.orders].reverse() : [];
@@ -891,9 +890,6 @@ export function ArenaDashboard({
               <section className="equity">
                 <div className="equity-summary">
                   <p className="label">Equity Curve</p>
-                  <h3 className="value">
-                    {latestEquity ? formatAmount(latestEquity.total_equity, snapshot.agent.currency) : "--"}
-                  </h3>
                   <p className={`return ${percentClass(selectedRanking?.return_pct ?? 0)}`}>
                     Return {signedPct(selectedRanking?.return_pct ?? 0)}
                   </p>

@@ -210,6 +210,18 @@ class ArenaService(BaseArenaService[AgentState]):
         `state.equity_history` and persist once.
         """
         timestamp = self._now()
+        # Final price sweep so the frozen equity prices positions against the
+        # auction close (~15:00:30) rather than the last continuous-trading
+        # tick the matcher captured before 15:00. Without this, finalize would
+        # snapshot whatever stale entries sit in `_latest_prices`.
+        self._latest_close_index = None
+        tracked_codes: set[str] = set()
+        for agent_id, _ in self.list_agents():
+            state = self._state(agent_id)
+            tracked_codes |= {o.code for o in state.orders if o.status == "pending"}
+            tracked_codes |= set(state.positions.keys())
+        self._refresh_intraday_cache(tracked_codes)
+
         with self._order_lock:
             for agent_id, _ in self.list_agents():
                 state = self._state(agent_id)

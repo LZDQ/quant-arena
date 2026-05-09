@@ -222,16 +222,24 @@ function MarketPicker() {
             <span className="market-toggle" onClick={(event) => event.stopPropagation()}>
               <button
                 type="button"
-                className={`toggle-pill ${enabled ? "is-on" : "is-off"}`}
+                className={`toggle-button ${enabled ? "to-disable" : "to-enable"}`}
                 disabled={!loaded || busySlug === backendSlug}
                 onClick={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
+                  const action = enabled ? "Disable" : "Enable";
+                  const verb = enabled ? "disable" : "enable";
+                  const restartHint =
+                    "The change is saved to config.json; the server must be restarted to take effect.";
+                  const confirmed = window.confirm(
+                    `${action} ${m.name}?\n\nThis will ${verb} the arena. ${restartHint}`,
+                  );
+                  if (!confirmed) return;
                   void toggle(backendSlug, !enabled);
                 }}
                 aria-label={`${enabled ? "Disable" : "Enable"} ${m.name}`}
               >
-                {busySlug === backendSlug ? "…" : enabled ? "ON" : "OFF"}
+                {busySlug === backendSlug ? "…" : enabled ? "Disable" : "Enable"}
               </button>
             </span>
           ) : null;
