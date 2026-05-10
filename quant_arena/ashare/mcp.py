@@ -26,7 +26,9 @@ def create_ashare_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
         submit_operation_description=(
             "Submit a pending buy or sell limit order on the A-share simulator. "
             "Settlement is T+1; buy quantity must be a multiple of 100; only "
-            "main-board codes (SH 60xxxx, SZ 000/001/002/003 xxxx) are accepted."
+            "main-board codes (SH 60xxxx, SZ 000/001/002/003 xxxx) are accepted. "
+            "The comment should include the name of the code and briefly explain "
+            "the reason in three sentences."
         ),
         fallback_tz=SHANGHAI_TZ,
     )
