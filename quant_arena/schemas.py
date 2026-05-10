@@ -57,8 +57,9 @@ class CreateAgentRequest(BaseModel):
     """Request to create a new agent.
 
     `currency` selects the single denomination the agent will trade in.
-    A-share accepts only `CNY`; Futumoo accepts `HKD` or `USD`. The arena
-    rejects any other combination at submission time.
+    A-share accepts only `CNY`; Futumoo accepts `HKD` or `USD`; IB
+    accepts `HKD` or `USD` as the account base currency. `ib_mode` is
+    required for IB agents and ignored elsewhere.
     """
 
     agent_id: str
@@ -67,6 +68,7 @@ class CreateAgentRequest(BaseModel):
     currency: AgentCurrency = "CNY"
     enabled: bool = True
     role: Literal["normal", "monitor"] = "normal"
+    ib_mode: Literal["paper", "real"] | None = None
 
 
 class AgentResponse(BaseModel):
@@ -78,6 +80,7 @@ class AgentResponse(BaseModel):
     currency: AgentCurrency
     enabled: bool
     role: Literal["normal", "monitor"]
+    ib_mode: Literal["paper", "real"] | None = None
 
 
 class AgentCreatedResponse(BaseModel):
@@ -90,7 +93,7 @@ class AgentCreatedResponse(BaseModel):
 class ArenaStatus(BaseModel):
     """Whether one arena is enabled at startup. Persisted in config.json."""
 
-    slug: Literal["ashare", "futumoo"]
+    slug: Literal["ashare", "futumoo", "ib"]
     label: str
     enabled: bool
 

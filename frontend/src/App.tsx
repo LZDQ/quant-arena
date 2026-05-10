@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { AShareApp } from "./AShareApp";
 import { FutumooApp } from "./FutumooApp";
+import { IBApp } from "./IBApp";
 
 const BASE_URL = import.meta.env.BASE_URL.replace(/\/+$/, "");
 const API_BASE = (import.meta.env.VITE_API_BASE ?? BASE_URL).replace(/\/+$/, "");
@@ -38,11 +39,12 @@ const MARKETS: Market[] = [
   },
   {
     slug: "ib",
+    backendSlug: "ib",
     no: "03",
     name: "Interactive Brokers",
     hanzi: "盈 透",
     tagline: "Online paper · Real · Gateway",
-    status: "coming",
+    status: "available",
   },
 ];
 
@@ -278,6 +280,9 @@ export function App() {
   }
   if (slug === "futumoo") {
     return <FutumooApp />;
+  }
+  if (slug === "ib") {
+    return <IBApp />;
   }
   return <MarketPicker />;
 }

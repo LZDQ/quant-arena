@@ -4,6 +4,8 @@ import remarkGfm from "remark-gfm";
 
 type Currency = "CNY" | "HKD" | "USD";
 
+type IBMode = "paper" | "real";
+
 type AgentResponse = {
   agent_id: string;
   display_name: string;
@@ -11,6 +13,7 @@ type AgentResponse = {
   currency: Currency;
   enabled: boolean;
   role: "normal" | "monitor";
+  ib_mode: IBMode | null;
 };
 
 type AgentCreatedResponse = {
@@ -125,19 +128,24 @@ type CreateAgentForm = {
   initial_cash: string;
   currency: Currency;
   role: "normal" | "monitor";
+  ib_mode: IBMode | null;
 };
 
 const ORDERS_PAGE_SIZE = 8;
 const REPORTS_PAGE_SIZE = 100;
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-function makeDefaultCreateAgentForm(currency: Currency): CreateAgentForm {
+function makeDefaultCreateAgentForm(
+  currency: Currency,
+  ibMode: IBMode | null,
+): CreateAgentForm {
   return {
     agent_id: "",
     display_name: "",
     initial_cash: "100000",
     currency,
     role: "normal",
+    ib_mode: ibMode,
   };
 }
 
@@ -266,7 +274,12 @@ function todayStamp() {
 export type CurrencyOption = {
   /** Backend currency code, e.g. "CNY", "HKD", "USD". */
   value: Currency;
-  /** Label shown in the form (e.g. "RMB" while value="CNY"). */
+  /** Label shown in the form (typically same as value, but may diverge). */
+  label: string;
+};
+
+export type IBModeOption = {
+  value: IBMode;
   label: string;
 };
 
@@ -307,6 +320,11 @@ export type ArenaDashboardProps = {
    * is the default selection.
    */
   currencyOptions: CurrencyOption[];
+  /**
+   * If set, the enlist form shows an "Account" picker for IB paper / real mode
+   * and the selected value is sent as `ib_mode` to the backend.
+   */
+  ibModeOptions?: IBModeOption[];
   /** Footer text (left + right halves). */
   footer: {
     left: string;
@@ -325,6 +343,7 @@ export function ArenaDashboard({
   enlistPlaceholders,
   confirmDeletePrefix,
   currencyOptions,
+  ibModeOptions,
   footer,
 }: ArenaDashboardProps) {
   const apiBase = (import.meta.env.VITE_API_BASE ?? homeUrl).replace(/\/+$/, "");
@@ -332,6 +351,11 @@ export function ArenaDashboard({
   const currencyLocked = currencyOptions.length <= 1;
   const currencyLabel = (value: Currency): string =>
     currencyOptions.find((option) => option.value === value)?.label ?? value;
+  const defaultIbMode = ibModeOptions?.[0]?.value ?? null;
+  const ibModeLabel = (value: IBMode | null): string => {
+    if (value === null) return "—";
+    return ibModeOptions?.find((option) => option.value === value)?.label ?? value;
+  };
 
   async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(`${apiBase}${path}`, {
@@ -356,8 +380,9 @@ export function ArenaDashboard({
   const [snapshot, setSnapshot] = useState<AgentSnapshotResponse | null>(null);
   const [rankings, setRankings] = useState<RankingEntry[]>([]);
   const [createAgentForm, setCreateAgentForm] = useState<CreateAgentForm>(() =>
-    makeDefaultCreateAgentForm(defaultCurrency),
+    makeDefaultCreateAgentForm(defaultCurrency, defaultIbMode),
   );
+  const [ibModeMenuOpen, setIbModeMenuOpen] = useState(false);
   const [currencyMenuOpen, setCurrencyMenuOpen] = useState(false);
   const [loadingAgents, setLoadingAgents] = useState(true);
   const [loadingSnapshot, setLoadingSnapshot] = useState(false);
@@ -520,7 +545,7 @@ export function ArenaDashboard({
       });
       setCreatedToken(created.token_secret);
       setCreatedAgentId(created.agent.agent_id);
-      setCreateAgentForm(makeDefaultCreateAgentForm(defaultCurrency));
+      setCreateAgentForm(makeDefaultCreateAgentForm(defaultCurrency, defaultIbMode));
       setMessage(`Agent ${created.agent.agent_id} created.`);
       await refreshAgents(created.agent.agent_id);
       await refreshRankings();
@@ -669,6 +694,11 @@ export function ArenaDashboard({
                       <span className={`roster-pill currency currency-${entry.currency}`}>
                         {entry.currency}
                       </span>
+                      {agent && agent.ib_mode && (
+                        <span className={`roster-pill ib-${agent.ib_mode}`}>
+                          {agent.ib_mode.toUpperCase()}
+                        </span>
+                      )}
                       {agent && (
                         <span className={`roster-pill ${agent.enabled ? "live" : ""}`}>
                           {agent.enabled ? "LIVE" : "OFF"} · {agent.role.toUpperCase()}
@@ -777,6 +807,44 @@ export function ArenaDashboard({
                   </>
                 )}
               </div>
+              {ibModeOptions && ibModeOptions.length > 0 && (
+                <div
+                  className="field field-half select-wrap"
+                  onBlur={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                      setIbModeMenuOpen(false);
+                    }
+                  }}
+                >
+                  <label>Account</label>
+                  <button
+                    className="select-trigger"
+                    type="button"
+                    aria-haspopup="listbox"
+                    aria-expanded={ibModeMenuOpen}
+                    onClick={() => setIbModeMenuOpen((open) => !open)}
+                  >
+                    <span>{ibModeLabel(createAgentForm.ib_mode)}</span>
+                  </button>
+                  {ibModeMenuOpen && (
+                    <div className="select-menu" role="listbox" aria-label="IB account">
+                      {ibModeOptions.map((option) => (
+                        <button
+                          key={option.value}
+                          className={`select-option ${createAgentForm.ib_mode === option.value ? "is-active" : ""}`}
+                          type="button"
+                          onClick={() => {
+                            setCreateAgentForm((prev) => ({ ...prev, ib_mode: option.value }));
+                            setIbModeMenuOpen(false);
+                          }}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               <div
                 className="field select-wrap"
                 onBlur={(event) => {
@@ -846,7 +914,11 @@ export function ArenaDashboard({
               <h2 className="name">{snapshot?.agent.display_name ?? "Select an Agent"}</h2>
               {snapshot ? (
                 <div className="id">
-                  {snapshot.agent.agent_id} · {snapshot.agent.role.toUpperCase()} ·{" "}
+                  {snapshot.agent.agent_id} ·{" "}
+                  {snapshot.agent.ib_mode
+                    ? `${snapshot.agent.ib_mode.toUpperCase()} · `
+                    : ""}
+                  {snapshot.agent.role.toUpperCase()} ·{" "}
                   {snapshot.agent.enabled ? "LIVE" : "OFFLINE"}
                 </div>
               ) : (

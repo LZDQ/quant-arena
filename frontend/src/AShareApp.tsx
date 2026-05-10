@@ -58,7 +58,7 @@ export function AShareApp() {
       symbolHeader="Code"
       enlistPlaceholders={{ agentId: "trader-01", displayName: "The Iron Pen" }}
       confirmDeletePrefix="Delete agent"
-      currencyOptions={[{ value: "CNY", label: "RMB" }]}
+      currencyOptions={[{ value: "CNY", label: "CNY" }]}
       footer={{
         left: "Composed nightly · Bureau of Simulated Equities",
         right: "量化竞技场 · A-Share Edition",

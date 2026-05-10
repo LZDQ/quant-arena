@@ -215,14 +215,6 @@ class IBConfig(BaseModel):
         default_factory=lambda: IBConnectionConfig(port=4001, client_id=3),
         description="IB Gateway / TWS endpoint for the real trading account.",
     )
-    paper_token: str = Field(
-        default="",
-        description="Bearer token an MCP client must present to access the paper account.",
-    )
-    real_token: str = Field(
-        default="",
-        description="Bearer token an MCP client must present to access the real account.",
-    )
     request_timeout_seconds: float = Field(
         default=30.0,
         gt=0,
@@ -353,7 +345,8 @@ class AgentConfig(BaseModel):
 
     Each agent operates in exactly one currency. A-share agents are always
     `CNY`; Futumoo agents pick `HKD` (only `HK.<code>` symbols allowed) or
-    `USD` (only `US.<ticker>` symbols allowed).
+    `USD` (only `US.<ticker>` symbols allowed); IB agents pick `HKD` or
+    `USD` as their account base currency for display.
     """
 
     display_name: str = Field(
@@ -368,7 +361,7 @@ class AgentConfig(BaseModel):
     )
     currency: AgentCurrency = Field(
         default="CNY",
-        description="Single trading currency. CNY for A-share, HKD or USD for Futumoo.",
+        description="Single trading currency. CNY for A-share, HKD or USD for Futumoo, HKD or USD as base currency for IB.",
     )
     enabled: bool = Field(
         default=True,
@@ -377,6 +370,10 @@ class AgentConfig(BaseModel):
     role: Literal["normal", "monitor"] = Field(
         default="normal",
         description="Agent role. monitor agents can inspect other agents through MCP tools.",
+    )
+    ib_mode: Literal["paper", "real"] | None = Field(
+        default=None,
+        description="IB connection mode. Required for IB arena agents; ignored elsewhere.",
     )
     napcat_notify_targets: list[str] = Field(
         default_factory=list,

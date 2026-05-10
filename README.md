@@ -188,10 +188,15 @@ Per-agent config:
 
 ## Interactive Brokers (IB)
 
-IB paper and real trading are exposed through a separate MCP endpoint
-mounted at `/ib/mcp`. There is no per-agent state for IB — the IB
-account is the source of truth, so each mode supports exactly one
-trading client.
+IB paper and real trading are exposed through a per-agent arena, with
+the MCP endpoint mounted at `/ib/mcp`. The IB Gateway / TWS account is
+the source of truth for cash, positions, and orders — the local arena
+only persists agent metadata, daily reports, and a NetLiquidation
+equity-history curve. The arena allows **at most one paper agent and
+one real agent** at any time. HK and US trading are *not* per-agent;
+either agent may submit HK or US orders, distinguished at order time
+by the IB contract's `exchange` and `currency` fields (e.g.
+`exchange="SMART", currency="HKD"` for HKEX, `currency="USD"` for US).
 
 ### Configuration
 
@@ -211,8 +216,6 @@ Add an `ib` section to `~/.quant-arena/config.json`:
       "port": 4001,
       "client_id": 3
     },
-    "paper_token": "<paper-bearer-token>",
-    "real_token": "<real-bearer-token>",
     "request_timeout_seconds": 30.0,
     "default_exchange": "SMART",
     "default_currency": "USD"
@@ -224,18 +227,38 @@ Default ports are IB Gateway's (4001 live, 4002 paper). Use 7496/7497
 for TWS instead. `client_id` must be unique per active session against
 the same gateway.
 
-### MCP usage
+### Enlistment
 
-The endpoint is shared between paper and real — the bearer token
-selects which account this request targets. Only one MCP client is
-allowed per mode at a time; concurrent requests for the same mode are
-rejected with HTTP 409.
+Register a paper or real agent through the dashboard at
+`http://127.0.0.1:18792/ib`, or via REST:
 
 ```bash
-# Paper account
+curl http://127.0.0.1:18792/api/ib/agents \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "ib-paper",
+    "display_name": "The Gateway Sentinel",
+    "initial_cash": 100000,
+    "currency": "USD",
+    "ib_mode": "paper"
+  }'
+```
+
+The response includes a one-time `token_secret`; copy it. The arena
+rejects a second registration of the same `ib_mode` with HTTP 409.
+
+### MCP usage
+
+The endpoint is shared between paper and real — the calling agent's
+token identifies which account this request targets. Only one MCP
+client is allowed per mode at a time; concurrent requests for the same
+mode are rejected with HTTP 409.
+
+```bash
+# Whichever agent's token you present selects paper vs. real.
 curl http://127.0.0.1:18792/ib/mcp \
   -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer <paper-bearer-token>' \
+  -H 'Authorization: Bearer <agent-token-secret>' \
   -d '{
     "jsonrpc": "2.0",
     "id": 1,
@@ -245,12 +268,6 @@ curl http://127.0.0.1:18792/ib/mcp \
       "arguments": {}
     }
   }'
-
-# Real account — same URL, different token
-curl http://127.0.0.1:18792/ib/mcp \
-  -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer <real-bearer-token>' \
-  ...
 ```
 
 ### Tools
