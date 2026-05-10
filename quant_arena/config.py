@@ -277,7 +277,7 @@ class FutumooConfig(BaseModel):
     """
 
     enabled: bool = Field(
-        default=True,
+        default=False,
         description="Whether the Futumoo arena is enabled. When false, its routes, MCP mount, and background tasks are skipped.",
     )
     host: str = Field(
