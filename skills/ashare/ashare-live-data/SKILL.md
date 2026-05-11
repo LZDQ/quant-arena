@@ -61,17 +61,21 @@ print(frame.tail())
 ```py
 import akshare as ak
 
-prices = ak.stock_zh_a_spot()
-print(prices)
+prices = None
+for retry in range(3):
+    try:
+        prices = ak.stock_zh_a_spot()
+        break
+    except:
+        pass
 
-"""
-            代码    名称     最新价   涨跌额    涨跌幅      买入  ...      今开      最高      最低        成交量          成交额       时间戳
-0     bj920000  安徽凤凰   15.98  0.25  1.589   15.98  ...   15.75   16.08   15.75    86780.0    1386846.0  10:02:14
-...
-5506  sz301682  宏明电子  132.66  7.03  5.596  132.65  ...  126.51  133.86  126.51  2217436.0  290404271.0  10:02:33
-"""
+if prices is None:
+    print('Failed to fetch all data')
+    exit(1)
+
+code = "600726"                          # 6-digit A-share code as a string
+symbol = ak.stock_a_code_to_symbol(code) # "sh600726" or "sz000001" etc.
+print(prices[prices['代码'] == symbol])
 ```
-
-注意该接口返回的代码带前缀。
 
 高峰期可能会有 `RemoteDisconnect` 报错，可以加入重试逻辑。千万不要用 eastmoney 的接口，因为它非常不稳定。用例子中的这个 `stock_zh_a_spot`。
