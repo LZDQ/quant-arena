@@ -253,6 +253,7 @@ class AShareService:
         today = now_shanghai().date()
         if self._today_is_trading_day is not None and self._today_is_trading_day[0] == today:
             return self._today_is_trading_day[1]
+        bs.login()
         frame = self.fetch_trade_dates(today, today)
         flag = str(frame.iloc[-1]["is_trading_day"]) == "1"
         self._today_is_trading_day = (today, flag)
