@@ -102,13 +102,13 @@ class ArenaService(BaseArenaService[AgentState]):
             prev_close = persisted_close
             limit_up = round(prev_close * 1.1, 2)
             limit_down = round(prev_close * 0.9, 2)
-        if request.limit_price > limit_up:
+        if request.limit_price >= limit_up:
             raise BadRequestError(
-                f"Limit price {request.limit_price} exceeds today's limit-up "
+                f"Limit price {request.limit_price} >= today's limit-up "
                 f"{limit_up} for {request.code} (prev close {prev_close}); "
                 f"order would never fill."
             )
-        if request.limit_price < limit_down:
+        if request.limit_price <= limit_down:
             raise BadRequestError(
                 f"Limit price {request.limit_price} is below today's limit-down "
                 f"{limit_down} for {request.code} (prev close {prev_close}); "

@@ -187,6 +187,10 @@ class QQOpenConfig(BaseModel):
 class IBConnectionConfig(BaseModel):
     """One IB Gateway / TWS endpoint."""
 
+    enabled: bool = Field(
+        default=False,
+        description="Whether this paper/real mode is enabled. AND'd with the top-level IBConfig.enabled to decide whether the connection is brought up.",
+    )
     host: str = Field(
         default="127.0.0.1",
         description="Hostname or IP of IB Gateway or TWS.",
@@ -198,6 +202,10 @@ class IBConnectionConfig(BaseModel):
         default=2,
         description="ib_insync clientId for this connection.",
     )
+    gateway_token: str = Field(
+        default="",
+        description="Optional bearer token for authenticating to IB Gateway / TWS itself. Distinct from per-agent MCP auth tokens (`AgentConfig.token_secret`).",
+    )
 
 
 class IBConfig(BaseModel):
@@ -205,7 +213,7 @@ class IBConfig(BaseModel):
 
     enabled: bool = Field(
         default=False,
-        description="Whether the IB integration is enabled.",
+        description="Master switch for the IB integration. Each mode also has its own `paper.enabled` / `real.enabled`; both must be true for a mode to run.",
     )
     paper: IBConnectionConfig = Field(
         default_factory=lambda: IBConnectionConfig(port=4002, client_id=2),

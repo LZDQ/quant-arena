@@ -123,20 +123,22 @@ def _load_app_state(config_path: Path, market_service: AShareService | None = No
     ib_real: IBService | None = None
     ib_arena: IBArenaService | None = None
     if config.ib.enabled:
-        ib_paper = IBService(
-            mode="paper",
-            connection=config.ib.paper,
-            default_exchange=config.ib.default_exchange,
-            default_currency=config.ib.default_currency,
-            request_timeout_seconds=config.ib.request_timeout_seconds,
-        )
-        ib_real = IBService(
-            mode="real",
-            connection=config.ib.real,
-            default_exchange=config.ib.default_exchange,
-            default_currency=config.ib.default_currency,
-            request_timeout_seconds=config.ib.request_timeout_seconds,
-        )
+        if config.ib.paper.enabled:
+            ib_paper = IBService(
+                mode="paper",
+                connection=config.ib.paper,
+                default_exchange=config.ib.default_exchange,
+                default_currency=config.ib.default_currency,
+                request_timeout_seconds=config.ib.request_timeout_seconds,
+            )
+        if config.ib.real.enabled:
+            ib_real = IBService(
+                mode="real",
+                connection=config.ib.real,
+                default_exchange=config.ib.default_exchange,
+                default_currency=config.ib.default_currency,
+                request_timeout_seconds=config.ib.request_timeout_seconds,
+            )
         ib_arena = IBArenaService(
             agents_root=ib_agents_root,
             paper=ib_paper,

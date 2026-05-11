@@ -163,11 +163,11 @@ def wrap_ib_mcp_with_token_auth(
         service: IBService | None = None
         lock: threading.Lock | None = None
         if token_value:
-            if config.paper_token and token_value == config.paper_token:
+            if config.paper.gateway_token and token_value == config.paper.gateway_token:
                 mode = "paper"
                 service = get_paper()
                 lock = paper_lock
-            elif config.real_token and token_value == config.real_token:
+            elif config.real.gateway_token and token_value == config.real.gateway_token:
                 mode = "real"
                 service = get_real()
                 lock = real_lock
