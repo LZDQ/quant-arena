@@ -84,6 +84,19 @@ type EquityPoint = {
   unrealized_pnl: number;
 };
 
+type SpecialEvent = {
+  event_id: string;
+  event_type: string;
+  event_date: string;
+  code: string | null;
+  summary: string;
+  occurred_at: string;
+};
+
+const SPECIAL_EVENT_LABELS: Record<string, string> = {
+  corporate_action: "Corporate Action",
+};
+
 type AgentSnapshotResponse = {
   agent: AgentResponse;
   portfolio: PortfolioResponse;
@@ -398,6 +411,8 @@ export function ArenaDashboard({
   const [selectedReportDate, setSelectedReportDate] = useState<string>("");
   const [selectedReport, setSelectedReport] = useState<DailyReport | null>(null);
   const [loadingReportDetail, setLoadingReportDetail] = useState(false);
+  const [specialEvents, setSpecialEvents] = useState<SpecialEvent[]>([]);
+  const [loadingSpecialEvents, setLoadingSpecialEvents] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState<{ year: number; month: number }>(() => {
     const now = new Date();
     return { year: now.getFullYear(), month: now.getMonth() };
@@ -426,6 +441,7 @@ export function ArenaDashboard({
       setReportsList(null);
       setSelectedReport(null);
       setSelectedReportDate("");
+      setSpecialEvents([]);
       return;
     }
     setOrdersPage(1);
@@ -442,6 +458,7 @@ export function ArenaDashboard({
       return;
     }
     void refreshReports(selectedAgentId);
+    void refreshSpecialEvents(selectedAgentId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAgentId]);
 
@@ -498,6 +515,21 @@ export function ArenaDashboard({
       setReportsList(null);
     } finally {
       setLoadingReportsList(false);
+    }
+  }
+
+  async function refreshSpecialEvents(agentId: string) {
+    setLoadingSpecialEvents(true);
+    try {
+      const data = await apiFetch<SpecialEvent[]>(
+        `/api${apiPrefix}/agents/${agentId}/special-events`,
+      );
+      setSpecialEvents(data);
+    } catch (fetchError) {
+      setError((fetchError as Error).message);
+      setSpecialEvents([]);
+    } finally {
+      setLoadingSpecialEvents(false);
     }
   }
 
@@ -579,6 +611,7 @@ export function ArenaDashboard({
   const chart = snapshot ? buildEquityChart(snapshot.equity) : null;
   const agentById = new Map(agents.map((agent) => [agent.agent_id, agent]));
   const orderedOrders = snapshot ? [...snapshot.operations.orders].reverse() : [];
+  const orderedSpecialEvents = [...specialEvents].reverse();
   const fillByOrderId = new Map((snapshot?.operations.fills ?? []).map((fill) => [fill.order_id, fill]));
   const totalOrdersPages = Math.max(1, Math.ceil(orderedOrders.length / ORDERS_PAGE_SIZE));
   const currentOrdersPage = Math.min(ordersPage, totalOrdersPages);
@@ -1154,6 +1187,46 @@ export function ArenaDashboard({
                   </tbody>
                 </table>
               </section>
+
+              {(orderedSpecialEvents.length > 0 || loadingSpecialEvents) && (
+                <section className="table-block">
+                  <div className="table-head">
+                    <h4>Special Events</h4>
+                    <div className="table-tools">
+                      <span>{orderedSpecialEvents.length} entries</span>
+                    </div>
+                  </div>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>{symbolHeader}</th>
+                        <th>Type</th>
+                        <th>Detail</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {orderedSpecialEvents.map((event) => (
+                        <tr key={event.event_id}>
+                          <td>{formatDateShort(event.event_date)}</td>
+                          <td className="code">{event.code ?? "—"}</td>
+                          <td>{SPECIAL_EVENT_LABELS[event.event_type] ?? event.event_type}</td>
+                          <td className="comment-cell" style={{ whiteSpace: "pre-line" }}>
+                            {event.summary}
+                          </td>
+                        </tr>
+                      ))}
+                      {orderedSpecialEvents.length === 0 && (
+                        <tr>
+                          <td colSpan={4} className="empty">
+                            {loadingSpecialEvents ? "Loading…" : "No special events on record"}
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </section>
+              )}
 
             </>
           ) : (

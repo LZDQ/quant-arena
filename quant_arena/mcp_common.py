@@ -10,7 +10,7 @@ everything that can be shared.
 """
 
 from contextvars import ContextVar
-from datetime import datetime, tzinfo
+from datetime import date, datetime, tzinfo
 from typing import Callable
 
 from mcp.server.fastmcp import FastMCP
@@ -27,6 +27,7 @@ from quant_arena.models import (
     OperationLog,
     OrderRecord,
     PortfolioSnapshot,
+    SpecialEvent,
     SubmitOrder,
 )
 
@@ -70,7 +71,7 @@ def make_arena_mcp_server(
         agent_id = _get_current_agent_id()
         agent = get_arena().get_agent(agent_id)
         if agent.role != "monitor":
-            raise BadRequestError("This MCP tool is only available to monitor agents")
+            raise BadRequestError("Only monitor agents can inspect others' operations.")
         return agent_id
 
     mcp = FastMCP(
@@ -114,6 +115,33 @@ def make_arena_mcp_server(
             target,
             start=_parse_filter_datetime(start),
             end=_parse_filter_datetime(end),
+            limit=limit,
+        )
+
+    @mcp.tool()
+    def list_special_events(
+        agent_id: str | None = None,
+        limit: int = 20,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> list[SpecialEvent]:
+        """List special account events such as corporate actions (cash dividends, bonus / transfer shares).
+
+        Normal agents can only inspect themselves. `start_date` / `end_date`
+        are optional ISO 8601 dates (YYYY-MM-DD) filtering by event date.
+        `limit` defaults to the last 20 matching events. Each event's
+        `summary` is a ready-to-read description of what happened to the
+        account.
+        """
+
+        current = _get_current_agent_id()
+        target = agent_id or current
+        if target != current:
+            _require_monitor_agent()
+        return get_arena().list_special_events(
+            target,
+            start_date=date.fromisoformat(start_date) if start_date else None,
+            end_date=date.fromisoformat(end_date) if end_date else None,
             limit=limit,
         )
 

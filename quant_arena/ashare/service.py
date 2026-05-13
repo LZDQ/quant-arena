@@ -15,6 +15,7 @@ Final choices:
 
 import asyncio
 import shutil
+from collections.abc import Iterable
 from datetime import date, datetime, time, timedelta
 from importlib import resources
 from logging import getLogger
@@ -26,6 +27,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from quant_arena.clock import now_shanghai
+from quant_arena.models import CorporateAction
 
 logger = getLogger(__name__)
 
@@ -127,6 +129,69 @@ class AShareService:
                 f"baostock returned no trade dates for [{start_date}, {end_date}]"
             )
         return frame
+
+    def fetch_corporate_actions(
+        self, ex_date: date, codes: Iterable[str]
+    ) -> list[CorporateAction]:
+        """
+        Cash-dividend / bonus-share events from baostock whose ex-date is ``ex_date``.
+
+        Queried per code via ``query_dividend_data(yearType="operate")`` keyed by the
+        ex-date's *year* — baostock keys this table by the ex-rights ("operate") date,
+        not the report period, so a 2025-fiscal-year payout distributed in 2026 lives
+        under ``year="2026"``. Only ``codes`` are scanned (dividend entitlement only
+        matters for held positions), keeping this to a handful of round-trips a day.
+
+        Per-share figures (``dividCashPsBeforeTax`` etc.) are taken as-is; the
+        after-tax cash column from baostock is ignored — callers compute the
+        differentiated dividend tax themselves from holding periods.
+        """
+        bs.login()
+        actions: list[CorporateAction] = []
+        target = ex_date.isoformat()
+        year = str(ex_date.year)
+        for code in codes:
+            try:
+                bs_code = f"{ak.stock_a_code_to_symbol(code)[:2]}.{code}"
+                result = bs.query_dividend_data(code=bs_code, year=year, yearType="operate")
+                if result.error_code != "0":
+                    logger.warning(
+                        "baostock dividend query failed for %s: %s", code, result.error_msg
+                    )
+                    continue
+                while result.next():
+                    row = dict(zip(result.fields, result.get_row_data()))
+                    if row.get("dividOperateDate", "") != target:
+                        continue
+                    cash_ps = self._to_float(row.get("dividCashPsBeforeTax"))
+                    bonus_ps = self._to_float(row.get("dividStocksPs"))
+                    reserve_ps = self._to_float(row.get("dividReserveToStockPs"))
+                    if cash_ps <= 0.0 and bonus_ps <= 0.0 and reserve_ps <= 0.0:
+                        continue
+                    register_raw = str(row.get("dividRegistDate", "") or "").strip() or target
+                    actions.append(
+                        CorporateAction(
+                            code=code,
+                            register_date=date.fromisoformat(register_raw),
+                            ex_date=ex_date,
+                            cash_per_share_pretax=cash_ps,
+                            bonus_shares_per_share=bonus_ps,
+                            reserve_shares_per_share=reserve_ps,
+                            scheme=str(row.get("dividCashStock", "") or "").strip(),
+                        )
+                    )
+            except Exception:
+                logger.exception("Failed to fetch corporate actions for %s", code)
+        return actions
+
+    @staticmethod
+    def _to_float(value: object) -> float:
+        if value is None:
+            return 0.0
+        text = str(value).strip()
+        if not text:
+            return 0.0
+        return float(text)
 
     def _persist_daily_frame(self, frame: pd.DataFrame) -> None:
         if frame.empty:

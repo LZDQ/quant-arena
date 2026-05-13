@@ -11,6 +11,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time
 from logging import getLogger
+from math import floor
 from pathlib import Path
 
 import numpy as np
@@ -24,12 +25,15 @@ from quant_arena.errors import BadRequestError, ConflictError, NotFoundError
 from quant_arena.notifier import NotifierService
 from quant_arena.models import (
     AgentState,
+    CorporateAction,
+    CorporateActionRecord,
     EquityPoint,
     FillRecord,
     OrderRecord,
     PortfolioSnapshot,
     PositionLot,
     PositionSnapshot,
+    SpecialEvent,
     SubmitOrder,
 )
 
@@ -272,15 +276,24 @@ class ArenaService(BaseArenaService[AgentState]):
     async def run(self, polling_interval_seconds: int) -> None:
         """
         Match pending orders during 9:30 to 15:00, then finalize the session
-        once after 15:00 each trade-date.
+        once after 15:00 each trade-date. Cash-dividend / bonus-share events are
+        applied once per trade-date, on the first cycle of the day (before the
+        9:30 match window when the server has been up since the open).
         """
         last_finalized_date: date | None = None
+        last_corporate_action_date: date | None = None
         while True:
             now = self._now()
             today = now.date()
             if not self.market.is_today_trading_day():
                 await asyncio.sleep(polling_interval_seconds)
                 continue
+            if last_corporate_action_date != today:
+                try:
+                    await asyncio.to_thread(self.apply_corporate_actions, today)
+                    last_corporate_action_date = today
+                except Exception:
+                    logger.exception("Exception applying corporate actions")
             if time(9, 30) <= now.time() <= time(15, 0):
                 try:
                     await asyncio.to_thread(self.match_pending_orders)
@@ -293,6 +306,201 @@ class ArenaService(BaseArenaService[AgentState]):
                 except Exception:
                     logger.exception("Exception in finalizing session")
             await asyncio.sleep(polling_interval_seconds)
+
+    # ----- corporate actions (cash dividend / bonus / capitalization) -----
+
+    def _special_events(self, state: AgentState) -> list[SpecialEvent]:
+        code_names = self.market.get_code_names()
+        name_by_code: dict[str, str] = {}
+        if code_names is not None and not code_names.empty:
+            name_by_code = dict(
+                zip(code_names["code"].astype(str), code_names["name"].astype(str))
+            )
+        events: list[SpecialEvent] = []
+        for record in state.corporate_actions:
+            events.append(
+                SpecialEvent(
+                    event_id=record.record_id,
+                    event_type="corporate_action",
+                    event_date=record.ex_date,
+                    code=record.code,
+                    summary=self._render_corporate_action(record, name_by_code.get(record.code)),
+                    occurred_at=record.applied_at,
+                )
+            )
+        return events
+
+    @staticmethod
+    def _render_corporate_action(record: CorporateActionRecord, name: str | None) -> str:
+        label = f"{record.code}（{name}）" if name else record.code
+        lines = [
+            f"分红送转 {label} {record.ex_date.isoformat()} 除权除息：{record.scheme or '分红送转'}",
+            f"持仓 {record.shares_before} → {record.shares_after} 股"
+            + (f"（新增 {record.bonus_shares} 股）" if record.bonus_shares else ""),
+            f"成本价 {record.cost_price_before:.4f} → {record.cost_price_after:.4f}",
+        ]
+        if record.cash_dividend_gross > 0.0 or record.dividend_tax > 0.0:
+            lines.append(
+                f"现金分红 +¥{record.cash_dividend_gross:.2f}（税前），"
+                f"代扣红利税 ¥{record.dividend_tax:.2f}，到账 ¥{record.cash_dividend_net:.2f}"
+            )
+        if record.fractional_cash > 0.0:
+            lines.append(f"碎股折现 +¥{record.fractional_cash:.2f}")
+        return "\n".join(lines)
+
+    def apply_corporate_actions(self, ex_date: date) -> None:
+        """
+        Apply ``ex_date``'s cash-dividend / bonus-share events to every agent's holdings.
+
+        Run once per trade-date, before the 9:30 match window. The position read
+        here equals each agent's register-date close (no fills happen before the
+        open), so on-record holders automatically get their entitlement. Idempotent
+        per ``(code, ex_date)`` via ``state.corporate_actions`` — a mid-session
+        restart that re-invokes this is a no-op. Catch-up across days the server was
+        down is *not* attempted; only ``ex_date`` is processed.
+        """
+        held_codes: set[str] = set()
+        for agent_id, _ in self.list_agents():
+            state = self._state(agent_id)
+            held_codes |= {
+                code
+                for code, lots in state.positions.items()
+                if any(lot.quantity > 0 for lot in lots)
+            }
+        if not held_codes:
+            return
+        actions = self.market.fetch_corporate_actions(ex_date, held_codes)
+        if not actions:
+            return
+        actions_by_code = {action.code: action for action in actions}
+        close_index = self._ensure_latest_close_index()
+        timestamp = self._now()
+        with self._order_lock:
+            for agent_id, _ in self.list_agents():
+                state = self._state(agent_id)
+                changed = False
+                for code, action in actions_by_code.items():
+                    lots = state.positions.get(code)
+                    if not lots or not any(lot.quantity > 0 for lot in lots):
+                        continue
+                    already_applied = any(
+                        record.code == code and record.ex_date == ex_date
+                        for record in state.corporate_actions
+                    )
+                    if already_applied:
+                        continue
+                    self._apply_one_corporate_action(
+                        state, action, close_index.get(code), timestamp
+                    )
+                    changed = True
+                if changed:
+                    self._save_agent_state(state)
+        self._rankings_cache = None
+
+    def _apply_one_corporate_action(
+        self,
+        state: AgentState,
+        action: CorporateAction,
+        prev_close: float | None,
+        timestamp: datetime,
+    ) -> None:
+        lots = [lot for lot in state.positions[action.code] if lot.quantity > 0]
+        shares_before = sum(lot.quantity for lot in lots)
+        avg_cost_before = sum(lot.quantity * lot.cost_price for lot in lots) / shares_before
+
+        # Cash dividend, with the per-lot differentiated personal dividend tax.
+        # Taxable income = cash dividend + face value (¥1) of 送红股 shares; the
+        # capital-reserve transfer (转增) is not taxable income. The tax is withheld
+        # from account cash regardless of whether this lot received any cash.
+        cash_gross = 0.0
+        tax_total = 0.0
+        for lot in lots:
+            lot_cash = lot.quantity * action.cash_per_share_pretax
+            lot_taxable = lot_cash + lot.quantity * action.bonus_shares_per_share * 1.0
+            cash_gross += lot_cash
+            tax_total += lot_taxable * self._dividend_tax_rate(lot.acquired_date, action.ex_date)
+        cash_net = cash_gross - tax_total
+
+        # Bonus + capitalization shares dilute cost basis (total cost preserved).
+        ratio_new = action.bonus_shares_per_share + action.reserve_shares_per_share
+        exact_new = shares_before * ratio_new
+        total_new = floor(exact_new)
+        fractional_shares = exact_new - total_new
+        if total_new > 0:
+            quotas = [lot.quantity * ratio_new for lot in lots]
+            adds = [floor(quota) for quota in quotas]
+            leftover = total_new - sum(adds)
+            largest_remainders = sorted(
+                range(len(lots)), key=lambda index: quotas[index] - adds[index], reverse=True
+            )
+            for index in largest_remainders[:leftover]:
+                adds[index] += 1
+            for lot, add in zip(lots, adds):
+                if add == 0:
+                    continue
+                new_quantity = lot.quantity + add
+                lot.cost_price = lot.cost_price * lot.quantity / new_quantity
+                lot.quantity = new_quantity
+            state.positions[action.code] = [
+                lot for lot in state.positions[action.code] if lot.quantity > 0
+            ]
+
+        ex_reference = (
+            (prev_close - action.cash_per_share_pretax) / (1.0 + ratio_new)
+            if prev_close is not None and prev_close > 0.0
+            else 0.0
+        )
+        fractional_cash = fractional_shares * ex_reference
+        state.cash += cash_net + fractional_cash
+
+        live_after = [lot for lot in state.positions.get(action.code, []) if lot.quantity > 0]
+        shares_after = sum(lot.quantity for lot in live_after)
+        avg_cost_after = (
+            sum(lot.quantity * lot.cost_price for lot in live_after) / shares_after
+            if shares_after > 0
+            else avg_cost_before
+        )
+        record = CorporateActionRecord(
+            agent_id=state.agent_id,
+            code=action.code,
+            ex_date=action.ex_date,
+            register_date=action.register_date,
+            scheme=action.scheme,
+            shares_before=shares_before,
+            bonus_shares=shares_after - shares_before,
+            shares_after=shares_after,
+            cost_price_before=round(avg_cost_before, 6),
+            cost_price_after=round(avg_cost_after, 6),
+            cash_dividend_gross=round(cash_gross, 2),
+            dividend_tax=round(tax_total, 2),
+            cash_dividend_net=round(cash_net, 2),
+            fractional_cash=round(fractional_cash, 2),
+            applied_at=timestamp,
+        )
+        state.corporate_actions.append(record)
+        logger.info(
+            "Corporate action applied: agent=%s code=%s scheme=%r ex=%s shares %d->%d "
+            "cash +%.2f (gross %.2f, tax %.2f, frac %.2f) avg_cost %.4f->%.4f",
+            state.agent_id, action.code, action.scheme or "?", action.ex_date.isoformat(),
+            shares_before, shares_after, cash_net + fractional_cash, cash_gross, tax_total,
+            fractional_cash, avg_cost_before, avg_cost_after,
+        )
+
+    @staticmethod
+    def _dividend_tax_rate(acquired: date, ex_date: date) -> float:
+        """
+        Caishui [2015] No. 101 differentiated personal dividend income tax.
+
+        Holding period (calendar days, "1 month" / "1 year" approximated as
+        30 / 365 days): ≤ 1 month → 20%, > 1 month and ≤ 1 year → 10%,
+        > 1 year → 0%.
+        """
+        held_days = (ex_date - acquired).days
+        if held_days <= 30:
+            return 0.20
+        if held_days <= 365:
+            return 0.10
+        return 0.0
 
     def _ensure_latest_close_index(self) -> dict[str, float]:
         """

@@ -31,6 +31,7 @@ from quant_arena.models import (
     OrderRecord,
     PortfolioSnapshot,
     RankingSnapshot,
+    SpecialEvent,
 )
 from quant_arena.notifier import NotifierService
 
@@ -101,6 +102,13 @@ class BaseArenaService(Generic[StateT]):
     def _build_portfolio(self, state: StateT) -> PortfolioSnapshot:
         """Build the live portfolio snapshot for `state`."""
         raise NotImplementedError
+
+    def _special_events(self, state: StateT) -> list[SpecialEvent]:
+        """Subclass hook: non-trade account events (corporate actions, …) for `state`.
+
+        Default is no events; arenas that model such events override this.
+        """
+        return []
 
     # ----- agent registry -----
 
@@ -194,6 +202,31 @@ class BaseArenaService(Generic[StateT]):
         if end is not None:
             points = [point for point in points if point.trade_date <= end]
         return points
+
+    def list_special_events(
+        self,
+        agent_id: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        limit: int | None = None,
+    ) -> list[SpecialEvent]:
+        """Non-trade account events for `agent_id`, oldest first.
+
+        `start_date` / `end_date` filter by `event_date` (inclusive). `limit`
+        keeps only the last N matching events.
+        """
+        self.get_agent(agent_id)
+        with self._order_lock:
+            state: Any = self._state(agent_id)
+            events = list(self._special_events(state))
+        events.sort(key=lambda event: (event.event_date, event.occurred_at))
+        if start_date is not None:
+            events = [event for event in events if event.event_date >= start_date]
+        if end_date is not None:
+            events = [event for event in events if event.event_date <= end_date]
+        if limit is not None:
+            events = events[-limit:]
+        return events
 
     def get_rankings(self, target_date: date | None = None) -> list[RankingSnapshot]:
         if target_date is None and self._rankings_cache is not None:

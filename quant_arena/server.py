@@ -38,7 +38,7 @@ from quant_arena.ib import (
     create_ib_mcp_server,
     wrap_ib_mcp_with_agent_auth,
 )
-from quant_arena.models import DailyReport, RankingSnapshot
+from quant_arena.models import DailyReport, RankingSnapshot, SpecialEvent
 from quant_arena.notifier import NotifierService
 from quant_arena.napcat import NapCatNotifier
 from quant_arena.qq_open import QQOpenNotifier
@@ -408,6 +408,20 @@ def create_app(
         )
         def get_arena_daily_report(agent_id: str, trade_date: date) -> DailyReport:
             return get_arena().get_daily_report(agent_id, trade_date)
+
+        @api.get(f"/api{prefix}/agents/{{agent_id}}/special-events")
+        def list_arena_special_events(
+            agent_id: str,
+            limit: int | None = None,
+            start_date: str | None = None,
+            end_date: str | None = None,
+        ) -> list[SpecialEvent]:
+            return get_arena().list_special_events(
+                agent_id,
+                start_date=date.fromisoformat(start_date) if start_date else None,
+                end_date=date.fromisoformat(end_date) if end_date else None,
+                limit=limit,
+            )
 
         @api.get(f"/api{prefix}/rankings")
         def get_arena_rankings(date_value: str | None = None) -> list[RankingSnapshot]:

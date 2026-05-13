@@ -20,7 +20,7 @@ description: 使用 python 获取所有市场实时数据
 ```py
 from futu import OpenQuoteContext
 
-HOST = "100.125.144.91"  # 这是平台配套的数据供应服务器
+HOST = "127.0.0.1"
 
 q = OpenQuoteContext(host=HOST, port=11111)
 print(q.get_user_info())
@@ -32,7 +32,7 @@ q.close()
 ```py
 from futu import OpenQuoteContext
 
-HOST = "100.125.144.91"
+HOST = "127.0.0.1"
 CODE = "HK.00700"  # 腾讯控股
 
 q = OpenQuoteContext(host=HOST, port=11111)
@@ -47,7 +47,7 @@ q.close()
 ```py
 from futu import OpenQuoteContext
 
-HOST = "100.125.144.91"
+HOST = "127.0.0.1"
 CODE = "US.AAPL"  # Apple
 
 q = OpenQuoteContext(host=HOST, port=11111)
