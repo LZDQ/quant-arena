@@ -110,7 +110,8 @@ def create_ib_mcp_server() -> FastMCP:
     ) -> IBTradeInfo:
         """Submit a buy or sell order on the IB account.
 
-        order_type=LMT requires limit_price; order_type=MKT must omit it.
+        order_type=LMT requires limit_price (>0). For order_type=MKT, omit
+        limit_price or pass 0/null — all three are accepted as "no limit".
         HK and US trades are distinguished by `exchange` and `currency`
         — e.g. `exchange="SMART", currency="HKD"` for HKEX listings,
         `exchange="SMART", currency="USD"` for US listings. When omitted

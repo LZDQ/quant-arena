@@ -114,8 +114,8 @@ class IBSubmitOrderRequest(BaseModel):
     order_type: IBOrderType = Field(default="LMT")
     limit_price: float | None = Field(
         default=None,
-        gt=0,
-        description="Required when order_type is LMT.",
+        ge=0,
+        description="Required (>0) for LMT. For MKT, omit or pass 0/null.",
     )
     exchange: str | None = Field(
         default=None,
@@ -343,8 +343,13 @@ class IBService:
         return self._run(_do)
 
     def submit_order(self, request: IBSubmitOrderRequest) -> IBTradeInfo:
-        if request.order_type == "LMT" and request.limit_price is None:
-            raise BadRequestError("limit_price is required for LMT orders")
+        # Treat 0 as "no limit" for MKT — most agents reach for it first.
+        if request.order_type == "MKT" and request.limit_price == 0:
+            request = request.model_copy(update={"limit_price": None})
+        if request.order_type == "LMT" and (
+            request.limit_price is None or request.limit_price <= 0
+        ):
+            raise BadRequestError("limit_price must be > 0 for LMT orders")
         if request.order_type == "MKT" and request.limit_price is not None:
             raise BadRequestError("limit_price must be omitted for MKT orders")
         action = "BUY" if request.side == "buy" else "SELL"
