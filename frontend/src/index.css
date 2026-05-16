@@ -1034,15 +1034,6 @@ table td.code {
   color: var(--ink);
   letter-spacing: 0.02em;
 }
-table td.code .code-name {
-  display: block;
-  margin-top: 2px;
-  font-family: var(--sans);
-  font-size: 11px;
-  font-weight: 400;
-  letter-spacing: 0.02em;
-  color: var(--ink-mute);
-}
 table td.empty {
   text-align: center;
   color: var(--ink-mute);

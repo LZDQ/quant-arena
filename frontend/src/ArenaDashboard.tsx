@@ -1071,6 +1071,7 @@ export function ArenaDashboard({
                   <thead>
                     <tr>
                       <th>{symbolHeader}</th>
+                      <th>Name</th>
                       <th className="num">Qty</th>
                       <th className="num">Sellable</th>
                       <th className="num">Avg</th>
@@ -1082,10 +1083,8 @@ export function ArenaDashboard({
                   <tbody>
                     {snapshot.portfolio.positions.map((position) => (
                       <tr key={position.code}>
-                        <td className="code">
-                          {position.code}
-                          <span className="code-name">{position.name ?? "-"}</span>
-                        </td>
+                        <td className="code">{position.code}</td>
+                        <td>{position.name ?? "-"}</td>
                         <td className="num">{position.quantity}</td>
                         <td className="num">{position.sellable_quantity}</td>
                         <td className="num">{formatNumber(position.avg_cost, 3)}</td>
@@ -1098,7 +1097,7 @@ export function ArenaDashboard({
                     ))}
                     {snapshot.portfolio.positions.length === 0 && (
                       <tr>
-                        <td colSpan={7} className="empty">
+                        <td colSpan={8} className="empty">
                           No positions on the book
                         </td>
                       </tr>
@@ -1140,6 +1139,7 @@ export function ArenaDashboard({
                     <tr>
                       <th>Time</th>
                       <th>{symbolHeader}</th>
+                      <th>Name</th>
                       <th>Side</th>
                       <th className="num">Qty</th>
                       <th className="num">Limit</th>
@@ -1156,10 +1156,8 @@ export function ArenaDashboard({
                       return (
                         <tr key={order.order_id}>
                           <td>{formatDateTime(order.submitted_at)}</td>
-                          <td className="code">
-                            {order.code}
-                            <span className="code-name">{order.name ?? "-"}</span>
-                          </td>
+                          <td className="code">{order.code}</td>
+                          <td>{order.name ?? "-"}</td>
                           <td>
                             <span className={`side ${order.side}`}>
                               <span className="indicator" />
@@ -1187,7 +1185,7 @@ export function ArenaDashboard({
                     })}
                     {snapshot.operations.orders.length === 0 && (
                       <tr>
-                        <td colSpan={8} className="empty">
+                        <td colSpan={9} className="empty">
                           No orders on record
                         </td>
                       </tr>
