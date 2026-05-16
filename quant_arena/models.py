@@ -27,6 +27,10 @@ class OrderRecord(BaseModel):
     code: str = Field(
         description="股票代码，不含前缀，如 600726"
     )
+    name: str | None = Field(
+        default=None,
+        description="股票名称，下单时根据 code 在缓存表里查到的展示名，查不到为 null"
+    )
     side: OrderSide = Field(
         description="买卖方向，buy 是买入，sell 是卖出"
     )
@@ -205,6 +209,7 @@ class PositionSnapshot(BaseModel):
     """Domain view of one portfolio position."""
 
     code: str
+    name: str | None = None
     quantity: int
     sellable_quantity: int
     avg_cost: float

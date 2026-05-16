@@ -34,6 +34,7 @@ logger = getLogger(__name__)
 
 _SNAPSHOT_FIELDS: tuple[str, ...] = (
     "code",
+    "name",
     "last_price",
     "prev_close_price",
     "open_price",

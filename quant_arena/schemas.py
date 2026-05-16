@@ -15,6 +15,7 @@ class PositionView(BaseModel):
     """API view of one portfolio position."""
 
     code: str
+    name: str | None = None
     quantity: int
     sellable_quantity: int
     avg_cost: float

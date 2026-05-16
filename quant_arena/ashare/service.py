@@ -46,6 +46,7 @@ class AShareService:
         self.market_bars_dir = market_data_root / "bars"
         self._code_names_path = market_data_root / "code_names.csv"
         self._code_names: pd.DataFrame | None = None
+        self._code_name_index: dict[str, str] | None = None
         self._latest_daily_frame: pd.DataFrame | None = None
         self._today_is_trading_day: tuple[date, bool] | None = None
         self.market_bars_dir.mkdir(parents=True, exist_ok=True)
@@ -59,12 +60,25 @@ class AShareService:
             self._code_names = self._read_csv(self._code_names_path)
         return self._code_names
 
+    def get_code_name(self, code: str) -> str | None:
+        """Return the cached display name for `code`, or None if not tracked."""
+        if self._code_name_index is None:
+            frame = self.get_code_names()
+            if frame is None or frame.empty:
+                self._code_name_index = {}
+            else:
+                self._code_name_index = dict(
+                    zip(frame["code"].astype(str), frame["name"].astype(str))
+                )
+        return self._code_name_index.get(code)
+
     def refresh_code_names(self) -> None:
         frame = ak.stock_info_a_code_name()
         if frame.empty:
             raise ValueError("akshare returned empty code-name frame")
         frame.to_csv(self._code_names_path, index=False)
         self._code_names = frame
+        self._code_name_index = None
 
     def get_latest_daily_bar(self) -> pd.DataFrame | None:
         """Return (and cache) the most recent persisted daily-bar frame."""

@@ -138,6 +138,7 @@ class ArenaService(BaseArenaService[AgentState]):
             order = OrderRecord(
                 agent_id=agent_id,
                 code=request.code,
+                name=self.market.get_code_name(request.code),
                 side=request.side,
                 quantity=request.quantity,
                 limit_price=request.limit_price,
@@ -310,12 +311,6 @@ class ArenaService(BaseArenaService[AgentState]):
     # ----- corporate actions (cash dividend / bonus / capitalization) -----
 
     def _special_events(self, state: AgentState) -> list[SpecialEvent]:
-        code_names = self.market.get_code_names()
-        name_by_code: dict[str, str] = {}
-        if code_names is not None and not code_names.empty:
-            name_by_code = dict(
-                zip(code_names["code"].astype(str), code_names["name"].astype(str))
-            )
         events: list[SpecialEvent] = []
         for record in state.corporate_actions:
             events.append(
@@ -324,7 +319,9 @@ class ArenaService(BaseArenaService[AgentState]):
                     event_type="corporate_action",
                     event_date=record.ex_date,
                     code=record.code,
-                    summary=self._render_corporate_action(record, name_by_code.get(record.code)),
+                    summary=self._render_corporate_action(
+                        record, self.market.get_code_name(record.code)
+                    ),
                     occurred_at=record.applied_at,
                 )
             )
@@ -611,6 +608,7 @@ class ArenaService(BaseArenaService[AgentState]):
             positions.append(
                 PositionSnapshot(
                     code=code,
+                    name=self.market.get_code_name(code),
                     quantity=quantity,
                     sellable_quantity=sellable,
                     avg_cost=round(avg_cost, 4),

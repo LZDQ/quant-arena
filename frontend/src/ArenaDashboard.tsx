@@ -23,6 +23,7 @@ type AgentCreatedResponse = {
 
 type PositionView = {
   code: string;
+  name: string | null;
   quantity: number;
   sellable_quantity: number;
   avg_cost: number;
@@ -34,6 +35,7 @@ type PositionView = {
 type OrderRecord = {
   order_id: string;
   code: string;
+  name: string | null;
   side: "buy" | "sell";
   quantity: number;
   limit_price: number;
@@ -1080,7 +1082,10 @@ export function ArenaDashboard({
                   <tbody>
                     {snapshot.portfolio.positions.map((position) => (
                       <tr key={position.code}>
-                        <td className="code">{position.code}</td>
+                        <td className="code">
+                          {position.code}
+                          <span className="code-name">{position.name ?? "-"}</span>
+                        </td>
                         <td className="num">{position.quantity}</td>
                         <td className="num">{position.sellable_quantity}</td>
                         <td className="num">{formatNumber(position.avg_cost, 3)}</td>
@@ -1151,7 +1156,10 @@ export function ArenaDashboard({
                       return (
                         <tr key={order.order_id}>
                           <td>{formatDateTime(order.submitted_at)}</td>
-                          <td className="code">{order.code}</td>
+                          <td className="code">
+                            {order.code}
+                            <span className="code-name">{order.name ?? "-"}</span>
+                          </td>
                           <td>
                             <span className={`side ${order.side}`}>
                               <span className="indicator" />

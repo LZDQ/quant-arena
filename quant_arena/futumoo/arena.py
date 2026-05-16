@@ -62,7 +62,18 @@ class FutumooArenaService(BaseArenaService[FutumooAgentState]):
         }
         self.regions: tuple[RegionArena, ...] = (self.hk, self.us)
         self._latest_prices: dict[str, float] = {}
+        self._code_names: dict[str, str] = {}
         self._snapshot_as_of: datetime | None = None
+
+    def _absorb_snapshot_names(self, snapshots: dict[str, dict]) -> None:
+        """Cache `name` columns from Futu snapshots for later display."""
+        for code, row in snapshots.items():
+            raw = row.get("name")
+            if raw is None:
+                continue
+            text = str(raw).strip()
+            if text:
+                self._code_names[code] = text
 
     def _now(self) -> datetime:
         return datetime.now(timezone.utc)
@@ -116,9 +127,11 @@ class FutumooArenaService(BaseArenaService[FutumooAgentState]):
         with self._order_lock:
             state = self._state(agent_id)
             region.validate_submission(state, request, snapshot_row, now)
+            self._absorb_snapshot_names(snapshot)
             order = OrderRecord(
                 agent_id=agent_id,
                 code=request.code,
+                name=self._code_names.get(request.code),
                 side=request.side,
                 quantity=request.quantity,
                 limit_price=request.limit_price,
@@ -166,6 +179,7 @@ class FutumooArenaService(BaseArenaService[FutumooAgentState]):
             return
         if not snapshots:
             return
+        self._absorb_snapshot_names(snapshots)
         max_update: datetime | None = None
         for code, row in snapshots.items():
             self._latest_prices[code] = float(row["last_price"])
@@ -258,6 +272,7 @@ class FutumooArenaService(BaseArenaService[FutumooAgentState]):
             positions.append(
                 PositionSnapshot(
                     code=code,
+                    name=self._code_names.get(code),
                     quantity=position.quantity,
                     sellable_quantity=position.quantity,
                     avg_cost=round(position.avg_cost, 4),
@@ -296,6 +311,7 @@ class FutumooArenaService(BaseArenaService[FutumooAgentState]):
             except Exception:
                 logger.exception("Portfolio snapshot refresh failed")
                 snapshots = {}
+            self._absorb_snapshot_names(snapshots)
             for code, row in snapshots.items():
                 self._latest_prices[code] = float(row["last_price"])
         with self._order_lock:
