@@ -50,6 +50,349 @@ const MARKETS: Market[] = [
 
 type ArenaStatus = { slug: string; label: string; enabled: boolean };
 
+type NapCatPrivateTarget = { type: "private"; user_id: string };
+type NapCatGroupTarget = { type: "group"; group_id: string };
+type NapCatTarget = NapCatPrivateTarget | NapCatGroupTarget;
+type QQOpenGroupTarget = { type: "group"; group_openid: string };
+
+type NotificationDestinations = {
+  napcat_enabled: boolean;
+  napcat_destinations: Record<string, NapCatTarget>;
+  qq_open_enabled: boolean;
+  qq_open_destinations: Record<string, QQOpenGroupTarget>;
+};
+
+function describeNapCatTarget(target: NapCatTarget): string {
+  return target.type === "private"
+    ? `Private · user ${target.user_id}`
+    : `Group · group ${target.group_id}`;
+}
+
+function describeQQOpenTarget(target: QQOpenGroupTarget): string {
+  return `Group · openid ${target.group_openid}`;
+}
+
+type NapCatDraft = {
+  key: string;
+  type: "private" | "group";
+  user_id: string;
+  group_id: string;
+};
+
+type QQOpenDraft = {
+  key: string;
+  group_openid: string;
+};
+
+function GlobalNotificationTargets() {
+  const [data, setData] = useState<NotificationDestinations | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>("");
+  const [notice, setNotice] = useState<string>("");
+  const [napcatDraft, setNapcatDraft] = useState<NapCatDraft>({
+    key: "",
+    type: "private",
+    user_id: "",
+    group_id: "",
+  });
+  const [qqOpenDraft, setQqOpenDraft] = useState<QQOpenDraft>({
+    key: "",
+    group_openid: "",
+  });
+  const [busy, setBusy] = useState(false);
+
+  async function refresh() {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch(`${API_BASE}/api/notifications/destinations`);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      setData((await response.json()) as NotificationDestinations);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  async function saveNapCat(next: Record<string, NapCatTarget>) {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch(`${API_BASE}/api/notifications/napcat/destinations`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ destinations: next }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+        throw new Error(body.detail ?? `HTTP ${response.status}`);
+      }
+      setData((await response.json()) as NotificationDestinations);
+      setNotice("NapCat destinations saved.");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveQQOpen(next: Record<string, QQOpenGroupTarget>) {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch(`${API_BASE}/api/notifications/qq-open/destinations`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ destinations: next }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+        throw new Error(body.detail ?? `HTTP ${response.status}`);
+      }
+      setData((await response.json()) as NotificationDestinations);
+      setNotice("QQ Open destinations saved.");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function removeNapCat(key: string) {
+    if (!data) return;
+    if (!window.confirm(`Remove NapCat destination "${key}"?`)) return;
+    const next = { ...data.napcat_destinations };
+    delete next[key];
+    void saveNapCat(next);
+  }
+
+  function removeQQOpen(key: string) {
+    if (!data) return;
+    if (!window.confirm(`Remove QQ Open destination "${key}"?`)) return;
+    const next = { ...data.qq_open_destinations };
+    delete next[key];
+    void saveQQOpen(next);
+  }
+
+  function addNapCat() {
+    if (!data) return;
+    const key = napcatDraft.key.trim();
+    if (!key) {
+      setError("NapCat destination key is required");
+      return;
+    }
+    if (data.napcat_destinations[key]) {
+      setError(`NapCat destination key "${key}" already exists`);
+      return;
+    }
+    let target: NapCatTarget;
+    if (napcatDraft.type === "private") {
+      const user_id = napcatDraft.user_id.trim();
+      if (!user_id) {
+        setError("Private user_id is required");
+        return;
+      }
+      target = { type: "private", user_id };
+    } else {
+      const group_id = napcatDraft.group_id.trim();
+      if (!group_id) {
+        setError("Group group_id is required");
+        return;
+      }
+      target = { type: "group", group_id };
+    }
+    void saveNapCat({ ...data.napcat_destinations, [key]: target }).then(() =>
+      setNapcatDraft({ key: "", type: napcatDraft.type, user_id: "", group_id: "" }),
+    );
+  }
+
+  function addQQOpen() {
+    if (!data) return;
+    const key = qqOpenDraft.key.trim();
+    const group_openid = qqOpenDraft.group_openid.trim();
+    if (!key) {
+      setError("QQ Open destination key is required");
+      return;
+    }
+    if (!group_openid) {
+      setError("QQ Open group_openid is required");
+      return;
+    }
+    if (data.qq_open_destinations[key]) {
+      setError(`QQ Open destination key "${key}" already exists`);
+      return;
+    }
+    const target: QQOpenGroupTarget = { type: "group", group_openid };
+    void saveQQOpen({ ...data.qq_open_destinations, [key]: target }).then(() =>
+      setQqOpenDraft({ key: "", group_openid: "" }),
+    );
+  }
+
+  const napcatEntries = data ? Object.entries(data.napcat_destinations) : [];
+  const qqOpenEntries = data ? Object.entries(data.qq_open_destinations) : [];
+
+  return (
+    <section className="notif-section">
+      <div className="section-head">
+        <h3>Notification Targets</h3>
+        <span className="meta">QQ destinations · NapCat &amp; Open Platform</span>
+      </div>
+      {(error || notice) && (
+        <div className={`notice ${error ? "error" : "ok"}`}>{error || notice}</div>
+      )}
+      <div className="notif-grid">
+        <div className="notif-channel">
+          <div className="notif-channel-head">
+            <h4>NapCat</h4>
+            <span className={`notif-channel-state ${data?.napcat_enabled ? "on" : "off"}`}>
+              {loading ? "…" : data?.napcat_enabled ? "ENABLED" : "DISABLED"}
+            </span>
+          </div>
+          <div className="notif-cards">
+            {napcatEntries.length === 0 && !loading && (
+              <div className="notif-empty">No NapCat destinations yet</div>
+            )}
+            {napcatEntries.map(([key, target]) => (
+              <article key={key} className="notif-card">
+                <div className="notif-card-key">{key}</div>
+                <div className="notif-card-meta">{describeNapCatTarget(target)}</div>
+                <button
+                  type="button"
+                  className="notif-card-remove"
+                  onClick={() => removeNapCat(key)}
+                  disabled={busy}
+                  aria-label={`Remove ${key}`}
+                  title="Remove destination"
+                >
+                  ×
+                </button>
+              </article>
+            ))}
+          </div>
+          <div className="notif-add">
+            <div className="notif-add-row">
+              <input
+                placeholder="key (alias)"
+                value={napcatDraft.key}
+                onChange={(event) =>
+                  setNapcatDraft((prev) => ({ ...prev, key: event.target.value }))
+                }
+                disabled={busy}
+              />
+              <select
+                value={napcatDraft.type}
+                onChange={(event) =>
+                  setNapcatDraft((prev) => ({
+                    ...prev,
+                    type: event.target.value as "private" | "group",
+                  }))
+                }
+                disabled={busy}
+              >
+                <option value="private">private</option>
+                <option value="group">group</option>
+              </select>
+              {napcatDraft.type === "private" ? (
+                <input
+                  placeholder="user_id"
+                  value={napcatDraft.user_id}
+                  onChange={(event) =>
+                    setNapcatDraft((prev) => ({ ...prev, user_id: event.target.value }))
+                  }
+                  disabled={busy}
+                />
+              ) : (
+                <input
+                  placeholder="group_id"
+                  value={napcatDraft.group_id}
+                  onChange={(event) =>
+                    setNapcatDraft((prev) => ({ ...prev, group_id: event.target.value }))
+                  }
+                  disabled={busy}
+                />
+              )}
+              <button
+                type="button"
+                className="button"
+                onClick={addNapCat}
+                disabled={busy || !data}
+              >
+                Add
+              </button>
+            </div>
+          </div>
+        </div>
+        <div className="notif-channel">
+          <div className="notif-channel-head">
+            <h4>QQ Open Platform</h4>
+            <span className={`notif-channel-state ${data?.qq_open_enabled ? "on" : "off"}`}>
+              {loading ? "…" : data?.qq_open_enabled ? "ENABLED" : "DISABLED"}
+            </span>
+          </div>
+          <div className="notif-cards">
+            {qqOpenEntries.length === 0 && !loading && (
+              <div className="notif-empty">No QQ Open destinations yet</div>
+            )}
+            {qqOpenEntries.map(([key, target]) => (
+              <article key={key} className="notif-card">
+                <div className="notif-card-key">{key}</div>
+                <div className="notif-card-meta">{describeQQOpenTarget(target)}</div>
+                <button
+                  type="button"
+                  className="notif-card-remove"
+                  onClick={() => removeQQOpen(key)}
+                  disabled={busy}
+                  aria-label={`Remove ${key}`}
+                  title="Remove destination"
+                >
+                  ×
+                </button>
+              </article>
+            ))}
+          </div>
+          <div className="notif-add">
+            <div className="notif-add-row">
+              <input
+                placeholder="key (alias)"
+                value={qqOpenDraft.key}
+                onChange={(event) =>
+                  setQqOpenDraft((prev) => ({ ...prev, key: event.target.value }))
+                }
+                disabled={busy}
+              />
+              <input
+                placeholder="group_openid"
+                value={qqOpenDraft.group_openid}
+                onChange={(event) =>
+                  setQqOpenDraft((prev) => ({ ...prev, group_openid: event.target.value }))
+                }
+                disabled={busy}
+              />
+              <button
+                type="button"
+                className="button"
+                onClick={addQQOpen}
+                disabled={busy || !data}
+              >
+                Add
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function currentSlug(): string {
   const path = window.location.pathname;
   const stripped = BASE_URL && path.startsWith(BASE_URL) ? path.slice(BASE_URL.length) : path;
@@ -265,6 +608,7 @@ function MarketPicker() {
           );
         })}
       </section>
+      <GlobalNotificationTargets />
       <div className="picker-foot">
         <span>Toggle a room to flip its enable flag · server restart applies it</span>
         <span>Composed in {stamp.label.split(",")[0]} · 量化竞技场</span>

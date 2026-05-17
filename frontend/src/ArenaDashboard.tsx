@@ -14,6 +14,25 @@ type AgentResponse = {
   enabled: boolean;
   role: "normal" | "monitor";
   ib_mode: IBMode | null;
+  napcat_notify_targets: string[];
+  qq_open_notify_targets: string[];
+};
+
+type NapCatTarget =
+  | { type: "private"; user_id: string }
+  | { type: "group"; group_id: string };
+type QQOpenGroupTarget = { type: "group"; group_openid: string };
+
+type NotificationDestinations = {
+  napcat_enabled: boolean;
+  napcat_destinations: Record<string, NapCatTarget>;
+  qq_open_enabled: boolean;
+  qq_open_destinations: Record<string, QQOpenGroupTarget>;
+};
+
+type AgentNotificationTargets = {
+  napcat: string[];
+  qq_open: string[];
 };
 
 type AgentCreatedResponse = {
@@ -70,6 +89,7 @@ type PortfolioResponse = {
   positions: PositionView[];
   pending_orders: OrderRecord[];
   as_of: string | null;
+  day_return_pct: number | null;
 };
 
 type OperationListResponse = {
@@ -347,6 +367,121 @@ export type ArenaDashboardProps = {
   };
 };
 
+function describeNapCatTarget(target: NapCatTarget): string {
+  return target.type === "private"
+    ? `private · ${target.user_id}`
+    : `group · ${target.group_id}`;
+}
+
+function describeQQOpenTarget(target: QQOpenGroupTarget): string {
+  return `group · ${target.group_openid}`;
+}
+
+type AgentNotificationPanelProps = {
+  destinations: NotificationDestinations | null;
+  agentTargets: AgentNotificationTargets | null;
+  saving: boolean;
+  onToggle: (channel: "napcat" | "qq_open", key: string) => void;
+};
+
+function AgentNotificationPanel({
+  destinations,
+  agentTargets,
+  saving,
+  onToggle,
+}: AgentNotificationPanelProps) {
+  if (!destinations) {
+    return (
+      <div className="agent-notif">
+        <div className="agent-notif-label">Notifications</div>
+        <div className="agent-notif-empty">Loading destinations…</div>
+      </div>
+    );
+  }
+  const napcatEntries = Object.entries(destinations.napcat_destinations);
+  const qqOpenEntries = Object.entries(destinations.qq_open_destinations);
+  const napcatActive = new Set(agentTargets?.napcat ?? []);
+  const qqOpenActive = new Set(agentTargets?.qq_open ?? []);
+  const hasAny = napcatEntries.length > 0 || qqOpenEntries.length > 0;
+  return (
+    <div className="agent-notif">
+      <div className="agent-notif-head">
+        <span className="agent-notif-label">Notifications</span>
+        <span className="agent-notif-meta">
+          {saving ? "saving…" : "click a card to toggle"}
+        </span>
+      </div>
+      {!hasAny && (
+        <div className="agent-notif-empty">
+          No destinations configured. Add some on the markets page.
+        </div>
+      )}
+      {napcatEntries.length > 0 && (
+        <div className="agent-notif-channel">
+          <span className="agent-notif-channel-label">
+            NapCat
+            <span
+              className={`agent-notif-channel-state ${destinations.napcat_enabled ? "on" : "off"}`}
+            >
+              {destinations.napcat_enabled ? "ON" : "OFF"}
+            </span>
+          </span>
+          <div className="agent-notif-cards">
+            {napcatEntries.map(([key, target]) => {
+              const active = napcatActive.has(key);
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  className={`agent-notif-card ${active ? "is-active" : ""}`}
+                  onClick={() => onToggle("napcat", key)}
+                  disabled={saving}
+                  aria-pressed={active}
+                  title={active ? "Click to disable" : "Click to enable"}
+                >
+                  <span className="agent-notif-card-key">{key}</span>
+                  <span className="agent-notif-card-meta">{describeNapCatTarget(target)}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {qqOpenEntries.length > 0 && (
+        <div className="agent-notif-channel">
+          <span className="agent-notif-channel-label">
+            QQ Open
+            <span
+              className={`agent-notif-channel-state ${destinations.qq_open_enabled ? "on" : "off"}`}
+            >
+              {destinations.qq_open_enabled ? "ON" : "OFF"}
+            </span>
+          </span>
+          <div className="agent-notif-cards">
+            {qqOpenEntries.map(([key, target]) => {
+              const active = qqOpenActive.has(key);
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  className={`agent-notif-card ${active ? "is-active" : ""}`}
+                  onClick={() => onToggle("qq_open", key)}
+                  disabled={saving}
+                  aria-pressed={active}
+                  title={active ? "Click to disable" : "Click to enable"}
+                >
+                  <span className="agent-notif-card-key">{key}</span>
+                  <span className="agent-notif-card-meta">{describeQQOpenTarget(target)}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ArenaDashboard({
   apiPrefix,
   homeUrl,
@@ -419,10 +554,14 @@ export function ArenaDashboard({
     const now = new Date();
     return { year: now.getFullYear(), month: now.getMonth() };
   });
+  const [destinations, setDestinations] = useState<NotificationDestinations | null>(null);
+  const [agentTargets, setAgentTargets] = useState<AgentNotificationTargets | null>(null);
+  const [savingTargets, setSavingTargets] = useState(false);
 
   useEffect(() => {
     void refreshAgents(getAgentIdFromUrl());
     void refreshRankings();
+    void refreshDestinations();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -444,6 +583,7 @@ export function ArenaDashboard({
       setSelectedReport(null);
       setSelectedReportDate("");
       setSpecialEvents([]);
+      setAgentTargets(null);
       return;
     }
     setOrdersPage(1);
@@ -490,12 +630,56 @@ export function ArenaDashboard({
     try {
       const data = await apiFetch<AgentSnapshotResponse>(`/api${apiPrefix}/agents/${agentId}`);
       setSnapshot(data);
+      setAgentTargets({
+        napcat: data.agent.napcat_notify_targets,
+        qq_open: data.agent.qq_open_notify_targets,
+      });
     } catch (fetchError) {
       setError((fetchError as Error).message);
       setSnapshot(null);
+      setAgentTargets(null);
     } finally {
       setLoadingSnapshot(false);
     }
+  }
+
+  async function refreshDestinations() {
+    try {
+      const data = await apiFetch<NotificationDestinations>(`/api/notifications/destinations`);
+      setDestinations(data);
+    } catch (fetchError) {
+      // Soft failure — the rest of the dashboard still works without the
+      // notification panel; surface the error in the ribbon only.
+      setError((fetchError as Error).message);
+    }
+  }
+
+  async function saveAgentTargets(next: AgentNotificationTargets) {
+    if (!snapshot) return;
+    setSavingTargets(true);
+    setError("");
+    setMessage("");
+    try {
+      const saved = await apiFetch<AgentNotificationTargets>(
+        `/api${apiPrefix}/agents/${snapshot.agent.agent_id}/notification-targets`,
+        { method: "PUT", body: JSON.stringify(next) },
+      );
+      setAgentTargets(saved);
+      setMessage("Notification targets updated.");
+    } catch (fetchError) {
+      setError((fetchError as Error).message);
+    } finally {
+      setSavingTargets(false);
+    }
+  }
+
+  function toggleAgentTarget(channel: "napcat" | "qq_open", key: string) {
+    if (!agentTargets) return;
+    const current = agentTargets[channel];
+    const next = current.includes(key)
+      ? current.filter((item) => item !== key)
+      : [...current, key];
+    void saveAgentTargets({ ...agentTargets, [channel]: next });
   }
 
   async function refreshReports(agentId: string) {
@@ -961,13 +1145,21 @@ export function ArenaDashboard({
               )}
             </div>
             {snapshot && (
-              <button
-                className="delete"
-                type="button"
-                onClick={() => void handleDeleteAgent(snapshot.agent.agent_id)}
-              >
-                Strike from Book
-              </button>
+              <div className="snapshot-head-right">
+                <AgentNotificationPanel
+                  destinations={destinations}
+                  agentTargets={agentTargets}
+                  saving={savingTargets}
+                  onToggle={toggleAgentTarget}
+                />
+                <button
+                  className="delete"
+                  type="button"
+                  onClick={() => void handleDeleteAgent(snapshot.agent.agent_id)}
+                >
+                  Strike from Book
+                </button>
+              </div>
             )}
           </div>
 
@@ -999,6 +1191,18 @@ export function ArenaDashboard({
                   <p className="label">Equity Curve</p>
                   <p className={`return ${percentClass(selectedRanking?.return_pct ?? 0)}`}>
                     Return {signedPct(selectedRanking?.return_pct ?? 0)}
+                  </p>
+                  <p
+                    className={`day-return ${
+                      snapshot.portfolio.day_return_pct == null
+                        ? "flat"
+                        : percentClass(snapshot.portfolio.day_return_pct)
+                    }`}
+                  >
+                    Today{" "}
+                    {snapshot.portfolio.day_return_pct == null
+                      ? "—"
+                      : signedPct(snapshot.portfolio.day_return_pct)}
                   </p>
                   {chart && (
                     <p className="span">

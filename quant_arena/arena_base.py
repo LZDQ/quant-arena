@@ -139,6 +139,34 @@ class BaseArenaService(Generic[StateT]):
         shutil.rmtree(self._agent_dir(agent_id), ignore_errors=True)
         self._rankings_cache = None
 
+    def update_notification_targets(
+        self,
+        agent_id: str,
+        napcat: list[str],
+        qq_open: list[str],
+    ) -> AgentConfig:
+        """Replace the agent's notification target lists and persist the change.
+
+        Returns the updated `AgentConfig`. Duplicates are removed while
+        preserving order.
+        """
+        agent = self.get_agent(agent_id)
+
+        def _dedupe(items: list[str]) -> list[str]:
+            seen: set[str] = set()
+            result: list[str] = []
+            for item in items:
+                if item in seen:
+                    continue
+                seen.add(item)
+                result.append(item)
+            return result
+
+        agent.napcat_notify_targets = _dedupe(napcat)
+        agent.qq_open_notify_targets = _dedupe(qq_open)
+        self._save_agent_config(agent_id, agent)
+        return agent
+
     # ----- order-flow helpers -----
 
     def cancel_order(self, agent_id: str, order_id: str) -> OrderRecord:
@@ -163,7 +191,27 @@ class BaseArenaService(Generic[StateT]):
     def get_portfolio(self, agent_id: str) -> PortfolioSnapshot:
         self.get_agent(agent_id)
         with self._order_lock:
-            return self._build_portfolio(self._state(agent_id))
+            state: Any = self._state(agent_id)
+            portfolio = self._build_portfolio(state)
+            portfolio.day_return_pct = self._compute_day_return_pct(state, portfolio)
+            return portfolio
+
+    def _compute_day_return_pct(
+        self, state: Any, portfolio: PortfolioSnapshot
+    ) -> float | None:
+        """Percent change vs the last `EquityPoint` whose `trade_date` is strictly
+        before today. Returns None when no such point exists (day-1, fresh
+        agent) or the prior equity was zero. Holidays/weekends are handled
+        naturally because they leave no entry in `equity_history`."""
+        today = self._now().date()
+        prev: EquityPoint | None = None
+        for point in reversed(state.equity_history):
+            if point.trade_date < today:
+                prev = point
+                break
+        if prev is None or prev.total_equity == 0:
+            return None
+        return (portfolio.total_equity - prev.total_equity) / prev.total_equity * 100.0
 
     def list_operations(
         self,

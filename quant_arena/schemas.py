@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from quant_arena.config import NapCatTargetConfig, QQOpenGroupTargetConfig
 from quant_arena.models import DailyReportSummary, EquityPoint, FillRecord, OrderRecord
 
 
@@ -37,6 +38,7 @@ class PortfolioResponse(BaseModel):
     positions: list[PositionView]
     pending_orders: list[OrderRecord]
     as_of: datetime | None = None
+    day_return_pct: float | None = None
 
 
 class OperationListResponse(BaseModel):
@@ -82,6 +84,8 @@ class AgentResponse(BaseModel):
     enabled: bool
     role: Literal["normal", "monitor"]
     ib_mode: Literal["paper", "real"] | None = None
+    napcat_notify_targets: list[str] = Field(default_factory=list)
+    qq_open_notify_targets: list[str] = Field(default_factory=list)
 
 
 class AgentCreatedResponse(BaseModel):
@@ -133,3 +137,36 @@ class AgentSnapshotResponse(BaseModel):
     portfolio: PortfolioResponse
     operations: OperationListResponse
     equity: list[EquityPoint]
+
+
+class NotificationDestinationsResponse(BaseModel):
+    """Global notification destination catalog returned to the frontend.
+
+    Mirrors `AppConfig.napcat.destinations` / `AppConfig.qq_open.destinations`
+    plus the per-channel `enabled` flag so the UI can grey-out cards while a
+    channel is off.
+    """
+
+    napcat_enabled: bool
+    napcat_destinations: dict[str, NapCatTargetConfig]
+    qq_open_enabled: bool
+    qq_open_destinations: dict[str, QQOpenGroupTargetConfig]
+
+
+class SetNapCatDestinationsRequest(BaseModel):
+    """Replace the full `napcat.destinations` mapping in app config."""
+
+    destinations: dict[str, NapCatTargetConfig]
+
+
+class SetQQOpenDestinationsRequest(BaseModel):
+    """Replace the full `qq_open.destinations` mapping in app config."""
+
+    destinations: dict[str, QQOpenGroupTargetConfig]
+
+
+class AgentNotificationTargets(BaseModel):
+    """Per-agent enabled subset of the global destination keys."""
+
+    napcat: list[str] = Field(default_factory=list)
+    qq_open: list[str] = Field(default_factory=list)

@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from quant_arena.schemas import AgentCreatedResponse, AgentResponse, AgentSnapshotResponse, ArenaStatus, CreateAgentRequest, DailyReportPage, OperationListResponse, PathsResponse, PortfolioResponse, ToggleArenaRequest, ToggleArenaResponse
+from quant_arena.schemas import AgentCreatedResponse, AgentNotificationTargets, AgentResponse, AgentSnapshotResponse, ArenaStatus, CreateAgentRequest, DailyReportPage, NotificationDestinationsResponse, OperationListResponse, PathsResponse, PortfolioResponse, SetNapCatDestinationsRequest, SetQQOpenDestinationsRequest, ToggleArenaRequest, ToggleArenaResponse
 from quant_arena.arena_base import BaseArenaService
 from quant_arena.ashare import (
     ArenaService,
@@ -305,6 +305,8 @@ def create_app(
             enabled=agent.enabled,
             role=agent.role,
             ib_mode=agent.ib_mode,
+            napcat_notify_targets=list(agent.napcat_notify_targets),
+            qq_open_notify_targets=list(agent.qq_open_notify_targets),
         )
 
     @api.get("/health")
@@ -353,6 +355,44 @@ def create_app(
         status = ArenaStatus(slug=slug, label=_ARENA_LABELS[slug], enabled=request.enabled)
         return ToggleArenaResponse(status=status, restart_required=True)
 
+    @api.get("/api/notifications/destinations", response_model=NotificationDestinationsResponse)
+    def get_notification_destinations() -> NotificationDestinationsResponse:
+        config = get_state().config
+        return NotificationDestinationsResponse(
+            napcat_enabled=config.napcat.enabled,
+            napcat_destinations=dict(config.napcat.destinations),
+            qq_open_enabled=config.qq_open.enabled,
+            qq_open_destinations=dict(config.qq_open.destinations),
+        )
+
+    @api.put("/api/notifications/napcat/destinations", response_model=NotificationDestinationsResponse)
+    def set_napcat_destinations(
+        request: SetNapCatDestinationsRequest,
+    ) -> NotificationDestinationsResponse:
+        state = get_state()
+        for key in request.destinations:
+            if not key or not key.strip():
+                raise BadRequestError("Destination key must be a non-empty string")
+        # Mutate in place so the live NapCatNotifier (which holds the same
+        # NapCatConfig instance) sees new destinations without a restart.
+        state.config.napcat.destinations.clear()
+        state.config.napcat.destinations.update(request.destinations)
+        save_app_config(state.config_path, state.config)
+        return get_notification_destinations()
+
+    @api.put("/api/notifications/qq-open/destinations", response_model=NotificationDestinationsResponse)
+    def set_qq_open_destinations(
+        request: SetQQOpenDestinationsRequest,
+    ) -> NotificationDestinationsResponse:
+        state = get_state()
+        for key in request.destinations:
+            if not key or not key.strip():
+                raise BadRequestError("Destination key must be a non-empty string")
+        state.config.qq_open.destinations.clear()
+        state.config.qq_open.destinations.update(request.destinations)
+        save_app_config(state.config_path, state.config)
+        return get_notification_destinations()
+
     def _register_arena_routes(prefix: str, get_arena: Callable[[], BaseArenaService]) -> None:
         """Register the standard /agents/{,/...}/rankings endpoints for one arena.
 
@@ -389,6 +429,45 @@ def create_app(
         @api.delete(f"/api{prefix}/agents/{{agent_id}}", status_code=204)
         def delete_arena_agent(agent_id: str) -> None:
             get_arena().delete_agent(agent_id)
+
+        @api.get(
+            f"/api{prefix}/agents/{{agent_id}}/notification-targets",
+            response_model=AgentNotificationTargets,
+        )
+        def get_arena_agent_notification_targets(agent_id: str) -> AgentNotificationTargets:
+            agent = get_arena().get_agent(agent_id)
+            return AgentNotificationTargets(
+                napcat=list(agent.napcat_notify_targets),
+                qq_open=list(agent.qq_open_notify_targets),
+            )
+
+        @api.put(
+            f"/api{prefix}/agents/{{agent_id}}/notification-targets",
+            response_model=AgentNotificationTargets,
+        )
+        def set_arena_agent_notification_targets(
+            agent_id: str, request: AgentNotificationTargets
+        ) -> AgentNotificationTargets:
+            state = get_state()
+            napcat_known = set(state.config.napcat.destinations.keys())
+            qq_open_known = set(state.config.qq_open.destinations.keys())
+            unknown_napcat = [key for key in request.napcat if key not in napcat_known]
+            unknown_qq_open = [key for key in request.qq_open if key not in qq_open_known]
+            if unknown_napcat:
+                raise BadRequestError(
+                    f"Unknown NapCat destination keys: {unknown_napcat}"
+                )
+            if unknown_qq_open:
+                raise BadRequestError(
+                    f"Unknown QQ Open destination keys: {unknown_qq_open}"
+                )
+            updated = get_arena().update_notification_targets(
+                agent_id, napcat=request.napcat, qq_open=request.qq_open
+            )
+            return AgentNotificationTargets(
+                napcat=list(updated.napcat_notify_targets),
+                qq_open=list(updated.qq_open_notify_targets),
+            )
 
         @api.get(
             f"/api{prefix}/agents/{{agent_id}}/daily-reports",

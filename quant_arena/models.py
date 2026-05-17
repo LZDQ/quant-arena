@@ -231,6 +231,7 @@ class PortfolioSnapshot(BaseModel):
     positions: list[PositionSnapshot]
     pending_orders: list[OrderRecord]
     as_of: datetime | None = None
+    day_return_pct: float | None = None
 
 
 class OperationLog(BaseModel):
