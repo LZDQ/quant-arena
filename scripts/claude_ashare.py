@@ -44,6 +44,12 @@ AGENTS = {
             ("19:00", "现在是复盘时间。请按照计划阅读技能包并提交今日日报。"),
         ],
     },
+    "daily-report-summary": {
+        "workdir": BASE_DIR / "daily-report-summary",
+        "jobs": [
+            ("19:10", "现在是复盘时间。请按照计划对所有 agent 进行汇总并提交自己的汇总日报。"),
+        ],
+    },
 }
 
 
