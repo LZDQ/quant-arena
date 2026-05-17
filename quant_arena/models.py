@@ -264,6 +264,8 @@ class MonitoredAgentSnapshot(BaseModel):
     display_name: str
     role: Literal["normal", "monitor"]
     currency: Literal["CNY", "HKD", "USD"]
+    initial_cash: float
+    return_pct: float
     portfolio: PortfolioSnapshot
 
 

@@ -227,6 +227,8 @@ def make_arena_mcp_server(
                     display_name=agent.display_name,
                     role=agent.role,
                     currency=agent.currency,
+                    initial_cash=agent.initial_cash,
+                    return_pct=ranking.return_pct,
                     portfolio=arena.get_portfolio(ranking.agent_id),
                 )
             )
