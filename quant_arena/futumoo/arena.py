@@ -27,6 +27,7 @@ from quant_arena.futumoo.models import FutumooAgentState
 from quant_arena.futumoo.region import HKRegionArena, RegionArena, USRegionArena
 from quant_arena.futumoo.service import FutumooService
 from quant_arena.models import (
+    ManualPositionClearRecord,
     OrderRecord,
     PortfolioSnapshot,
     PositionSnapshot,
@@ -258,6 +259,27 @@ class FutumooArenaService(BaseArenaService[FutumooAgentState]):
             self._render_manual_clear_event(record)
             for record in state.manual_position_clears
         ]
+
+    @staticmethod
+    def _render_manual_clear_event(record: ManualPositionClearRecord) -> SpecialEvent:
+        kept_unrealized = "kept" if record.keep_unrealized_pnl else "wiped"
+        kept_realized = "kept" if record.keep_realized_pnl else "wiped"
+        codes = ", ".join(record.cleared_codes) if record.cleared_codes else "none"
+        lines = [
+            f"Manual position clear · note “{record.comment}”",
+            f"Cash {record.cash_before:.2f} → {record.cash_after:.2f}",
+            f"Realized P&L {record.realized_pnl_before:.2f} → {record.realized_pnl_after:.2f} ({kept_realized})",
+            f"Unrealized P&L {record.unrealized_pnl_before:.2f} ({kept_unrealized}), cleared market value {record.market_value_before:.2f}",
+            f"Cleared positions: {codes}",
+        ]
+        return SpecialEvent(
+            event_id=record.record_id,
+            event_type="manual_position_clear",
+            event_date=record.applied_at.date(),
+            code=None,
+            summary="\n".join(lines),
+            occurred_at=record.applied_at,
+        )
 
     # ----- portfolio -----
 
