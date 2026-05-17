@@ -117,7 +117,22 @@ type SpecialEvent = {
 
 const SPECIAL_EVENT_LABELS: Record<string, string> = {
   corporate_action: "Corporate Action",
+  manual_position_clear: "Manual Clear",
 };
+
+type ManualClearForm = {
+  comment: string;
+  keep_unrealized_pnl: boolean;
+  keep_realized_pnl: boolean;
+};
+
+function makeDefaultManualClearForm(): ManualClearForm {
+  return {
+    comment: "",
+    keep_unrealized_pnl: true,
+    keep_realized_pnl: true,
+  };
+}
 
 type AgentSnapshotResponse = {
   agent: AgentResponse;
@@ -557,6 +572,12 @@ export function ArenaDashboard({
   const [destinations, setDestinations] = useState<NotificationDestinations | null>(null);
   const [agentTargets, setAgentTargets] = useState<AgentNotificationTargets | null>(null);
   const [savingTargets, setSavingTargets] = useState(false);
+  const [manualClearOpen, setManualClearOpen] = useState(false);
+  const [manualClearForm, setManualClearForm] = useState<ManualClearForm>(() =>
+    makeDefaultManualClearForm(),
+  );
+  const [manualClearSubmitting, setManualClearSubmitting] = useState(false);
+  const [manualClearError, setManualClearError] = useState("");
 
   useEffect(() => {
     void refreshAgents(getAgentIdFromUrl());
@@ -577,6 +598,8 @@ export function ArenaDashboard({
 
   useEffect(() => {
     setAgentIdInUrl(selectedAgentId);
+    setManualClearOpen(false);
+    setManualClearError("");
     if (!selectedAgentId) {
       setSnapshot(null);
       setReportsList(null);
@@ -769,6 +792,58 @@ export function ArenaDashboard({
       await refreshRankings();
     } catch (fetchError) {
       setError((fetchError as Error).message);
+    }
+  }
+
+  function openManualClear() {
+    setManualClearForm(makeDefaultManualClearForm());
+    setManualClearError("");
+    setManualClearOpen(true);
+  }
+
+  function closeManualClear() {
+    if (manualClearSubmitting) return;
+    setManualClearOpen(false);
+    setManualClearError("");
+  }
+
+  async function handleManualClear(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!snapshot) return;
+    const trimmed = manualClearForm.comment.trim();
+    if (!trimmed) {
+      setManualClearError("Comment is required.");
+      return;
+    }
+    setManualClearSubmitting(true);
+    setManualClearError("");
+    setMessage("");
+    setError("");
+    const agentId = snapshot.agent.agent_id;
+    try {
+      await apiFetch<unknown>(
+        `/api${apiPrefix}/agents/${agentId}/manual-position-clear`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            comment: trimmed,
+            keep_unrealized_pnl: manualClearForm.keep_unrealized_pnl,
+            keep_realized_pnl: manualClearForm.keep_realized_pnl,
+          }),
+        },
+      );
+      setManualClearOpen(false);
+      setManualClearForm(makeDefaultManualClearForm());
+      setMessage(`Positions cleared for ${agentId}.`);
+      await Promise.all([
+        refreshSnapshot(agentId),
+        refreshSpecialEvents(agentId),
+        refreshRankings(),
+      ]);
+    } catch (fetchError) {
+      setManualClearError((fetchError as Error).message);
+    } finally {
+      setManualClearSubmitting(false);
     }
   }
 
@@ -1152,6 +1227,13 @@ export function ArenaDashboard({
                   saving={savingTargets}
                   onToggle={toggleAgentTarget}
                 />
+                <button
+                  className="delete manual-clear-trigger"
+                  type="button"
+                  onClick={openManualClear}
+                >
+                  Manual Reset
+                </button>
                 <button
                   className="delete"
                   type="button"
@@ -1545,6 +1627,101 @@ export function ArenaDashboard({
         <span>{footer.left}</span>
         <span>{footer.right}</span>
       </footer>
+
+      {manualClearOpen && snapshot && (
+        <div
+          className="manual-clear-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="manual-clear-title"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) closeManualClear();
+          }}
+        >
+          <form className="manual-clear-card" onSubmit={handleManualClear}>
+            <div className="manual-clear-head">
+              <h3 id="manual-clear-title">Manual Reset · {snapshot.agent.display_name}</h3>
+              <span className="manual-clear-meta">
+                Clears all positions, cancels pending orders, and applies the two flags below.
+              </span>
+            </div>
+            <div className="manual-clear-body">
+              <label className="manual-clear-field" htmlFor="manual-clear-comment">
+                <span>Comment</span>
+                <textarea
+                  id="manual-clear-comment"
+                  value={manualClearForm.comment}
+                  onChange={(event) =>
+                    setManualClearForm((prev) => ({ ...prev, comment: event.target.value }))
+                  }
+                  placeholder="why this reset"
+                  rows={3}
+                  required
+                />
+              </label>
+              <label className="manual-clear-toggle">
+                <input
+                  type="checkbox"
+                  checked={manualClearForm.keep_unrealized_pnl}
+                  onChange={(event) =>
+                    setManualClearForm((prev) => ({
+                      ...prev,
+                      keep_unrealized_pnl: event.target.checked,
+                    }))
+                  }
+                />
+                <span>
+                  <strong>Keep unrealized P&amp;L</strong>
+                  <small>
+                    On: floating P&amp;L is realized into cash at the last known price.
+                    Off: it is wiped — positions wind back to cost basis.
+                  </small>
+                </span>
+              </label>
+              <label className="manual-clear-toggle">
+                <input
+                  type="checkbox"
+                  checked={manualClearForm.keep_realized_pnl}
+                  onChange={(event) =>
+                    setManualClearForm((prev) => ({
+                      ...prev,
+                      keep_realized_pnl: event.target.checked,
+                    }))
+                  }
+                />
+                <span>
+                  <strong>Keep realized P&amp;L</strong>
+                  <small>
+                    On: existing realized P&amp;L is preserved. Off: realized P&amp;L
+                    is wiped and the same amount is removed from cash. With both off,
+                    the agent returns to its initial cash.
+                  </small>
+                </span>
+              </label>
+              {manualClearError && (
+                <div className="manual-clear-error">{manualClearError}</div>
+              )}
+            </div>
+            <div className="manual-clear-foot">
+              <button
+                type="button"
+                className="button button-ghost"
+                onClick={closeManualClear}
+                disabled={manualClearSubmitting}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="button manual-clear-submit"
+                disabled={manualClearSubmitting}
+              >
+                {manualClearSubmitting ? "Resetting…" : "Confirm Reset"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

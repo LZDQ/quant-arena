@@ -30,6 +30,7 @@ from quant_arena.models import (
     OrderRecord,
     PortfolioSnapshot,
     PositionSnapshot,
+    SpecialEvent,
     SubmitOrder,
 )
 from quant_arena.notifier import NotifierService
@@ -249,6 +250,14 @@ class FutumooArenaService(BaseArenaService[FutumooAgentState]):
             )
         except ValueError:
             return None
+
+    # ----- special events -----
+
+    def _special_events(self, state: FutumooAgentState) -> list[SpecialEvent]:
+        return [
+            self._render_manual_clear_event(record)
+            for record in state.manual_position_clears
+        ]
 
     # ----- portfolio -----
 

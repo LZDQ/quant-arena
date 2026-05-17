@@ -27,6 +27,7 @@ from quant_arena.models import (
     DailyReport,
     DailyReportSummary,
     EquityPoint,
+    ManualPositionClearRecord,
     OperationLog,
     OrderRecord,
     PortfolioSnapshot,
@@ -187,6 +188,104 @@ class BaseArenaService(Generic[StateT]):
             self._save_agent_state(state)
         self.notifier.notify_order_canceled(agent, target)
         return target
+
+    def manual_clear_positions(
+        self,
+        agent_id: str,
+        comment: str,
+        keep_unrealized_pnl: bool,
+        keep_realized_pnl: bool,
+    ) -> ManualPositionClearRecord:
+        """Wipe all positions and adjust cash/realized PnL by the two keep flags.
+
+        - `keep_unrealized_pnl=True`: positions are converted to cash at their
+          last known price and the unrealized PnL becomes realized PnL.
+        - `keep_unrealized_pnl=False`: positions are wound back to cost basis,
+          so the floating PnL is discarded — neither cash nor realized PnL
+          inherits the gain/loss.
+        - `keep_realized_pnl=True`: existing realized PnL is preserved.
+        - `keep_realized_pnl=False`: existing realized PnL is wiped and the
+          same amount is subtracted from cash, so with both flags off the
+          agent returns to its initial cash.
+
+        All pending orders are canceled because the book is now empty. A
+        `ManualPositionClearRecord` is appended to the state and surfaced as
+        a `SpecialEvent`. Arenas backed by a live broker (e.g. IB) override
+        this to reject the operation.
+        """
+        if not comment.strip():
+            raise BadRequestError("Manual clear comment must not be empty.")
+        self.get_agent(agent_id)
+        with self._order_lock:
+            state = self._state(agent_id)
+            portfolio = self._build_portfolio(state)
+            market_value = portfolio.market_value
+            unrealized_pnl = portfolio.unrealized_pnl
+            cleared_codes = sorted(state.positions.keys())
+            cash_before = float(state.cash)
+            realized_before = float(state.realized_pnl)
+
+            cost_basis = market_value - unrealized_pnl
+            new_cash = cash_before + (market_value if keep_unrealized_pnl else cost_basis)
+            if not keep_realized_pnl:
+                new_cash -= realized_before
+            new_realized = 0.0
+            if keep_realized_pnl:
+                new_realized += realized_before
+            if keep_unrealized_pnl:
+                new_realized += unrealized_pnl
+
+            state.positions.clear()
+            state.cash = round(new_cash, 4)
+            state.realized_pnl = round(new_realized, 4)
+
+            timestamp = self._now()
+            for order in state.orders:
+                if order.status == "pending":
+                    order.status = "canceled"
+                    order.canceled_at = timestamp
+                    order.rejection_reason = "Canceled by manual position clear"
+
+            record = ManualPositionClearRecord(
+                agent_id=agent_id,
+                applied_at=timestamp,
+                comment=comment,
+                keep_unrealized_pnl=keep_unrealized_pnl,
+                keep_realized_pnl=keep_realized_pnl,
+                cash_before=round(cash_before, 2),
+                cash_after=round(state.cash, 2),
+                realized_pnl_before=round(realized_before, 2),
+                realized_pnl_after=round(state.realized_pnl, 2),
+                market_value_before=round(market_value, 2),
+                unrealized_pnl_before=round(unrealized_pnl, 2),
+                cleared_codes=cleared_codes,
+            )
+            state.manual_position_clears.append(record)
+            self._update_today_equity_point(state)
+            self._save_agent_state(state)
+        self._rankings_cache = None
+        return record
+
+    @staticmethod
+    def _render_manual_clear_event(record: ManualPositionClearRecord) -> SpecialEvent:
+        kept_unrealized = "保留" if record.keep_unrealized_pnl else "抹除"
+        kept_realized = "保留" if record.keep_realized_pnl else "抹除"
+        codes = "、".join(record.cleared_codes) if record.cleared_codes else "无"
+        lines = [
+            f"手动清仓：备注 “{record.comment}”",
+            f"现金 {record.cash_before:.2f} → {record.cash_after:.2f}",
+            f"已实现盈亏 {record.realized_pnl_before:.2f} → {record.realized_pnl_after:.2f}（{kept_realized}）",
+            f"浮动盈亏 {record.unrealized_pnl_before:.2f}（{kept_unrealized}），清空持仓市值 {record.market_value_before:.2f}",
+            f"被清空持仓：{codes}",
+        ]
+        return SpecialEvent(
+            event_id=record.record_id,
+            event_type="manual_position_clear",
+            event_date=record.applied_at.date(),
+            code=None,
+            summary="\n".join(lines),
+            occurred_at=record.applied_at,
+        )
 
     def get_portfolio(self, agent_id: str) -> PortfolioSnapshot:
         self.get_agent(agent_id)

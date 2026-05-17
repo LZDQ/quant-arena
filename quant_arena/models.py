@@ -171,11 +171,41 @@ class CorporateActionRecord(BaseModel):
     applied_at: datetime = Field(description="该事件被应用到账户的时间")
 
 
+class ManualPositionClearRecord(BaseModel):
+    """One manual position-clear operation triggered from the dashboard."""
+
+    record_id: str = Field(default_factory=lambda: uuid4().hex)
+    agent_id: str
+    applied_at: datetime = Field(description="操作发生的时间")
+    comment: str = Field(
+        min_length=1,
+        max_length=200,
+        description="操作备注，必填",
+    )
+    keep_unrealized_pnl: bool = Field(
+        description="是否保留浮动盈亏（True 时按市场价兑现到现金/已实现盈亏，False 时直接抹掉浮盈/浮亏）"
+    )
+    keep_realized_pnl: bool = Field(
+        description="是否保留已实现盈亏；False 时把已实现盈亏归零并从现金中减去（用于重置回初始金额）"
+    )
+    cash_before: float = Field(description="操作前现金")
+    cash_after: float = Field(description="操作后现金")
+    realized_pnl_before: float = Field(description="操作前已实现盈亏")
+    realized_pnl_after: float = Field(description="操作后已实现盈亏")
+    market_value_before: float = Field(description="被清空持仓的总市值")
+    unrealized_pnl_before: float = Field(description="被清空持仓的浮动盈亏")
+    cleared_codes: list[str] = Field(
+        default_factory=list, description="被清空的持仓代码列表"
+    )
+
+
 class SpecialEvent(BaseModel):
     """A non-trade account event surfaced to the agent and the frontend (e.g. a corporate action)."""
 
     event_id: str = Field(description="事件唯一标识")
-    event_type: Literal["corporate_action"] = Field(description="事件类型")
+    event_type: Literal["corporate_action", "manual_position_clear"] = Field(
+        description="事件类型"
+    )
     event_date: date = Field(description="事件发生的交易日（如除权除息日），用于按日期筛选")
     code: str | None = Field(default=None, description="相关股票代码，若与个股无关则为空")
     summary: str = Field(description="渲染好的多行文字说明，前端与 agent 都直接展示这个")
@@ -321,4 +351,8 @@ class AgentState(BaseModel):
     corporate_actions: list[CorporateActionRecord] = Field(
         default_factory=list,
         description="已应用的分红送转事件"
+    )
+    manual_position_clears: list[ManualPositionClearRecord] = Field(
+        default_factory=list,
+        description="历次手动清仓重置事件"
     )

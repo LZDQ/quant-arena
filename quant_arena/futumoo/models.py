@@ -4,7 +4,7 @@ from datetime import date
 
 from pydantic import BaseModel, Field
 
-from quant_arena.models import EquityPoint, FillRecord, OrderRecord
+from quant_arena.models import EquityPoint, FillRecord, ManualPositionClearRecord, OrderRecord
 
 
 class FutumooPosition(BaseModel):
@@ -45,4 +45,8 @@ class FutumooAgentState(BaseModel):
     equity_history: list[EquityPoint] = Field(
         default_factory=list,
         description="Kept for base-arena compatibility but not populated; daily history is not persisted on the Futumoo arena.",
+    )
+    manual_position_clears: list[ManualPositionClearRecord] = Field(
+        default_factory=list,
+        description="历次手动清仓重置事件",
     )

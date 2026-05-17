@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from quant_arena.schemas import AgentCreatedResponse, AgentNotificationTargets, AgentResponse, AgentSnapshotResponse, ArenaStatus, CreateAgentRequest, DailyReportPage, NotificationDestinationsResponse, OperationListResponse, PathsResponse, PortfolioResponse, SetNapCatDestinationsRequest, SetQQOpenDestinationsRequest, ToggleArenaRequest, ToggleArenaResponse
+from quant_arena.schemas import AgentCreatedResponse, AgentNotificationTargets, AgentResponse, AgentSnapshotResponse, ArenaStatus, CreateAgentRequest, DailyReportPage, ManualClearPositionsRequest, NotificationDestinationsResponse, OperationListResponse, PathsResponse, PortfolioResponse, SetNapCatDestinationsRequest, SetQQOpenDestinationsRequest, ToggleArenaRequest, ToggleArenaResponse
 from quant_arena.arena_base import BaseArenaService
 from quant_arena.ashare import (
     ArenaService,
@@ -38,7 +38,7 @@ from quant_arena.ib import (
     create_ib_mcp_server,
     wrap_ib_mcp_with_agent_auth,
 )
-from quant_arena.models import DailyReport, RankingSnapshot, SpecialEvent
+from quant_arena.models import DailyReport, ManualPositionClearRecord, RankingSnapshot, SpecialEvent
 from quant_arena.notifier import NotifierService
 from quant_arena.napcat import NapCatNotifier
 from quant_arena.qq_open import QQOpenNotifier
@@ -506,6 +506,20 @@ def create_app(
         def get_arena_rankings(date_value: str | None = None) -> list[RankingSnapshot]:
             target_date = date.fromisoformat(date_value) if date_value else None
             return get_arena().get_rankings(target_date)
+
+        @api.post(
+            f"/api{prefix}/agents/{{agent_id}}/manual-position-clear",
+            response_model=ManualPositionClearRecord,
+        )
+        def manual_clear_arena_positions(
+            agent_id: str, request: ManualClearPositionsRequest
+        ) -> ManualPositionClearRecord:
+            return get_arena().manual_clear_positions(
+                agent_id,
+                comment=request.comment,
+                keep_unrealized_pnl=request.keep_unrealized_pnl,
+                keep_realized_pnl=request.keep_realized_pnl,
+            )
 
     def _create_agent_handler(
         request: CreateAgentRequest,

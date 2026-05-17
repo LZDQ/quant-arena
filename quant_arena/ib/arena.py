@@ -30,7 +30,7 @@ from quant_arena.config import AgentConfig
 from quant_arena.errors import BadRequestError, ConflictError, ServiceError
 from quant_arena.ib.models import IBAgentState
 from quant_arena.ib.service import IBAccountValueInfo, IBService
-from quant_arena.models import OperationLog, OrderRecord, PortfolioSnapshot, PositionSnapshot
+from quant_arena.models import ManualPositionClearRecord, OperationLog, OrderRecord, PortfolioSnapshot, PositionSnapshot
 from quant_arena.notifier import NotifierService
 
 logger = getLogger(__name__)
@@ -190,6 +190,20 @@ class IBArenaService(BaseArenaService[IBAgentState]):
         # mistaken caller fails loudly rather than silently no-ops.
         raise BadRequestError(
             "IB orders are managed via the IB MCP tools, not the arena cancel hook."
+        )
+
+    def manual_clear_positions(
+        self,
+        agent_id: str,
+        comment: str,
+        keep_unrealized_pnl: bool,
+        keep_realized_pnl: bool,
+    ) -> ManualPositionClearRecord:
+        # IB Gateway is the source of truth for cash and positions, so the
+        # arena cannot synthesize a manual clear on its own.
+        raise BadRequestError(
+            "Manual position clear is not supported on the IB arena; "
+            "the IB Gateway owns the live account state."
         )
 
 

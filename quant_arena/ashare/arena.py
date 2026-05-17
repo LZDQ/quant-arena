@@ -325,6 +325,8 @@ class ArenaService(BaseArenaService[AgentState]):
                     occurred_at=record.applied_at,
                 )
             )
+        for clear in state.manual_position_clears:
+            events.append(self._render_manual_clear_event(clear))
         return events
 
     @staticmethod
