@@ -9,7 +9,7 @@ arena compatibility but never populated.
 
 from pydantic import BaseModel, Field
 
-from quant_arena.models import EquityPoint, FillRecord, OrderRecord
+from quant_arena.models import EquityPoint, FillRecord, ManualPositionClearRecord, OrderRecord
 
 
 class IBAgentState(BaseModel):
@@ -32,4 +32,8 @@ class IBAgentState(BaseModel):
     equity_history: list[EquityPoint] = Field(
         default_factory=list,
         description="Daily NetLiquidation snapshots in the agent's base currency.",
+    )
+    manual_position_clears: list[ManualPositionClearRecord] = Field(
+        default_factory=list,
+        description="Kept for base-arena compatibility but never populated — IB rejects manual clears.",
     )

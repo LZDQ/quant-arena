@@ -301,7 +301,13 @@ class BaseArenaService(Generic[StateT]):
         """Percent change vs the last `EquityPoint` whose `trade_date` is strictly
         before today. Returns None when no such point exists (day-1, fresh
         agent) or the prior equity was zero. Holidays/weekends are handled
-        naturally because they leave no entry in `equity_history`."""
+        naturally because they leave no entry in `equity_history`. Also
+        returns None when any manual position clear is dated on or after that
+        baseline's trade-date — the baseline can't be trusted against a
+        manually-rewritten book until the next trading-day finalize writes
+        a fresh post-reset close. This covers the Saturday-reset-then-Monday
+        case where the last equity_history entry is still Friday's pre-reset
+        close."""
         today = self._now().date()
         prev: EquityPoint | None = None
         for point in reversed(state.equity_history):
@@ -310,6 +316,9 @@ class BaseArenaService(Generic[StateT]):
                 break
         if prev is None or prev.total_equity == 0:
             return None
+        for record in state.manual_position_clears:
+            if record.applied_at.date() >= prev.trade_date:
+                return None
         return (portfolio.total_equity - prev.total_equity) / prev.total_equity * 100.0
 
     def list_operations(
