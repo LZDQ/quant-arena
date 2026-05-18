@@ -1,5 +1,4 @@
-import subprocess
-import time
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -73,7 +72,7 @@ def is_weekday() -> bool:
     return now().weekday() < 5
 
 
-def run_claude(agent_name: str, workdir: Path, job_index: int, prompt: str) -> None:
+async def run_claude(agent_name: str, workdir: Path, job_index: int, prompt: str) -> None:
     workdir.mkdir(parents=True, exist_ok=True)
 
     session = session_name(agent_name)
@@ -93,44 +92,36 @@ def run_claude(agent_name: str, workdir: Path, job_index: int, prompt: str) -> N
 
     log(f"RUN agent={agent_name} job={job_index} session={session}")
 
-    p = subprocess.run(
-        cmd,
-        cwd=workdir,
-        text=True,
+    p = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=str(workdir),
     )
+    rc = await p.wait()
 
-    log(f"DONE agent={agent_name} job={job_index} exit={p.returncode}")
+    log(f"DONE agent={agent_name} job={job_index} exit={rc}")
 
 
-def main() -> None:
-    ran: set[tuple[str, str, int]] = set()
-
-    log("scheduler started")
+async def agent_loop(agent_name: str, cfg: dict) -> None:
+    workdir: Path = cfg["workdir"]
+    jobs: list[tuple[str, str]] = cfg["jobs"]
 
     while True:
-        current_day = today_str()
+        n = now()
+        await asyncio.sleep(60 - n.second - n.microsecond / 1_000_000)
 
         if not is_weekday():
-            time.sleep(60)
             continue
 
         hhmm = now().strftime("%H:%M")
+        for job_index, (job_time, prompt) in enumerate(jobs):
+            if hhmm == job_time:
+                await run_claude(agent_name, workdir, job_index, prompt)
 
-        for agent_name, cfg in AGENTS.items():
-            workdir: Path = cfg["workdir"]
-            jobs: list[tuple[str, str]] = cfg["jobs"]
 
-            for job_index, (job_time, prompt) in enumerate(jobs):
-                key = (current_day, agent_name, job_index)
-
-                if hhmm >= job_time and key not in ran:
-                    run_claude(agent_name, workdir, job_index, prompt)
-                    ran.add(key)
-
-        ran = {x for x in ran if x[0] == current_day}
-
-        time.sleep(20)
+async def main() -> None:
+    log("scheduler started")
+    await asyncio.gather(*(agent_loop(name, cfg) for name, cfg in AGENTS.items()))
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
