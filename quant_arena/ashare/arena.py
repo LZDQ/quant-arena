@@ -135,6 +135,26 @@ class ArenaService(BaseArenaService[AgentState]):
                         f"Sell quantity {request.quantity} exceeds T+1 sellable {available} "
                         f"(sellable={sellable}, encumbered_by_pending_sells={pending_sell})"
                     )
+            else:
+                order_notional = request.limit_price * request.quantity
+                order_cost = order_notional + self._commission(order_notional)
+                pending_buy_cost = 0.0
+                for pending in state.orders:
+                    if pending.status != "pending" or pending.side != "buy":
+                        continue
+                    p_notional = pending.limit_price * pending.quantity
+                    pending_buy_cost += p_notional + self._commission(p_notional)
+                available_cash = state.cash - pending_buy_cost
+                if order_cost > available_cash:
+                    raise BadRequestError(
+                        f"Insufficient cash for buy {request.code} x{request.quantity} "
+                        f"@ limit {request.limit_price}: requires ¥{order_cost:.2f} "
+                        f"(notional ¥{order_notional:.2f} + commission "
+                        f"¥{self._commission(order_notional):.2f}) but only "
+                        f"¥{available_cash:.2f} available "
+                        f"(cash=¥{state.cash:.2f}, "
+                        f"encumbered_by_pending_buys=¥{pending_buy_cost:.2f})"
+                    )
             order = OrderRecord(
                 agent_id=agent_id,
                 code=request.code,
