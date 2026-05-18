@@ -358,6 +358,7 @@ class AShareService:
                 logger.debug("Refreshing today's trading status")
                 last_refreshed_date = today
                 try:
+                    bs.login()
                     trade_date_frame = self.fetch_trade_dates(today, today)
                     is_trading_day = str(trade_date_frame.iloc[-1]["is_trading_day"]) == "1"
                     logger.info("Today's trading status is: %r", is_trading_day)
