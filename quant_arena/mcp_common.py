@@ -71,7 +71,7 @@ def make_arena_mcp_server(
         agent_id = _get_current_agent_id()
         agent = get_arena().get_agent(agent_id)
         if agent.role != "monitor":
-            raise BadRequestError("Only monitor agents can inspect others' operations.")
+            raise BadRequestError("This tool is only available for monitor agents.")
         return agent_id
 
     mcp = FastMCP(
@@ -101,16 +101,19 @@ def make_arena_mcp_server(
     ) -> OperationLog:
         """List orders and fills.
 
-        Normal agents can only inspect themselves.
+        Normal agents can only inspect themselves. `agent_id` is silently
+        ignored if supplied.
         `start` and `end` are optional ISO 8601 datetime filters applied to
         order submit time and fill execution time. `limit` defaults to the
         last 10 matching orders and fills.
         """
 
         current = _get_current_agent_id()
-        target = agent_id or current
-        if target != current:
-            _require_monitor_agent()
+        agent = get_arena().get_agent(current)
+        if agent.role == "normal":
+            target = current
+        else:
+            target = agent_id or current
         return get_arena().list_operations(
             target,
             start=_parse_filter_datetime(start),
