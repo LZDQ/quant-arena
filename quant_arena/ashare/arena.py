@@ -46,7 +46,7 @@ class IntradayCodeState:
     intraday_as_of: datetime | None = None
     latest_price: float | None = None
     latest_close_index: float | None = None
-    last_page: int | None = None
+    latest_count: int | None = None
 
 
 class ArenaService(BaseArenaService[AgentState]):
@@ -668,25 +668,25 @@ class ArenaService(BaseArenaService[AgentState]):
         """
         Refresh per-code intraday frames in parallel and update per-code state.
 
-        Each code resumes from its last successful Sina page on the current
-        trade date, so the matcher only re-reads the tail of the day instead of
-        replaying every page on every cycle.
+        Each code resumes from its last successful Sina row-count on the
+        current trade date, so the matcher usually re-reads only the tail of
+        the day instead of replaying every row on every cycle.
         """
         if not codes:
             return {}
 
         today = self._now().date()
         date_prefix = today.strftime("%Y-%m-%d") + " "
-        start_page_by_code: dict[str, int | None] = {}
+        start_count_by_code: dict[str, int | None] = {}
         for code in codes:
             code_state = self._code_state(code)
             self._reset_intraday_state_for_code(code_state, today)
-            start_page_by_code[code] = code_state.last_page
+            start_count_by_code[code] = code_state.latest_count
 
         def _fetch_one(code: str) -> tuple[str, pd.DataFrame | None]:
             try:
                 frame = self.market.fetch_intraday(
-                    code, today=today, page=start_page_by_code[code]
+                    code, today=today, start_count=start_count_by_code[code]
                 )
             except Exception:
                 logger.exception("Intraday fetch failed for %s", code)
@@ -698,13 +698,13 @@ class ArenaService(BaseArenaService[AgentState]):
             if frame is None:
                 continue
             code_state = self._code_state(code)
-            raw_last_page = frame.attrs.get("last_page")
-            if raw_last_page is not None:
+            raw_latest_count = frame.attrs.get("latest_count")
+            if raw_latest_count is not None:
                 try:
-                    total_pages = int(raw_last_page)
+                    latest_count = int(raw_latest_count)
                 except (TypeError, ValueError):
-                    total_pages = 0
-                code_state.last_page = total_pages if total_pages > 0 else None
+                    latest_count = 0
+                code_state.latest_count = latest_count if latest_count >= 0 else None
             if frame.empty:
                 continue
             prices = pd.to_numeric(frame["price"], errors="coerce").to_numpy(dtype=np.float64)
@@ -744,7 +744,7 @@ class ArenaService(BaseArenaService[AgentState]):
             return
         code_state.intraday_as_of = None
         code_state.latest_price = None
-        code_state.last_page = None
+        code_state.latest_count = None
 
     def _sellable_quantity(self, state: AgentState, code: str, trade_date: date) -> int:
         lots = state.positions.get(code, [])

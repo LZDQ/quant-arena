@@ -119,13 +119,13 @@ class AShareService:
         return float(lookup["跌停"]), float(lookup["涨停"]), float(lookup["昨收"])
 
     def fetch_intraday(
-        self, code: str, today: date | None = None, page: int | None = None
+        self, code: str, today: date | None = None, start_count: int | None = None
     ) -> pd.DataFrame:
         """
         Live intraday ticks from AKShare sina.
 
-        When `page` is set, only pages starting from that page number are
-        returned. Frame attrs include the current `last_page`.
+        When `start_count` is set, only pages covering rows after that count are
+        fetched. Frame attrs include the current `latest_count`.
         """
         now = now_shanghai()
         today = today or now.date()
@@ -133,7 +133,7 @@ class AShareService:
             frame = self._akshare_stock_intraday_sina(
                 symbol=ak.stock_a_code_to_symbol(code),
                 day=today.strftime("%Y%m%d"),
-                page=page,
+                start_count=start_count,
             )
         except KeyError as e:  # akshare raises KeyError: 'ticktime' on non-trading days
             raise RuntimeError(f"Intraday query failed; non-trading day? now={now}") from e
@@ -144,13 +144,16 @@ class AShareService:
         return copied
 
     def _akshare_stock_intraday_sina(
-        self, symbol: str, day: str, page: int | None = None
+        self, symbol: str, day: str, start_count: int | None = None
     ) -> pd.DataFrame:
         """
-        Local reimplementation of AKShare's Sina intraday fetch with paging.
+        Local reimplementation of AKShare's Sina intraday fetch with count-based
+        incremental paging.
 
-        `page=None` returns the full day. Otherwise only pages starting from
-        `page` are fetched. The returned frame attrs include `last_page`.
+        `start_count=None` returns the full day in one list request whose `num`
+        equals the current total count. Otherwise the tail is fetched with the
+        original 60-row page size starting from the page implied by
+        `start_count`. The returned frame attrs include `latest_count`.
         """
         count_url = (
             "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
@@ -178,29 +181,36 @@ class AShareService:
             ),
         }
         count_response = requests.get(url=count_url, params=params, headers=headers)
-        total_page = math.ceil(int(count_response.json()) / 60)
-        if total_page <= 0:
+        total_count = int(count_response.json())
+        total_page = math.ceil(total_count / 60)
+        if total_count <= 0:
             empty = pd.DataFrame()
-            empty.attrs["last_page"] = 0
-            empty.attrs["start_page"] = 1
+            empty.attrs["latest_count"] = 0
             return empty
 
-        start_page = 1 if page is None else max(1, min(int(page), total_page))
         list_url = (
             "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
             "CN_Bill.GetBillList"
         )
-        frames: list[pd.DataFrame] = []
-        for current_page in range(start_page, total_page + 1):
-            params["page"] = str(current_page)
-            page_response = requests.get(url=list_url, params=params, headers=headers)
-            page_frame = pd.DataFrame(page_response.json())
-            if not page_frame.empty:
-                frames.append(page_frame)
-
-        frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-        frame.attrs["last_page"] = total_page
-        frame.attrs["start_page"] = start_page
+        if start_count is None:
+            params["num"] = str(total_count)
+            params["page"] = "1"
+            frame = pd.DataFrame(
+                requests.get(url=list_url, params=params, headers=headers).json()
+            )
+        else:
+            normalized_start_count = max(0, int(start_count))
+            start_page = max(1, min((normalized_start_count // 60) + 1, total_page))
+            frames: list[pd.DataFrame] = []
+            params["num"] = "60"
+            for current_page in range(start_page, total_page + 1):
+                params["page"] = str(current_page)
+                page_response = requests.get(url=list_url, params=params, headers=headers)
+                page_frame = pd.DataFrame(page_response.json())
+                if not page_frame.empty:
+                    frames.append(page_frame)
+            frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        frame.attrs["latest_count"] = total_count
         if frame.empty:
             return frame
         frame.sort_values(by=["ticktime"], inplace=True, ignore_index=True)
