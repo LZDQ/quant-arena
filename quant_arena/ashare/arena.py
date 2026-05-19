@@ -303,8 +303,8 @@ class ArenaService(BaseArenaService[AgentState]):
         """
         Match pending orders during 9:30 to 15:00, then finalize the session
         once after 15:00 each trade-date. Cash-dividend / bonus-share events are
-        applied once per trade-date, on the first cycle of the day (before the
-        9:30 match window when the server has been up since the open).
+        applied once per trade-date only before 9:30; if the server first starts
+        after the market opens, that day's corporate-action scan is skipped.
         """
         last_finalized_date: date | None = None
         last_corporate_action_date: date | None = None
@@ -315,11 +315,16 @@ class ArenaService(BaseArenaService[AgentState]):
                 await asyncio.sleep(polling_interval_seconds)
                 continue
             if last_corporate_action_date != today:
-                try:
-                    await asyncio.to_thread(self.apply_corporate_actions, today)
+                if now.time() < time(9, 30):
+                    try:
+                        await asyncio.to_thread(self.apply_corporate_actions, today)
+                        last_corporate_action_date = today
+                    except Exception:
+                        logger.exception("Exception applying corporate actions")
+                else:
+                    logger.warning("Corporate action scan is skipped "
+                                   "because the market is already open")
                     last_corporate_action_date = today
-                except Exception:
-                    logger.exception("Exception applying corporate actions")
             if time(9, 30) <= now.time() <= time(15, 0):
                 try:
                     await asyncio.to_thread(self.match_pending_orders)
@@ -379,9 +384,9 @@ class ArenaService(BaseArenaService[AgentState]):
         Run once per trade-date, before the 9:30 match window. The position read
         here equals each agent's register-date close (no fills happen before the
         open), so on-record holders automatically get their entitlement. Idempotent
-        per ``(code, ex_date)`` via ``state.corporate_actions`` — a mid-session
-        restart that re-invokes this is a no-op. Catch-up across days the server was
-        down is *not* attempted; only ``ex_date`` is processed.
+        per ``(code, ex_date)`` via ``state.corporate_actions``. Catch-up across
+        days the server was down is *not* attempted; only ``ex_date`` is processed,
+        and if the process starts after 9:30 that day's scan is skipped.
         """
         held_codes: set[str] = set()
         for agent_id, _ in self.list_agents():
