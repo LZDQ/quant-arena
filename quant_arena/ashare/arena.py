@@ -9,6 +9,7 @@ gating, and the 9:30 / 15:00 session window.
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import date, datetime, time
 from logging import getLogger
 from math import floor
@@ -40,6 +41,14 @@ from quant_arena.models import (
 logger = getLogger(__name__)
 
 
+@dataclass(slots=True)
+class IntradayCodeState:
+    intraday_as_of: datetime | None = None
+    latest_price: float | None = None
+    latest_close_index: float | None = None
+    last_page: int | None = None
+
+
 class ArenaService(BaseArenaService[AgentState]):
     """A-share trading simulator: agent state, order matching, ranking."""
 
@@ -58,9 +67,8 @@ class ArenaService(BaseArenaService[AgentState]):
         )
         self.market = market
         self.fees = fees
-        self._latest_prices: dict[str, float] = {}
-        self._intraday_as_of: datetime | None = None
-        self._latest_close_index: dict[str, float] | None = None
+        self._code_states: dict[str, IntradayCodeState] = {}
+        self._latest_close_index_day: date | None = None
         self._intraday_executor = ThreadPoolExecutor(
             max_workers=intraday_fetch_workers,
             thread_name_prefix="intraday-fetch",
@@ -93,7 +101,7 @@ class ArenaService(BaseArenaService[AgentState]):
         try:
             limit_down, limit_up, prev_close = self.market.fetch_price_limits(request.code)
         except Exception as exc:
-            persisted_close = self._ensure_latest_close_index().get(request.code)
+            persisted_close = self._ensure_latest_close_index(request.code)
             if persisted_close is None:
                 raise NotFoundError(
                     f"Could not resolve daily price limits for {request.code}: "
@@ -184,8 +192,6 @@ class ArenaService(BaseArenaService[AgentState]):
         cleanup (overnight expiration, equity finalization) lives in
         `finalize_session`, not here.
         """
-        self._latest_close_index = None  # rebuild per cycle for portfolio fallback pricing
-
         agent_pairs = self.list_agents()
         per_agent_codes: dict[str, set[str]] = {}
         all_tracked_codes: set[str] = set()
@@ -238,8 +244,7 @@ class ArenaService(BaseArenaService[AgentState]):
         # Final price sweep so the frozen equity prices positions against the
         # auction close (~15:00:30) rather than the last continuous-trading
         # tick the matcher captured before 15:00. Without this, finalize would
-        # snapshot whatever stale entries sit in `_latest_prices`.
-        self._latest_close_index = None
+        # snapshot whatever stale entries sit in the per-code intraday state.
         tracked_codes: set[str] = set()
         for agent_id, _ in self.list_agents():
             state = self._state(agent_id)
@@ -392,7 +397,6 @@ class ArenaService(BaseArenaService[AgentState]):
         if not actions:
             return
         actions_by_code = {action.code: action for action in actions}
-        close_index = self._ensure_latest_close_index()
         timestamp = self._now()
         with self._order_lock:
             for agent_id, _ in self.list_agents():
@@ -409,7 +413,7 @@ class ArenaService(BaseArenaService[AgentState]):
                     if already_applied:
                         continue
                     self._apply_one_corporate_action(
-                        state, action, close_index.get(code), timestamp
+                        state, action, self._ensure_latest_close_index(code), timestamp
                     )
                     changed = True
                 if changed:
@@ -521,26 +525,27 @@ class ArenaService(BaseArenaService[AgentState]):
             return 0.10
         return 0.0
 
-    def _ensure_latest_close_index(self) -> dict[str, float]:
+    def _ensure_latest_close_index(self, code: str) -> float | None:
         """
-        Return (and cache) `code -> last_close` from `get_latest_daily_bar()`.
+        Return the latest persisted close for `code`, cached into its code state.
 
-        Trusts the market service's "latest" contract — the entire frame is
-        treated as a single day's closes. The cache is shared between the
-        matcher's daily-limit lookup and `_build_portfolio`'s price fallback.
+        The cache is refreshed once per Shanghai calendar day so previous-close
+        lookups automatically roll forward after the market service persists a
+        new daily bar file after the close.
         """
-        if self._latest_close_index is not None:
-            return self._latest_close_index
-        frame = self.market.get_latest_daily_bar()
-        index: dict[str, float] = {}
-        if frame is not None and not frame.empty:
-            code_arr = frame["code"].astype(str).to_numpy()
-            close_arr = pd.to_numeric(frame["close"], errors="coerce").to_numpy()
-            for code, close in zip(code_arr, close_arr, strict=False):
-                if close == close:
-                    index[code] = float(close)
-        self._latest_close_index = index
-        return index
+        today = self._now().date()
+        if self._latest_close_index_day != today:
+            for code_state in self._code_states.values():
+                code_state.latest_close_index = None
+            self._latest_close_index_day = today
+            frame = self.market.get_latest_daily_bar()
+            if frame is not None and not frame.empty:
+                code_arr = frame["code"].astype(str).to_numpy()
+                close_arr = pd.to_numeric(frame["close"], errors="coerce").to_numpy()
+                for loaded_code, close in zip(code_arr, close_arr, strict=False):
+                    if close == close:
+                        self._code_state(loaded_code).latest_close_index = float(close)
+        return self._code_state(code).latest_close_index
 
     # ----- portfolio + fills (T+1 lots) -----
 
@@ -603,11 +608,10 @@ class ArenaService(BaseArenaService[AgentState]):
 
     def _build_portfolio(self, state: AgentState) -> PortfolioSnapshot:
         today = self._now().date()
-        close_index: dict[str, float] | None = None
-
         positions: list[PositionSnapshot] = []
         market_value = 0.0
         unrealized_pnl = 0.0
+        portfolio_as_of: datetime | None = None
         for code, lots in sorted(state.positions.items()):
             live_lots = [lot for lot in lots if lot.quantity > 0]
             if not live_lots:
@@ -615,11 +619,10 @@ class ArenaService(BaseArenaService[AgentState]):
             quantity = sum(lot.quantity for lot in live_lots)
             sellable = self._sellable_quantity(state, code, today)
             avg_cost = sum(lot.quantity * lot.cost_price for lot in live_lots) / quantity
-            market_price = self._latest_prices.get(code)
+            code_state = self._code_state(code)
+            market_price = code_state.latest_price
             if market_price is None:
-                if close_index is None:
-                    close_index = self._ensure_latest_close_index()
-                market_price = close_index.get(code)
+                market_price = self._ensure_latest_close_index(code)
             if market_price is None:
                 logger.warning("No live or daily fallback price available for %s, using 0.0", code)
                 market_price = 0.0
@@ -627,6 +630,10 @@ class ArenaService(BaseArenaService[AgentState]):
             position_unrealized = (market_price - avg_cost) * quantity
             market_value += position_value
             unrealized_pnl += position_unrealized
+            if code_state.intraday_as_of is not None and (
+                portfolio_as_of is None or code_state.intraday_as_of > portfolio_as_of
+            ):
+                portfolio_as_of = code_state.intraday_as_of
             positions.append(
                 PositionSnapshot(
                     code=code,
@@ -637,6 +644,7 @@ class ArenaService(BaseArenaService[AgentState]):
                     market_price=market_price,
                     market_value=round(position_value, 2),
                     unrealized_pnl=round(position_unrealized, 2),
+                    intraday_as_of=code_state.intraday_as_of,
                 )
             )
         total_equity = state.cash + market_value
@@ -653,50 +661,90 @@ class ArenaService(BaseArenaService[AgentState]):
             unrealized_pnl=round(unrealized_pnl, 2),
             positions=positions,
             pending_orders=pending_orders,
-            as_of=self._intraday_as_of,
+            as_of=portfolio_as_of,
         )
 
     def _refresh_intraday_cache(self, codes: set[str]) -> dict[str, pd.DataFrame]:
         """
-        Refresh per-code intraday frames in parallel and update `self._latest_prices`.
+        Refresh per-code intraday frames in parallel and update per-code state.
+
+        Each code resumes from its last successful Sina page on the current
+        trade date, so the matcher only re-reads the tail of the day instead of
+        replaying every page on every cycle.
         """
         if not codes:
             return {}
 
         today = self._now().date()
         date_prefix = today.strftime("%Y-%m-%d") + " "
+        start_page_by_code: dict[str, int | None] = {}
+        for code in codes:
+            code_state = self._code_state(code)
+            self._reset_intraday_state_for_code(code_state, today)
+            start_page_by_code[code] = code_state.last_page
 
         def _fetch_one(code: str) -> tuple[str, pd.DataFrame | None]:
             try:
-                frame = self.market.fetch_intraday(code, today=today)
+                frame = self.market.fetch_intraday(
+                    code, today=today, page=start_page_by_code[code]
+                )
             except Exception:
                 logger.exception("Intraday fetch failed for %s", code)
                 return code, None
             return code, frame
 
         result: dict[str, pd.DataFrame] = {}
-        max_tick: pd.Timestamp | None = None
         for code, frame in self._intraday_executor.map(_fetch_one, list(codes)):
-            if frame is None or frame.empty:
+            if frame is None:
+                continue
+            code_state = self._code_state(code)
+            raw_last_page = frame.attrs.get("last_page")
+            if raw_last_page is not None:
+                try:
+                    total_pages = int(raw_last_page)
+                except (TypeError, ValueError):
+                    total_pages = 0
+                code_state.last_page = total_pages if total_pages > 0 else None
+            if frame.empty:
                 continue
             prices = pd.to_numeric(frame["price"], errors="coerce").to_numpy(dtype=np.float64)
-            trade_time = pd.to_datetime(date_prefix + frame["ticktime"].astype(str), errors="coerce").to_numpy()
+            trade_time = pd.to_datetime(
+                date_prefix + frame["ticktime"].astype(str), errors="coerce"
+            ).to_numpy()
+            valid_mask = np.isfinite(prices) & ~pd.isna(trade_time)
+            if not valid_mask.any():
+                continue
+            prices = prices[valid_mask]
+            trade_time = trade_time[valid_mask]
             order = np.argsort(trade_time, kind="stable")
             prices = prices[order]
             trade_time = trade_time[order]
             normalized = pd.DataFrame({"price": prices, "trade_time": trade_time}, copy=False)
             result[code] = normalized
 
-            if prices.size > 0:
-                self._latest_prices[code] = float(prices[-1])
-                last_tick = pd.Timestamp(trade_time[-1])
-                if max_tick is None or last_tick > max_tick:
-                    max_tick = last_tick
-
-        if max_tick is not None:
-            self._intraday_as_of = max_tick.to_pydatetime().replace(tzinfo=SHANGHAI_TZ)
+            code_state.latest_price = float(prices[-1])
+            code_state.intraday_as_of = (
+                pd.Timestamp(trade_time[-1]).to_pydatetime().replace(tzinfo=SHANGHAI_TZ)
+            )
 
         return result
+
+    def _code_state(self, code: str) -> IntradayCodeState:
+        code_state = self._code_states.get(code)
+        if code_state is None:
+            code_state = IntradayCodeState()
+            self._code_states[code] = code_state
+        return code_state
+
+    @staticmethod
+    def _reset_intraday_state_for_code(code_state: IntradayCodeState, today: date) -> None:
+        if code_state.intraday_as_of is None:
+            return
+        if code_state.intraday_as_of.astimezone(SHANGHAI_TZ).date() == today:
+            return
+        code_state.intraday_as_of = None
+        code_state.latest_price = None
+        code_state.last_page = None
 
     def _sellable_quantity(self, state: AgentState, code: str, trade_date: date) -> int:
         lots = state.positions.get(code, [])

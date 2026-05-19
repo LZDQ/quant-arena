@@ -49,6 +49,7 @@ type PositionView = {
   market_price: number | null;
   market_value: number;
   unrealized_pnl: number;
+  intraday_as_of: string | null;
 };
 
 type OrderRecord = {
@@ -348,6 +349,8 @@ export type ArenaDashboardProps = {
   formatYAxisLabel: (value: number, currency: Currency) => string;
   /** ISO datetime → display string. Differs by arena timezone. */
   formatDateTime: (value: string | null | undefined) => string;
+  /** ISO datetime → HH:MM display string for per-position tick timestamps. */
+  formatTime: (value: string | null | undefined) => string;
   /** Masthead block. */
   masthead: {
     title: ReactNode;
@@ -503,6 +506,7 @@ export function ArenaDashboard({
   formatAmount,
   formatYAxisLabel,
   formatDateTime,
+  formatTime,
   masthead,
   symbolHeader,
   enlistPlaceholders,
@@ -1362,6 +1366,7 @@ export function ArenaDashboard({
                       <th className="num">Sellable</th>
                       <th className="num">Avg</th>
                       <th className="num">Last</th>
+                      <th>Updated</th>
                       <th className="num">Value</th>
                       <th className="num">Unrealized</th>
                     </tr>
@@ -1375,6 +1380,7 @@ export function ArenaDashboard({
                         <td className="num">{position.sellable_quantity}</td>
                         <td className="num">{formatNumber(position.avg_cost, 3)}</td>
                         <td className="num">{formatNumber(position.market_price, 3)}</td>
+                        <td>{formatTime(position.intraday_as_of)}</td>
                         <td className="num">{formatAmount(position.market_value, snapshot.agent.currency)}</td>
                         <td className={`num ${percentClass(position.unrealized_pnl)}`}>
                           {formatAmount(position.unrealized_pnl, snapshot.agent.currency)}
@@ -1383,7 +1389,7 @@ export function ArenaDashboard({
                     ))}
                     {snapshot.portfolio.positions.length === 0 && (
                       <tr>
-                        <td colSpan={8} className="empty">
+                        <td colSpan={9} className="empty">
                           No positions on the book
                         </td>
                       </tr>

@@ -31,11 +31,25 @@ const utcDatetimeFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: "UTC",
 });
 
+const utcTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+  timeZone: "UTC",
+});
+
 function formatDateTime(value: string | null | undefined): string {
   if (!value) {
     return "--";
   }
   return utcDatetimeFormatter.format(new Date(value));
+}
+
+function formatTime(value: string | null | undefined): string {
+  if (!value) {
+    return "--";
+  }
+  return utcTimeFormatter.format(new Date(value));
 }
 
 function formatYAxisLabel(value: number, currency: Currency): string {
@@ -50,6 +64,7 @@ export function FutumooApp() {
       formatAmount={formatAmount}
       formatYAxisLabel={formatYAxisLabel}
       formatDateTime={formatDateTime}
+      formatTime={formatTime}
       masthead={{
         title: (
           <>

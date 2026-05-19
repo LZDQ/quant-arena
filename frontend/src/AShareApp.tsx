@@ -22,11 +22,24 @@ const datetimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   minute: "2-digit",
 });
 
+const timeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
 function formatDateTime(value: string | null | undefined): string {
   if (!value) {
     return "--";
   }
   return datetimeFormatter.format(new Date(value));
+}
+
+function formatTime(value: string | null | undefined): string {
+  if (!value) {
+    return "--";
+  }
+  return timeFormatter.format(new Date(value));
 }
 
 function formatYAxisLabel(value: number): string {
@@ -41,6 +54,7 @@ export function AShareApp() {
       formatAmount={(value) => formatMoney(value)}
       formatYAxisLabel={(value) => formatYAxisLabel(value)}
       formatDateTime={formatDateTime}
+      formatTime={formatTime}
       masthead={{
         title: (
           <>

@@ -23,6 +23,7 @@ class PositionView(BaseModel):
     market_price: float | None = None
     market_value: float = 0.0
     unrealized_pnl: float = 0.0
+    intraday_as_of: datetime | None = None
 
 
 class PortfolioResponse(BaseModel):

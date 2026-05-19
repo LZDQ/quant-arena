@@ -14,6 +14,7 @@ Final choices:
 """
 
 import asyncio
+import math
 import shutil
 from collections.abc import Iterable
 from datetime import date, datetime, time, timedelta
@@ -24,6 +25,7 @@ from pathlib import Path
 import akshare as ak
 import baostock as bs
 import pandas as pd
+import requests
 from tqdm import tqdm
 
 from quant_arena.clock import now_shanghai
@@ -116,21 +118,95 @@ class AShareService:
         lookup = dict(zip(frame["item"].astype(str), frame["value"]))
         return float(lookup["跌停"]), float(lookup["涨停"]), float(lookup["昨收"])
 
-    def fetch_intraday(self, code: str, today: date | None = None) -> pd.DataFrame:
-        """Live intraday ticks from AKShare sina; columns include ticktime, price, volume, code."""
+    def fetch_intraday(
+        self, code: str, today: date | None = None, page: int | None = None
+    ) -> pd.DataFrame:
+        """
+        Live intraday ticks from AKShare sina.
+
+        When `page` is set, only pages starting from that page number are
+        returned. Frame attrs include the current `last_page`.
+        """
         now = now_shanghai()
         today = today or now.date()
         try:
-            frame = ak.stock_intraday_sina(
+            frame = self._akshare_stock_intraday_sina(
                 symbol=ak.stock_a_code_to_symbol(code),
-                date=today.strftime("%Y%m%d"),
+                day=today.strftime("%Y%m%d"),
+                page=page,
             )
         except KeyError as e:  # akshare raises KeyError: 'ticktime' on non-trading days
             raise RuntimeError(f"Intraday query failed; non-trading day? now={now}") from e
+        copied = frame.copy()
+        copied.attrs = dict(frame.attrs)
+        if not copied.empty:
+            copied["code"] = code
+        return copied
+
+    def _akshare_stock_intraday_sina(
+        self, symbol: str, day: str, page: int | None = None
+    ) -> pd.DataFrame:
+        """
+        Local reimplementation of AKShare's Sina intraday fetch with paging.
+
+        `page=None` returns the full day. Otherwise only pages starting from
+        `page` are fetched. The returned frame attrs include `last_page`.
+        """
+        count_url = (
+            "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+            "CN_Bill.GetBillListCount"
+        )
+        params = {
+            "symbol": symbol,
+            "num": "60",
+            "page": "1",
+            "sort": "ticktime",
+            "asc": "1",
+            "volume": "0",
+            "amount": "0",
+            "type": "0",
+            "day": "-".join([day[:4], day[4:6], day[6:]]),
+        }
+        headers = {
+            "Referer": (
+                "https://vip.stock.finance.sina.com.cn/quotes_service/view/"
+                f"cn_bill.php?symbol={symbol}"
+            ),
+            "user-agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36"
+            ),
+        }
+        count_response = requests.get(url=count_url, params=params, headers=headers)
+        total_page = math.ceil(int(count_response.json()) / 60)
+        if total_page <= 0:
+            empty = pd.DataFrame()
+            empty.attrs["last_page"] = 0
+            empty.attrs["start_page"] = 1
+            return empty
+
+        start_page = 1 if page is None else max(1, min(int(page), total_page))
+        list_url = (
+            "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+            "CN_Bill.GetBillList"
+        )
+        frames: list[pd.DataFrame] = []
+        for current_page in range(start_page, total_page + 1):
+            params["page"] = str(current_page)
+            page_response = requests.get(url=list_url, params=params, headers=headers)
+            page_frame = pd.DataFrame(page_response.json())
+            if not page_frame.empty:
+                frames.append(page_frame)
+
+        frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        frame.attrs["last_page"] = total_page
+        frame.attrs["start_page"] = start_page
         if frame.empty:
             return frame
-        frame = frame.copy()
-        frame["code"] = code
+        frame.sort_values(by=["ticktime"], inplace=True, ignore_index=True)
+        frame["price"] = pd.to_numeric(frame["price"], errors="coerce")
+        frame["volume"] = pd.to_numeric(frame["volume"], errors="coerce")
+        frame["prev_price"] = pd.to_numeric(frame["prev_price"], errors="coerce")
         return frame
 
     def fetch_trade_dates(self, start_date: date | None, end_date: date | None) -> pd.DataFrame:
