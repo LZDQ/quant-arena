@@ -31,7 +31,7 @@ bs.logout()
 
 ### 获取单支股票实时数据
 
-标准接口为 `ak.stock_intraday_sina`，但**不要直接使用它**，因为它会调用多次新浪后端 API 造成访问受限。
+不要直接使用 `ak.stock_intraday_sina`，因为它会调用多次新浪后端 API 造成访问受限。
 
 使用以下修改后的代码片段：
 
@@ -89,29 +89,3 @@ def stock_intraday_sina_custom(code: str) -> pd.DataFrame:
 frame = stock_intraday_sina_custom("600726")
 print(frame.tail())
 ```
-
-### 获取所有股票实时数据
-
-适用场景：盘中重新跑量化算法。数据需要结合之前的日线，配合今天的实时价格跑全量算法。
-
-```py
-import akshare as ak
-
-prices = None
-for retry in range(3):
-    try:
-        prices = ak.stock_zh_a_spot()
-        break
-    except:
-        pass
-
-if prices is None:
-    print('Failed to fetch all data')
-    exit(1)
-
-code = "600726"                          # 6-digit A-share code as a string
-symbol = ak.stock_a_code_to_symbol(code) # "sh600726" or "sz000001" etc.
-print(prices[prices['代码'] == symbol])
-```
-
-高峰期可能会有 `RemoteDisconnect` 报错，可以加入重试逻辑。千万不要用 eastmoney 的接口，因为它非常不稳定。用例子中的这个 `stock_zh_a_spot`。
