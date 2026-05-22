@@ -385,11 +385,15 @@ class AgentConfig(BaseModel):
     )
     napcat_notify_targets: list[str] = Field(
         default_factory=list,
-        description="Named NapCat notification destinations enabled for this agent.",
+        description="Named NapCat notification destinations enabled for this agent's order notifications.",
     )
     qq_open_notify_targets: list[str] = Field(
         default_factory=list,
-        description="Named QQ Open Platform notification destinations enabled for this agent.",
+        description="Named QQ Open Platform notification destinations enabled for this agent's order notifications.",
+    )
+    daily_report_notify_targets: list[str] = Field(
+        default_factory=list,
+        description="Named NapCat destinations that receive this agent's daily-report PDF (NapCat only).",
     )
 
 

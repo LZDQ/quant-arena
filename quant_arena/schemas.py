@@ -87,6 +87,7 @@ class AgentResponse(BaseModel):
     ib_mode: Literal["paper", "real"] | None = None
     napcat_notify_targets: list[str] = Field(default_factory=list)
     qq_open_notify_targets: list[str] = Field(default_factory=list)
+    daily_report_notify_targets: list[str] = Field(default_factory=list)
 
 
 class AgentCreatedResponse(BaseModel):
@@ -167,10 +168,15 @@ class SetQQOpenDestinationsRequest(BaseModel):
 
 
 class AgentNotificationTargets(BaseModel):
-    """Per-agent enabled subset of the global destination keys."""
+    """Per-agent enabled subset of the global destination keys.
+
+    `napcat`/`qq_open` route order notifications; `daily_report` routes the
+    daily-report PDF and references NapCat destination keys (NapCat only).
+    """
 
     napcat: list[str] = Field(default_factory=list)
     qq_open: list[str] = Field(default_factory=list)
+    daily_report: list[str] = Field(default_factory=list)
 
 
 class ManualClearPositionsRequest(BaseModel):

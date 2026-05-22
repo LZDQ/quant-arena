@@ -145,11 +145,13 @@ class BaseArenaService(Generic[StateT]):
         agent_id: str,
         napcat: list[str],
         qq_open: list[str],
+        daily_report: list[str],
     ) -> AgentConfig:
         """Replace the agent's notification target lists and persist the change.
 
-        Returns the updated `AgentConfig`. Duplicates are removed while
-        preserving order.
+        `napcat`/`qq_open` route order notifications; `daily_report` routes the
+        daily-report PDF (NapCat only). Returns the updated `AgentConfig`.
+        Duplicates are removed while preserving order.
         """
         agent = self.get_agent(agent_id)
 
@@ -165,6 +167,7 @@ class BaseArenaService(Generic[StateT]):
 
         agent.napcat_notify_targets = _dedupe(napcat)
         agent.qq_open_notify_targets = _dedupe(qq_open)
+        agent.daily_report_notify_targets = _dedupe(daily_report)
         self._save_agent_config(agent_id, agent)
         return agent
 
@@ -465,7 +468,7 @@ class BaseArenaService(Generic[StateT]):
     # ----- daily reports -----
 
     def submit_daily_report(self, agent_id: str, content: str) -> DailyReport:
-        self.get_agent(agent_id)
+        agent = self.get_agent(agent_id)
         if not content.strip():
             raise BadRequestError("Daily report content must not be empty")
         if len(content.encode("utf-8")) > self._DAILY_REPORT_MAX_BYTES:
@@ -476,7 +479,27 @@ class BaseArenaService(Generic[StateT]):
         path = self._daily_report_path(agent_id, today)
         path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_text(path, content)
-        return self._load_daily_report(path, today)
+        report = self._load_daily_report(path, today)
+        self._send_daily_report_pdf(agent, agent_id, path, content)
+        return report
+
+    def _send_daily_report_pdf(
+        self, agent: AgentConfig, agent_id: str, md_path: Path, content: str
+    ) -> None:
+        """Render the report to PDF and hand it to the notifier (best-effort).
+
+        Delivery must never block report persistence: a missing native lib or
+        a render error is logged and swallowed. The PDF file name mirrors the
+        markdown file with a ``.pdf`` suffix.
+        """
+        try:
+            from quant_arena.report_pdf import render_daily_report_pdf
+
+            pdf_bytes = render_daily_report_pdf(content)
+            file_name = md_path.with_suffix(".pdf").name
+            self.notifier.notify_daily_report(agent, agent_id, file_name, pdf_bytes)
+        except Exception:
+            logger.exception("Failed to render/send daily-report PDF for agent %s", agent_id)
 
     def get_daily_report(self, agent_id: str, trade_date: date) -> DailyReport:
         self.get_agent(agent_id)

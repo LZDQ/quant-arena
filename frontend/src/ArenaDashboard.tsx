@@ -16,6 +16,7 @@ type AgentResponse = {
   ib_mode: IBMode | null;
   napcat_notify_targets: string[];
   qq_open_notify_targets: string[];
+  daily_report_notify_targets: string[];
 };
 
 type NapCatTarget =
@@ -33,6 +34,7 @@ type NotificationDestinations = {
 type AgentNotificationTargets = {
   napcat: string[];
   qq_open: string[];
+  daily_report: string[];
 };
 
 type AgentCreatedResponse = {
@@ -385,21 +387,13 @@ export type ArenaDashboardProps = {
   };
 };
 
-function describeNapCatTarget(target: NapCatTarget): string {
-  return target.type === "private"
-    ? `private · ${target.user_id}`
-    : `group · ${target.group_id}`;
-}
-
-function describeQQOpenTarget(target: QQOpenGroupTarget): string {
-  return `group · ${target.group_openid}`;
-}
+type NotifField = "napcat" | "qq_open" | "daily_report";
 
 type AgentNotificationPanelProps = {
   destinations: NotificationDestinations | null;
   agentTargets: AgentNotificationTargets | null;
   saving: boolean;
-  onToggle: (channel: "napcat" | "qq_open", key: string) => void;
+  onToggle: (field: NotifField, key: string) => void;
 };
 
 function AgentNotificationPanel({
@@ -416,11 +410,42 @@ function AgentNotificationPanel({
       </div>
     );
   }
-  const napcatEntries = Object.entries(destinations.napcat_destinations);
-  const qqOpenEntries = Object.entries(destinations.qq_open_destinations);
+  const napcatKeys = Object.keys(destinations.napcat_destinations);
+  const qqOpenKeys = Object.keys(destinations.qq_open_destinations);
   const napcatActive = new Set(agentTargets?.napcat ?? []);
   const qqOpenActive = new Set(agentTargets?.qq_open ?? []);
-  const hasAny = napcatEntries.length > 0 || qqOpenEntries.length > 0;
+  const dailyReportActive = new Set(agentTargets?.daily_report ?? []);
+  const hasAny = napcatKeys.length > 0 || qqOpenKeys.length > 0;
+
+  const renderCards = (keys: string[], active: Set<string>, field: NotifField) => (
+    <div className="agent-notif-cards">
+      {keys.map((key) => {
+        const isActive = active.has(key);
+        return (
+          <button
+            key={key}
+            type="button"
+            className={`agent-notif-card ${isActive ? "is-active" : ""}`}
+            onClick={() => onToggle(field, key)}
+            disabled={saving}
+            aria-pressed={isActive}
+            title={isActive ? "Click to disable" : "Click to enable"}
+          >
+            <span className="agent-notif-card-key">{key}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const napcatStateLabel = (
+    <span
+      className={`agent-notif-channel-state ${destinations.napcat_enabled ? "on" : "off"}`}
+    >
+      {destinations.napcat_enabled ? "ON" : "OFF"}
+    </span>
+  );
+
   return (
     <div className="agent-notif">
       <div className="agent-notif-head">
@@ -429,70 +454,44 @@ function AgentNotificationPanel({
           {saving ? "saving…" : "click a card to toggle"}
         </span>
       </div>
-      {!hasAny && (
+      {!hasAny ? (
         <div className="agent-notif-empty">
           No destinations configured. Add some on the markets page.
         </div>
-      )}
-      {napcatEntries.length > 0 && (
-        <div className="agent-notif-channel">
-          <span className="agent-notif-channel-label">
-            NapCat
-            <span
-              className={`agent-notif-channel-state ${destinations.napcat_enabled ? "on" : "off"}`}
-            >
-              {destinations.napcat_enabled ? "ON" : "OFF"}
-            </span>
-          </span>
-          <div className="agent-notif-cards">
-            {napcatEntries.map(([key, target]) => {
-              const active = napcatActive.has(key);
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  className={`agent-notif-card ${active ? "is-active" : ""}`}
-                  onClick={() => onToggle("napcat", key)}
-                  disabled={saving}
-                  aria-pressed={active}
-                  title={active ? "Click to disable" : "Click to enable"}
-                >
-                  <span className="agent-notif-card-key">{key}</span>
-                  <span className="agent-notif-card-meta">{describeNapCatTarget(target)}</span>
-                </button>
-              );
-            })}
+      ) : (
+        <div className="agent-notif-split">
+          <div className="agent-notif-col">
+            <span className="agent-notif-col-title">Order notifications</span>
+            {napcatKeys.length > 0 && (
+              <div className="agent-notif-channel">
+                <span className="agent-notif-channel-label">NapCat {napcatStateLabel}</span>
+                {renderCards(napcatKeys, napcatActive, "napcat")}
+              </div>
+            )}
+            {qqOpenKeys.length > 0 && (
+              <div className="agent-notif-channel">
+                <span className="agent-notif-channel-label">
+                  QQ Open
+                  <span
+                    className={`agent-notif-channel-state ${destinations.qq_open_enabled ? "on" : "off"}`}
+                  >
+                    {destinations.qq_open_enabled ? "ON" : "OFF"}
+                  </span>
+                </span>
+                {renderCards(qqOpenKeys, qqOpenActive, "qq_open")}
+              </div>
+            )}
           </div>
-        </div>
-      )}
-      {qqOpenEntries.length > 0 && (
-        <div className="agent-notif-channel">
-          <span className="agent-notif-channel-label">
-            QQ Open
-            <span
-              className={`agent-notif-channel-state ${destinations.qq_open_enabled ? "on" : "off"}`}
-            >
-              {destinations.qq_open_enabled ? "ON" : "OFF"}
-            </span>
-          </span>
-          <div className="agent-notif-cards">
-            {qqOpenEntries.map(([key, target]) => {
-              const active = qqOpenActive.has(key);
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  className={`agent-notif-card ${active ? "is-active" : ""}`}
-                  onClick={() => onToggle("qq_open", key)}
-                  disabled={saving}
-                  aria-pressed={active}
-                  title={active ? "Click to disable" : "Click to enable"}
-                >
-                  <span className="agent-notif-card-key">{key}</span>
-                  <span className="agent-notif-card-meta">{describeQQOpenTarget(target)}</span>
-                </button>
-              );
-            })}
+          <div className="agent-notif-col">
+            <span className="agent-notif-col-title">Daily report</span>
+            {napcatKeys.length > 0 ? (
+              <div className="agent-notif-channel">
+                <span className="agent-notif-channel-label">NapCat {napcatStateLabel}</span>
+                {renderCards(napcatKeys, dailyReportActive, "daily_report")}
+              </div>
+            ) : (
+              <div className="agent-notif-empty">No NapCat destinations.</div>
+            )}
           </div>
         </div>
       )}
@@ -660,6 +659,7 @@ export function ArenaDashboard({
       setAgentTargets({
         napcat: data.agent.napcat_notify_targets,
         qq_open: data.agent.qq_open_notify_targets,
+        daily_report: data.agent.daily_report_notify_targets,
       });
     } catch (fetchError) {
       setError((fetchError as Error).message);
@@ -700,13 +700,13 @@ export function ArenaDashboard({
     }
   }
 
-  function toggleAgentTarget(channel: "napcat" | "qq_open", key: string) {
+  function toggleAgentTarget(field: NotifField, key: string) {
     if (!agentTargets) return;
-    const current = agentTargets[channel];
+    const current = agentTargets[field];
     const next = current.includes(key)
       ? current.filter((item) => item !== key)
       : [...current, key];
-    void saveAgentTargets({ ...agentTargets, [channel]: next });
+    void saveAgentTargets({ ...agentTargets, [field]: next });
   }
 
   async function refreshReports(agentId: string) {

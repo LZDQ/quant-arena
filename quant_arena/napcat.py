@@ -1,6 +1,7 @@
 """NapCat QQ notification service."""
 
 import asyncio
+import base64
 import json
 import secrets
 import threading
@@ -42,6 +43,7 @@ class QueuedNapCatMessage:
     event_name: str
     message_text: str
     attempt: int = 0
+    record_message_id: bool = True
 
 
 class NapCatOrderMessageState(BaseModel):
@@ -192,6 +194,91 @@ class NapCatNotifier:
         message = self._format_order_filled(agent_display_name, order, fill)
         self._enqueue_for_targets(target_keys, order.agent_id, order.order_id, "fill", message)
 
+    def notify_daily_report(
+        self,
+        agent_display_name: str,
+        target_keys: list[str],
+        agent_id: str,
+        file_name: str,
+        pdf_bytes: bytes,
+    ) -> None:
+        """Send a rendered daily-report PDF (as an inline file) to each target.
+
+        The PDF is carried as a NapCat ``file`` segment with a ``base64://``
+        payload, so nothing on the NapCat host needs filesystem access to a
+        path produced by this process — NapCat may run on a different machine.
+
+        Whether an agent receives daily reports is controlled solely by its
+        per-agent ``daily_report_notify_targets`` (passed in as ``target_keys``)
+        plus the master ``napcat.enabled`` switch — there is no global
+        daily-report toggle.
+        """
+        if not self.config.enabled:
+            logger.debug("Skipping NapCat daily-report for agent %s because notifier is disabled", agent_id)
+            return
+        queue = self._queue
+        loop = self._loop
+        if queue is None or loop is None:
+            logger.warning("Skipping NapCat daily-report for agent %s because notifier is not started", agent_id)
+            return
+        if not target_keys:
+            logger.debug("Skipping NapCat daily-report for agent %s because no target keys are configured", agent_id)
+            return
+        message = self._build_file_payload(file_name, pdf_bytes)
+        text = f"{agent_display_name} {file_name}"
+        for target_key in target_keys:
+            target = self.config.destinations.get(target_key)
+            if target is None:
+                logger.warning("Unknown NapCat destination key %r configured for agent=%s daily-report", target_key, agent_id)
+                continue
+            if isinstance(target, NapCatPrivateTargetConfig):
+                outbound = QueuedNapCatMessage(
+                    destination_key=target_key,
+                    destination_type="private",
+                    destination_id=target.user_id,
+                    action="send_private_msg",
+                    params={"user_id": target.user_id, "message": message},
+                    agent_id=agent_id,
+                    order_id=file_name,
+                    event_name="daily_report",
+                    message_text=text,
+                    record_message_id=False,
+                )
+            else:
+                outbound = QueuedNapCatMessage(
+                    destination_key=target_key,
+                    destination_type="group",
+                    destination_id=target.group_id,
+                    action="send_group_msg",
+                    params={"group_id": target.group_id, "message": message},
+                    agent_id=agent_id,
+                    order_id=file_name,
+                    event_name="daily_report",
+                    message_text=text,
+                    record_message_id=False,
+                )
+            logger.info(
+                "Queueing NapCat daily-report %s for agent=%s to %s(%s)",
+                file_name,
+                agent_id,
+                outbound.destination_type,
+                target_key,
+            )
+            loop.call_soon_threadsafe(queue.put_nowait, outbound)
+
+    @staticmethod
+    def _build_file_payload(file_name: str, pdf_bytes: bytes) -> list[NapCatSegment]:
+        encoded = base64.b64encode(pdf_bytes).decode("ascii")
+        return [
+            {
+                "type": "file",
+                "data": {
+                    "file": f"base64://{encoded}",
+                    "name": file_name,
+                },
+            }
+        ]
+
     async def _run(self) -> None:
         while True:
             try:
@@ -286,7 +373,8 @@ class NapCatNotifier:
 
     async def _send_message(self, websocket, outbound: QueuedNapCatMessage) -> None:
         response = await self._call_api(websocket, outbound.action, outbound.params)
-        self._record_sent_message_id(outbound, response)
+        if outbound.record_message_id:
+            self._record_sent_message_id(outbound, response)
         logger.info(
             "Sent NapCat %s notification for agent=%s order=%s to %s(%s)",
             outbound.event_name,
@@ -379,6 +467,7 @@ class NapCatNotifier:
             event_name=outbound.event_name,
             message_text=outbound.message_text,
             attempt=outbound.attempt + 1,
+            record_message_id=outbound.record_message_id,
         )
         logger.warning(
             "Requeueing NapCat %s notification for agent=%s order=%s target=%s: %s",

@@ -32,3 +32,10 @@ class NotifierService:
     def notify_order_filled(self, agent: AgentConfig, order: OrderRecord, fill: FillRecord) -> None:
         self.napcat.notify_order_filled(agent.display_name, agent.napcat_notify_targets, order, fill)
         self.qq_open.notify_order_filled(agent.display_name, agent.qq_open_notify_targets, order, fill)
+
+    def notify_daily_report(self, agent: AgentConfig, agent_id: str, file_name: str, pdf_bytes: bytes) -> None:
+        # NapCat only, and routed to the agent's dedicated daily-report
+        # destinations — independent of the order-notification target lists.
+        self.napcat.notify_daily_report(
+            agent.display_name, agent.daily_report_notify_targets, agent_id, file_name, pdf_bytes
+        )

@@ -307,6 +307,7 @@ def create_app(
             ib_mode=agent.ib_mode,
             napcat_notify_targets=list(agent.napcat_notify_targets),
             qq_open_notify_targets=list(agent.qq_open_notify_targets),
+            daily_report_notify_targets=list(agent.daily_report_notify_targets),
         )
 
     @api.get("/health")
@@ -439,6 +440,7 @@ def create_app(
             return AgentNotificationTargets(
                 napcat=list(agent.napcat_notify_targets),
                 qq_open=list(agent.qq_open_notify_targets),
+                daily_report=list(agent.daily_report_notify_targets),
             )
 
         @api.put(
@@ -453,6 +455,8 @@ def create_app(
             qq_open_known = set(state.config.qq_open.destinations.keys())
             unknown_napcat = [key for key in request.napcat if key not in napcat_known]
             unknown_qq_open = [key for key in request.qq_open if key not in qq_open_known]
+            # Daily reports go over NapCat only, so they reference NapCat keys.
+            unknown_daily_report = [key for key in request.daily_report if key not in napcat_known]
             if unknown_napcat:
                 raise BadRequestError(
                     f"Unknown NapCat destination keys: {unknown_napcat}"
@@ -461,12 +465,20 @@ def create_app(
                 raise BadRequestError(
                     f"Unknown QQ Open destination keys: {unknown_qq_open}"
                 )
+            if unknown_daily_report:
+                raise BadRequestError(
+                    f"Unknown NapCat destination keys for daily report: {unknown_daily_report}"
+                )
             updated = get_arena().update_notification_targets(
-                agent_id, napcat=request.napcat, qq_open=request.qq_open
+                agent_id,
+                napcat=request.napcat,
+                qq_open=request.qq_open,
+                daily_report=request.daily_report,
             )
             return AgentNotificationTargets(
                 napcat=list(updated.napcat_notify_targets),
                 qq_open=list(updated.qq_open_notify_targets),
+                daily_report=list(updated.daily_report_notify_targets),
             )
 
         @api.get(
