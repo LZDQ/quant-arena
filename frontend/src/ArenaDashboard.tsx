@@ -1225,12 +1225,6 @@ export function ArenaDashboard({
             </div>
             {snapshot && (
               <div className="snapshot-head-right">
-                <AgentNotificationPanel
-                  destinations={destinations}
-                  agentTargets={agentTargets}
-                  saving={savingTargets}
-                  onToggle={toggleAgentTarget}
-                />
                 <button
                   className="delete manual-clear-trigger"
                   type="button"
@@ -1248,6 +1242,17 @@ export function ArenaDashboard({
               </div>
             )}
           </div>
+
+          {snapshot && (
+            <div className="snapshot-notif-row">
+              <AgentNotificationPanel
+                destinations={destinations}
+                agentTargets={agentTargets}
+                saving={savingTargets}
+                onToggle={toggleAgentTarget}
+              />
+            </div>
+          )}
 
           {loadingSnapshot ? (
             <div className="snapshot-empty">Loading the ledger…</div>

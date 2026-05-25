@@ -1529,15 +1529,18 @@ table td.comment-cell {
 
 .snapshot-head-right {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: flex-end;
   gap: 12px;
+}
+.snapshot-notif-row {
+  margin-bottom: 18px;
 }
 .agent-notif {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-width: 640px;
+  width: 100%;
   min-width: 280px;
   padding: 10px 12px;
   border: 1px solid var(--rule);
