@@ -224,7 +224,11 @@ class BaseArenaService(Generic[StateT]):
             portfolio = self._build_portfolio(state)
             market_value = portfolio.market_value
             unrealized_pnl = portfolio.unrealized_pnl
-            cleared_codes = sorted(state.positions.keys())
+            # Only codes with live holdings — never empty-list entries that a
+            # buy-then-fully-sell can leave behind in `state.positions`.
+            cleared_codes = sorted(
+                position.code for position in portfolio.positions if position.quantity > 0
+            )
             cash_before = float(state.cash)
             realized_before = float(state.realized_pnl)
 

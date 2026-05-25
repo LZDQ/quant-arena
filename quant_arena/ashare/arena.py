@@ -469,9 +469,7 @@ class ArenaService(BaseArenaService[AgentState]):
                 new_quantity = lot.quantity + add
                 lot.cost_price = lot.cost_price * lot.quantity / new_quantity
                 lot.quantity = new_quantity
-            state.positions[action.code] = [
-                lot for lot in state.positions[action.code] if lot.quantity > 0
-            ]
+            self._prune_position(state, action.code)
 
         ex_reference = (
             (prev_close - action.cash_per_share_pretax) / (1.0 + ratio_new)
@@ -751,6 +749,16 @@ class ArenaService(BaseArenaService[AgentState]):
         code_state.latest_price = None
         code_state.latest_count = None
 
+    @staticmethod
+    def _prune_position(state: AgentState, code: str) -> None:
+        """Drop fully-closed lots for `code`, removing the key entirely when no
+        live lots remain so the book never carries empty-list holdings."""
+        live = [lot for lot in state.positions.get(code, []) if lot.quantity > 0]
+        if live:
+            state.positions[code] = live
+        else:
+            state.positions.pop(code, None)
+
     def _sellable_quantity(self, state: AgentState, code: str, trade_date: date) -> int:
         lots = state.positions.get(code, [])
         return sum(lot.quantity for lot in lots if lot.quantity > 0 and lot.acquired_date < trade_date)
@@ -773,7 +781,7 @@ class ArenaService(BaseArenaService[AgentState]):
             lot.quantity -= used
             remaining -= used
             total_cost += used * lot.cost_price
-        state.positions[code] = [lot for lot in state.positions.get(code, []) if lot.quantity > 0]
+        self._prune_position(state, code)
         return total_cost
 
     def _commission(self, notional: float) -> float:
