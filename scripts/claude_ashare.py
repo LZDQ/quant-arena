@@ -6,22 +6,28 @@ from zoneinfo import ZoneInfo
 TZ = ZoneInfo("Asia/Shanghai")
 BASE_DIR = Path.home() / "ldq" / "ashare-arena"
 
-BUFFETT = {
-    "workdir": BASE_DIR / "buffett",
-    "jobs": [
-        ("08:00", "现在是早上 8:00。你作为股神巴菲特转世，即将续写新的传说。请按照指示完成初始化、制定今天策略。"),
-        ("10:00", "现在是早盘 10:00，请按照计划盯盘并操作。"),
-        ("11:00", "现在是早盘 11:00，请按照计划盯盘并操作。"),
-        ("14:00", "现在是午后 14:00，请按照计划盯盘并操作。"),
-        ("14:30", "现在是午后 14:30，请按照计划盯盘并操作。"),
-        ("19:00", "现在是复盘时间。请按照计划阅读技能包并提交今日日报。"),
-    ],
-}
+BUFFETT_JOBS = [
+    ("08:00", "现在是早上 8:00。你作为股神巴菲特转世，即将续写新的传说。请按照指示完成初始化、制定今天策略。"),
+    ("10:00", "现在是早盘 10:00，请按照计划盯盘并操作。"),
+    ("11:00", "现在是早盘 11:00，请按照计划盯盘并操作。"),
+    ("14:00", "现在是午后 14:00，请按照计划盯盘并操作。"),
+    ("14:30", "现在是午后 14:30，请按照计划盯盘并操作。"),
+    ("19:00", "现在是复盘时间。请按照计划阅读技能包并提交今日日报。"),
+]
 
 AGENTS = {
-    "buffett": BUFFETT,
-    "buffett-2": BUFFETT,
-    "buffett-3": BUFFETT,
+    "buffett": {
+        "workdir": None,
+        "jobs": BUFFETT_JOBS,
+    },
+    "buffett-2": {
+        "workdir": None,
+        "jobs": BUFFETT_JOBS,
+    },
+    "buffett-3": {
+        "workdir": None,
+        "jobs": BUFFETT_JOBS,
+    },
     # "livermore": {
     #     "workdir": BASE_DIR / "livermore",
     #     "jobs": [
@@ -94,7 +100,7 @@ async def run_claude(agent_name: str, workdir: Path, job_index: int, prompt: str
 
 
 async def agent_loop(agent_name: str, cfg: dict) -> None:
-    workdir: Path = cfg["workdir"]
+    workdir: Path = cfg.get("workdir", BASE_DIR / agent_name)
     jobs: list[tuple[str, str]] = cfg["jobs"]
 
     while True:
