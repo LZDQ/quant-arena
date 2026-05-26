@@ -100,7 +100,7 @@ async def run_claude(agent_name: str, workdir: Path, job_index: int, prompt: str
 
 
 async def agent_loop(agent_name: str, cfg: dict) -> None:
-    workdir: Path = cfg.get("workdir", BASE_DIR / agent_name)
+    workdir: Path = cfg.get("workdir") or BASE_DIR / agent_name
     jobs: list[tuple[str, str]] = cfg["jobs"]
 
     while True:
