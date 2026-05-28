@@ -475,9 +475,9 @@ class AShareService:
                         500,
                     )
                     self._latest_daily_frame = None
+                    last_finalized_daily_date = today
                 except Exception:
-                    logger.exception("Exception in finalizing today's daily bars")
-                last_finalized_daily_date = today
+                    logger.exception("Exception in finalizing today's daily bars; will retry next poll")
 
             if now.time() >= time(20, 0) and last_finalized_5min_date != today:
                 try:
@@ -489,9 +489,9 @@ class AShareService:
                         True,
                         500,
                     )
+                    last_finalized_5min_date = today
                 except Exception:
-                    logger.exception("Exception in finalizing today's 5min bars")
-                last_finalized_5min_date = today
+                    logger.exception("Exception in finalizing today's 5min bars; will retry next poll")
 
             await asyncio.sleep(polling_interval_seconds)
 
