@@ -8,7 +8,8 @@ from starlette.types import ASGIApp
 
 from quant_arena.ashare.arena import ArenaService
 from quant_arena.clock import SHANGHAI_TZ
-from quant_arena.mcp_common import make_agent_auth_wrapper, make_arena_mcp_server
+from quant_arena.mcp_auth import make_agent_auth_wrapper
+from quant_arena.mcp_common import make_arena_mcp_server
 
 
 _CURRENT_AGENT_ID: ContextVar[str | None] = ContextVar(

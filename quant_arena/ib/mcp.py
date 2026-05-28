@@ -1,9 +1,11 @@
 """IB MCP server: per-agent token auth, paper/real dispatch.
 
-The bearer token presented at request time identifies the calling
-IB agent. The agent's `ib_mode` (paper or real) selects which
-`IBService` handles the call. The two modes share the same MCP
-endpoint URL — the token is the only thing that distinguishes them.
+The token presented at request time (via the `QUANT-ARENA-TOKEN`
+header, or `Authorization: Bearer` for backward compatibility)
+identifies the calling IB agent. The agent's `ib_mode` (paper or
+real) selects which `IBService` handles the call. The two modes share
+the same MCP endpoint URL — the token is the only thing that
+distinguishes them.
 
 Concurrency model: only one MCP client is allowed per mode at a time.
 Each mode owns a `threading.Lock` that wraps the entire MCP request,
@@ -20,6 +22,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from quant_arena.mcp_auth import ensure_json_accept, extract_agent_token, request_headers
 from quant_arena.ib.arena import IBArenaService
 from quant_arena.ib.service import (
     IBAccountValueInfo,
@@ -145,12 +148,12 @@ def wrap_ib_mcp_with_agent_auth(
     get_paper: Callable[[], IBService],
     get_real: Callable[[], IBService],
 ) -> ASGIApp:
-    """Bearer-token wrapper.
+    """Per-agent token auth wrapper with paper/real dispatch.
 
-    The token must match an enabled IB agent's `token_secret`. The
-    matching agent's `ib_mode` selects whether the call is dispatched
-    to the paper or real `IBService`. At most one in-flight client is
-    allowed per mode.
+    The token (``QUANT-ARENA-TOKEN`` header, or ``Authorization: Bearer``
+    fallback) must match an enabled IB agent's `token_secret`. The matching
+    agent's `ib_mode` selects whether the call is dispatched to the paper or
+    real `IBService`. At most one in-flight client is allowed per mode.
     """
 
     paper_lock = threading.Lock()
@@ -161,15 +164,8 @@ def wrap_ib_mcp_with_agent_auth(
             await mcp_app(scope, receive, send)
             return
 
-        raw_headers = list(scope.get("headers", []))
-        headers = {
-            key.decode("latin-1").lower(): value.decode("latin-1")
-            for key, value in raw_headers
-        }
-        authorization = headers.get("authorization", "")
-        token_value: str | None = None
-        if authorization.startswith("Bearer "):
-            token_value = authorization[len("Bearer "):]
+        headers = request_headers(scope)
+        token_value = extract_agent_token(headers)
 
         mode: Literal["paper", "real"] | None = None
         service: IBService | None = None
@@ -214,12 +210,7 @@ def wrap_ib_mcp_with_agent_auth(
             await response(scope, receive, send)
             return
 
-        accept = headers.get("accept")
-        if accept is None or "application/json" not in accept:
-            raw_headers = [(key, value) for key, value in raw_headers if key.lower() != b"accept"]
-            raw_headers.append((b"accept", b"application/json"))
-            scope = dict(scope)
-            scope["headers"] = raw_headers
+        scope = ensure_json_accept(scope, headers)
 
         token = _CURRENT_IB_SERVICE.set(service)
         try:

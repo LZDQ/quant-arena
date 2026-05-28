@@ -2,11 +2,11 @@
 
 Both the A-share and Futumoo MCP servers expose the same authenticated
 tool surface (get_portfolio, list_operations, get_self_metadata,
-submit_operation, cancel_operation, daily reports, rankings) and the
-same bearer-token agent-auth wrapper. The only per-broker variations
-are the `ContextVar` instance, the 401 detail string, and the
-description strings on `submit_operation`. This module factors out
-everything that can be shared.
+submit_operation, cancel_operation, daily reports, rankings). The only
+per-broker variations are the `ContextVar` instance and the description
+strings on `submit_operation`. This module factors out everything that
+can be shared. Token authentication lives separately in
+:mod:`quant_arena.mcp_auth`, which all MCP services share.
 """
 
 from contextvars import ContextVar
@@ -15,8 +15,6 @@ from typing import Callable
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
-from starlette.responses import JSONResponse
-from starlette.types import ASGIApp, Receive, Scope, Send
 
 from quant_arena.arena_base import BaseArenaService
 from quant_arena.errors import BadRequestError
@@ -238,57 +236,3 @@ def make_arena_mcp_server(
         return snapshots
 
     return mcp
-
-
-def make_agent_auth_wrapper(
-    mcp_app: ASGIApp,
-    get_arena: Callable[[], BaseArenaService],
-    current_agent_id: ContextVar[str | None],
-    invalid_token_detail: str,
-) -> ASGIApp:
-    """Wrap an MCP app with bearer-token-based per-agent authentication.
-
-    The bearer token must match an enabled agent's `token_secret`. On
-    success the resolved agent id is published on `current_agent_id` for
-    the duration of the request.
-    """
-
-    async def authenticated_app(scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            await mcp_app(scope, receive, send)
-            return
-
-        raw_headers = list(scope.get("headers", []))
-        headers = {
-            key.decode("latin-1").lower(): value.decode("latin-1")
-            for key, value in raw_headers
-        }
-        authorization = headers.get("authorization", "")
-        token_value = None
-        if authorization.startswith("Bearer "):
-            token_value = authorization[len("Bearer "):]
-        agent_id = None
-        if token_value is not None:
-            for candidate_id, agent in get_arena().list_agents():
-                if agent.enabled and agent.token_secret == token_value:
-                    agent_id = candidate_id
-                    break
-        if agent_id is None:
-            response = JSONResponse(status_code=401, content={"detail": invalid_token_detail})
-            await response(scope, receive, send)
-            return
-
-        accept = headers.get("accept")
-        if accept is None or "application/json" not in accept:
-            raw_headers = [(key, value) for key, value in raw_headers if key.lower() != b"accept"]
-            raw_headers.append((b"accept", b"application/json"))
-            scope = dict(scope)
-            scope["headers"] = raw_headers
-
-        token = current_agent_id.set(agent_id)
-        try:
-            await mcp_app(scope, receive, send)
-        finally:
-            current_agent_id.reset(token)
-
-    return authenticated_app

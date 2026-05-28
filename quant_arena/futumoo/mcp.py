@@ -8,7 +8,8 @@ from mcp.server.fastmcp import FastMCP
 from starlette.types import ASGIApp
 
 from quant_arena.futumoo.arena import FutumooArenaService
-from quant_arena.mcp_common import make_agent_auth_wrapper, make_arena_mcp_server
+from quant_arena.mcp_auth import make_agent_auth_wrapper
+from quant_arena.mcp_common import make_arena_mcp_server
 
 
 _CURRENT_AGENT_ID: ContextVar[str | None] = ContextVar(
