@@ -321,7 +321,7 @@ class AShareService:
         persist_every: int = 100,
         show_progress: bool = False,
         verbose: bool = False,
-    ) -> None:
+    ) -> int:
         """
         Backfill / repair persisted daily and/or 5-min bars over a date range.
 
@@ -332,6 +332,8 @@ class AShareService:
 
         Buffers are `list[DataFrame]` and concat'd once per flush — the original
         quadratic `pd.concat([acc, new])` per code is gone.
+
+        Returns the total number of rows persisted across the requested range.
         """
         if end_date < start_date:
             raise ValueError("end_date must be on or after start_date")
@@ -354,7 +356,7 @@ class AShareService:
             logger.warning(
                 "No trading days in [%s, %s]; nothing to persist", start_date, end_date
             )
-            return
+            return 0
 
         want_daily = bars in ("daily", "both")
         want_5min = bars in ("5min", "both")
@@ -381,7 +383,7 @@ class AShareService:
         fetchers = {"daily": self._fetch_daily_bar, "5min": self._fetch_five_minute_bars}
         persisters = {"daily": self._persist_daily_frame, "5min": self._persist_five_minute_frame}
         kinds = [k for k in ("daily", "5min") if (want_daily if k == "daily" else want_5min)]
-        fetched = skipped = 0
+        fetched = skipped = total_rows = 0
 
         progress = tqdm(codes, desc="Parsing bars", unit="code", disable=not show_progress)
         for code in progress:
@@ -403,6 +405,7 @@ class AShareService:
                         if buffers[kind]:
                             combined = pd.concat(buffers[kind], ignore_index=True, copy=False)
                             persisters[kind](combined)
+                            total_rows += len(combined)
                             if not overwrite:
                                 for day_iso, sub in combined.groupby("date", sort=False):
                                     existing[kind][str(day_iso)].update(sub["code"].astype(str))
@@ -411,7 +414,10 @@ class AShareService:
 
         for kind in kinds:
             if buffers[kind]:
-                persisters[kind](pd.concat(buffers[kind], ignore_index=True, copy=False))
+                combined = pd.concat(buffers[kind], ignore_index=True, copy=False)
+                persisters[kind](combined)
+                total_rows += len(combined)
+        return total_rows
 
     def is_today_trading_day(self) -> bool:
         """Return today's trading-day flag, reusing the value cached by ``run()``."""
@@ -465,8 +471,9 @@ class AShareService:
                     logger.exception("Failed to refresh code_names.csv")
 
             if now.time() >= time(17, 30) and last_finalized_daily_date != today:
+                logger.info("Finalizing daily bars for %s", today)
                 try:
-                    await asyncio.to_thread(
+                    rows = await asyncio.to_thread(
                         self.persist_history,
                         today,
                         today,
@@ -476,12 +483,14 @@ class AShareService:
                     )
                     self._latest_daily_frame = None
                     last_finalized_daily_date = today
+                    logger.info("Finalized daily bars for %s (rows=%d)", today, rows)
                 except Exception:
                     logger.exception("Exception in finalizing today's daily bars; will retry next poll")
 
             if now.time() >= time(20, 0) and last_finalized_5min_date != today:
+                logger.info("Finalizing 5min bars for %s", today)
                 try:
-                    await asyncio.to_thread(
+                    rows = await asyncio.to_thread(
                         self.persist_history,
                         today,
                         today,
@@ -490,6 +499,7 @@ class AShareService:
                         500,
                     )
                     last_finalized_5min_date = today
+                    logger.info("Finalized 5min bars for %s (rows=%d)", today, rows)
                 except Exception:
                     logger.exception("Exception in finalizing today's 5min bars; will retry next poll")
 
