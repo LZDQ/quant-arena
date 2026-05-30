@@ -9,7 +9,7 @@ Environment=QUANT_ARENA_BASE_URL=/quant-arena
 Environment=VITE_BASE_URL=/quant-arena
 ExecStartPre=/bin/bash -c 'cd frontend && pnpm build'
 ExecStartPre=/bin/bash -c 'while ! echo > /dev/tcp/127.0.0.1/7890; do sleep 1; done'
-ExecStart=tmux new -d -s quant-arena 'source .venv/bin/activate && python -m quant_arena; bash'
+ExecStart=/home/ldq/quant-arena/recreate_tmux_session.sh
 RemainAfterExit=yes
 
 [Install]
