@@ -1,0 +1,23 @@
+session_name: quant-arena
+start_directory: ./
+
+environment:
+  QUANT_ARENA_BASE_URL: /quant-arena
+  VITE_BASE_URL: /quant-arena
+
+windows:
+  - window_name: main
+    focus: true
+    panes:
+      - blank
+
+  - window_name: config
+    start_directory: ~/.quant-arena
+    panes:
+      - blank
+
+  - window_name: deploy
+    panes:
+      - shell_command:
+          - source .venv/bin/activate
+          - python -m nanobot_soulboard

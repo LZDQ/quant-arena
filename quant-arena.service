@@ -1,15 +1,14 @@
+# vim: ft=systemd
 [Unit]
 Description=Create quant-arena tmux session
 After=default.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/ldq/quant-arena
-Environment=QUANT_ARENA_BASE_URL=/quant-arena
-Environment=VITE_BASE_URL=/quant-arena
+WorkingDirectory=%h/quant-arena
 ExecStartPre=/bin/bash -c 'cd frontend && pnpm build'
 ExecStartPre=/bin/bash -c 'while ! echo > /dev/tcp/127.0.0.1/7890; do sleep 1; done'
-ExecStart=/home/ldq/quant-arena/recreate_tmux_session.sh
+ExecStart=/usr/bin/tmuxp load -d .
 RemainAfterExit=yes
 
 [Install]
