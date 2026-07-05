@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from quant_arena.config import NapCatTargetConfig, QQOpenGroupTargetConfig
+from quant_arena.config import NapCatTargetConfig
 from quant_arena.models import DailyReportSummary, EquityPoint, FillRecord, OrderRecord
 
 
@@ -86,7 +86,6 @@ class AgentResponse(BaseModel):
     role: Literal["normal", "monitor"]
     ib_mode: Literal["paper", "real"] | None = None
     napcat_notify_targets: list[str] = Field(default_factory=list)
-    qq_open_notify_targets: list[str] = Field(default_factory=list)
     daily_report_notify_targets: list[str] = Field(default_factory=list)
 
 
@@ -144,15 +143,12 @@ class AgentSnapshotResponse(BaseModel):
 class NotificationDestinationsResponse(BaseModel):
     """Global notification destination catalog returned to the frontend.
 
-    Mirrors `AppConfig.napcat.destinations` / `AppConfig.qq_open.destinations`
-    plus the per-channel `enabled` flag so the UI can grey-out cards while a
-    channel is off.
+    Mirrors `AppConfig.napcat.destinations` plus the `enabled` flag so the
+    UI can grey-out cards while the channel is off.
     """
 
     napcat_enabled: bool
     napcat_destinations: dict[str, NapCatTargetConfig]
-    qq_open_enabled: bool
-    qq_open_destinations: dict[str, QQOpenGroupTargetConfig]
 
 
 class SetNapCatDestinationsRequest(BaseModel):
@@ -161,21 +157,14 @@ class SetNapCatDestinationsRequest(BaseModel):
     destinations: dict[str, NapCatTargetConfig]
 
 
-class SetQQOpenDestinationsRequest(BaseModel):
-    """Replace the full `qq_open.destinations` mapping in app config."""
-
-    destinations: dict[str, QQOpenGroupTargetConfig]
-
-
 class AgentNotificationTargets(BaseModel):
     """Per-agent enabled subset of the global destination keys.
 
-    `napcat`/`qq_open` route order notifications; `daily_report` routes the
+    `napcat` routes order notifications; `daily_report` routes the
     daily-report PDF and references NapCat destination keys (NapCat only).
     """
 
     napcat: list[str] = Field(default_factory=list)
-    qq_open: list[str] = Field(default_factory=list)
     daily_report: list[str] = Field(default_factory=list)
 
 

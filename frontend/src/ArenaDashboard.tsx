@@ -19,25 +19,20 @@ type AgentResponse = {
   role: "normal" | "monitor";
   ib_mode: IBMode | null;
   napcat_notify_targets: string[];
-  qq_open_notify_targets: string[];
   daily_report_notify_targets: string[];
 };
 
 type NapCatTarget =
   | { type: "private"; user_id: string }
   | { type: "group"; group_id: string };
-type QQOpenGroupTarget = { type: "group"; group_openid: string };
 
 type NotificationDestinations = {
   napcat_enabled: boolean;
   napcat_destinations: Record<string, NapCatTarget>;
-  qq_open_enabled: boolean;
-  qq_open_destinations: Record<string, QQOpenGroupTarget>;
 };
 
 type AgentNotificationTargets = {
   napcat: string[];
-  qq_open: string[];
   daily_report: string[];
 };
 
@@ -393,7 +388,7 @@ export type ArenaDashboardProps = {
   };
 };
 
-type NotifField = "napcat" | "qq_open" | "daily_report";
+type NotifField = "napcat" | "daily_report";
 
 type AgentNotificationPanelProps = {
   destinations: NotificationDestinations | null;
@@ -417,11 +412,9 @@ function AgentNotificationPanel({
     );
   }
   const napcatKeys = Object.keys(destinations.napcat_destinations);
-  const qqOpenKeys = Object.keys(destinations.qq_open_destinations);
   const napcatActive = new Set(agentTargets?.napcat ?? []);
-  const qqOpenActive = new Set(agentTargets?.qq_open ?? []);
   const dailyReportActive = new Set(agentTargets?.daily_report ?? []);
-  const hasAny = napcatKeys.length > 0 || qqOpenKeys.length > 0;
+  const hasAny = napcatKeys.length > 0;
 
   const renderCards = (keys: string[], active: Set<string>, field: NotifField) => (
     <div className="agent-notif-cards">
@@ -472,19 +465,6 @@ function AgentNotificationPanel({
               <div className="agent-notif-channel">
                 <span className="agent-notif-channel-label">NapCat {napcatStateLabel}</span>
                 {renderCards(napcatKeys, napcatActive, "napcat")}
-              </div>
-            )}
-            {qqOpenKeys.length > 0 && (
-              <div className="agent-notif-channel">
-                <span className="agent-notif-channel-label">
-                  QQ Open
-                  <span
-                    className={`agent-notif-channel-state ${destinations.qq_open_enabled ? "on" : "off"}`}
-                  >
-                    {destinations.qq_open_enabled ? "ON" : "OFF"}
-                  </span>
-                </span>
-                {renderCards(qqOpenKeys, qqOpenActive, "qq_open")}
               </div>
             )}
           </div>
@@ -670,7 +650,6 @@ export function ArenaDashboard({
       setSnapshot(data);
       setAgentTargets({
         napcat: data.agent.napcat_notify_targets,
-        qq_open: data.agent.qq_open_notify_targets,
         daily_report: data.agent.daily_report_notify_targets,
       });
     } catch (fetchError) {

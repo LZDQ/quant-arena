@@ -87,7 +87,6 @@ export function useArena(api: ArenaApi) {
         setSnapshot(data);
         setAgentTargets({
           napcat: data.agent.napcat_notify_targets,
-          qq_open: data.agent.qq_open_notify_targets,
           daily_report: data.agent.daily_report_notify_targets,
         });
       } catch (err) {

@@ -144,12 +144,11 @@ class BaseArenaService(Generic[StateT]):
         self,
         agent_id: str,
         napcat: list[str],
-        qq_open: list[str],
         daily_report: list[str],
     ) -> AgentConfig:
         """Replace the agent's notification target lists and persist the change.
 
-        `napcat`/`qq_open` route order notifications; `daily_report` routes the
+        `napcat` routes order notifications; `daily_report` routes the
         daily-report PDF (NapCat only). Returns the updated `AgentConfig`.
         Duplicates are removed while preserving order.
         """
@@ -166,7 +165,6 @@ class BaseArenaService(Generic[StateT]):
             return result
 
         agent.napcat_notify_targets = _dedupe(napcat)
-        agent.qq_open_notify_targets = _dedupe(qq_open)
         agent.daily_report_notify_targets = _dedupe(daily_report)
         self._save_agent_config(agent_id, agent)
         return agent

@@ -18,7 +18,6 @@ export type AgentResponse = {
   role: "normal" | "monitor";
   ib_mode: IBMode | null;
   napcat_notify_targets: string[];
-  qq_open_notify_targets: string[];
   daily_report_notify_targets: string[];
 };
 
@@ -146,18 +145,14 @@ export type DailyReportPage = {
 export type NapCatPrivateTarget = { type: "private"; user_id: string };
 export type NapCatGroupTarget = { type: "group"; group_id: string };
 export type NapCatTarget = NapCatPrivateTarget | NapCatGroupTarget;
-export type QQOpenGroupTarget = { type: "group"; group_openid: string };
 
 export type NotificationDestinations = {
   napcat_enabled: boolean;
   napcat_destinations: Record<string, NapCatTarget>;
-  qq_open_enabled: boolean;
-  qq_open_destinations: Record<string, QQOpenGroupTarget>;
 };
 
 export type AgentNotificationTargets = {
   napcat: string[];
-  qq_open: string[];
   daily_report: string[];
 };
 
@@ -197,9 +192,4 @@ export type NapCatDraft = {
   type: "private" | "group";
   user_id: string;
   group_id: string;
-};
-
-export type QQOpenDraft = {
-  key: string;
-  group_openid: string;
 };

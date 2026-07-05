@@ -26,11 +26,9 @@ export function AgentNotificationPanel({
     );
   }
   const napcatKeys = Object.keys(destinations.napcat_destinations);
-  const qqOpenKeys = Object.keys(destinations.qq_open_destinations);
   const napcatActive = new Set(agentTargets?.napcat ?? []);
-  const qqOpenActive = new Set(agentTargets?.qq_open ?? []);
   const dailyReportActive = new Set(agentTargets?.daily_report ?? []);
-  const hasAny = napcatKeys.length > 0 || qqOpenKeys.length > 0;
+  const hasAny = napcatKeys.length > 0;
 
   const renderCards = (keys: string[], active: Set<string>, field: NotifField) => (
     <div className="agent-notif-cards">
@@ -79,19 +77,6 @@ export function AgentNotificationPanel({
               <div className="agent-notif-channel">
                 <span className="agent-notif-channel-label">NapCat {napcatStateLabel}</span>
                 {renderCards(napcatKeys, napcatActive, "napcat")}
-              </div>
-            )}
-            {qqOpenKeys.length > 0 && (
-              <div className="agent-notif-channel">
-                <span className="agent-notif-channel-label">
-                  QQ Open
-                  <span
-                    className={`agent-notif-channel-state ${destinations.qq_open_enabled ? "on" : "off"}`}
-                  >
-                    {destinations.qq_open_enabled ? "ON" : "OFF"}
-                  </span>
-                </span>
-                {renderCards(qqOpenKeys, qqOpenActive, "qq_open")}
               </div>
             )}
           </div>

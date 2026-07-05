@@ -141,65 +141,6 @@ class NapCatConfig(BaseModel):
     )
 
 
-class QQOpenGroupTargetConfig(BaseModel):
-    """One QQ Open Platform group-chat target."""
-
-    type: Literal["group"] = Field(
-        default="group",
-        description="QQ Open Platform destination type.",
-    )
-    group_openid: str = Field(
-        min_length=1,
-        description="Target QQ Open Platform group openid as a string.",
-    )
-
-class QQOpenConfig(BaseModel):
-    """QQ Open Platform notification settings."""
-
-    enabled: bool = Field(
-        default=False,
-        description="Whether QQ Open Platform notifications are enabled.",
-    )
-    app_id: str = Field(
-        default="",
-        description="QQ Open Platform bot AppID.",
-    )
-    client_secret: str = Field(
-        default="",
-        description="QQ Open Platform bot AppSecret.",
-    )
-    sandbox: bool = Field(
-        default=True,
-        description="Whether to use the QQ Open Platform sandbox API endpoint.",
-    )
-    notify_on_submit: bool = Field(
-        default=True,
-        description="Whether to notify when orders are submitted.",
-    )
-    notify_on_cancel: bool = Field(
-        default=True,
-        description="Whether to notify when orders are canceled.",
-    )
-    notify_on_fill: bool = Field(
-        default=False,
-        description="Whether to notify when orders are filled.",
-    )
-    request_timeout_seconds: float = Field(
-        default=10.0,
-        gt=0,
-        description="Timeout for one QQ Open Platform API request.",
-    )
-    retry_interval_seconds: float = Field(
-        default=5.0,
-        gt=0,
-        description="Seconds to wait before retrying a failed QQ Open Platform request.",
-    )
-    destinations: dict[str, QQOpenGroupTargetConfig] = Field(
-        default_factory=dict,
-        description="Named QQ Open Platform destinations available for per-agent notification routing.",
-    )
-
-
 class IBConnectionConfig(BaseModel):
     """One IB Gateway / TWS endpoint."""
 
@@ -343,10 +284,6 @@ class AppConfig(BaseModel):
         default_factory=NapCatConfig,
         description="NapCat QQ notification settings.",
     )
-    qq_open: QQOpenConfig = Field(
-        default_factory=QQOpenConfig,
-        description="QQ Open Platform notification settings.",
-    )
     ib: IBConfig = Field(
         default_factory=IBConfig,
         description="Interactive Brokers paper/real trading settings.",
@@ -394,10 +331,6 @@ class AgentConfig(BaseModel):
     napcat_notify_targets: list[str] = Field(
         default_factory=list,
         description="Named NapCat notification destinations enabled for this agent's order notifications.",
-    )
-    qq_open_notify_targets: list[str] = Field(
-        default_factory=list,
-        description="Named QQ Open Platform notification destinations enabled for this agent's order notifications.",
     )
     daily_report_notify_targets: list[str] = Field(
         default_factory=list,

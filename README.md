@@ -158,40 +158,6 @@ Per-agent config:
 }
 ```
 
-## QQ Open Platform
-
-Configure `qq_open` to send notifications through the official QQ Open Platform bot API.
-
-Root config:
-```json
-{
-  "qq_open": {
-    "enabled": true,
-    "app_id": "1234567890",
-    "client_secret": "<app-secret>",
-    "sandbox": true,
-    "notify_on_submit": true,
-    "notify_on_cancel": true,
-    "notify_on_fill": false,
-    "destinations": {
-      "small-group": {
-        "type": "group",
-        "group_openid": "ABCDEFG1234567890"
-      }
-    }
-  }
-}
-```
-
-Per-agent config:
-```json
-{
-  "qq_open_notify_targets": [
-    "small-group"
-  ]
-}
-```
-
 ## Interactive Brokers (IB)
 
 IB paper and real trading are exposed through a per-agent arena, with

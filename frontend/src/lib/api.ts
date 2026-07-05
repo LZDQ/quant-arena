@@ -17,7 +17,6 @@ import type {
   ManualClearForm,
   NapCatTarget,
   NotificationDestinations,
-  QQOpenGroupTarget,
   RankingEntry,
   SpecialEvent,
 } from "./types";
@@ -112,12 +111,6 @@ export function createArenaApi(apiPrefix = "") {
         method: "PUT",
         body: JSON.stringify({ destinations }),
       }),
-    putQQOpenDestinations: (destinations: Record<string, QQOpenGroupTarget>) =>
-      request<NotificationDestinations>(`/api/notifications/qq-open/destinations`, {
-        method: "PUT",
-        body: JSON.stringify({ destinations }),
-      }),
-
     // --- Per-arena endpoints ---------------------------------------------
     listAgents: () => request<AgentResponse[]>(arena(`/agents`)),
     getSnapshot: (agentId: string) =>
