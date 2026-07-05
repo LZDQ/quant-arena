@@ -1,6 +1,7 @@
 import { ArenaDashboard } from "./ArenaDashboard";
+import { urlPrefix } from "./lib/api";
 
-const BASE_URL = import.meta.env.BASE_URL.replace(/\/+$/, "");
+const BASE_URL = urlPrefix();
 
 const cnyFormatter = new Intl.NumberFormat("zh-CN", {
   style: "currency",

@@ -22,10 +22,38 @@ import type {
   SpecialEvent,
 } from "./types";
 
-/** Resolve the API origin: an explicit VITE_API_BASE wins, else the page base
- * path. Trailing slashes are trimmed so callers can always prepend "/api...". */
-export function resolveApiBase(fallback: string): string {
-  return (import.meta.env.VITE_API_BASE ?? fallback).replace(/\/+$/, "");
+/** The URL prefix the app is mounted under, read at runtime from the page's
+ * `<base href>` tag (the backend rewrites it to its `QUANT_ARENA_URL_PREFIX`
+ * when serving index.html). "" at the root, "/quant-arena" when prefixed.
+ * Trailing slashes are trimmed so callers can always append "/...". */
+export function urlPrefix(): string {
+  return new URL(document.baseURI).pathname.replace(/\/+$/, "");
+}
+
+/** Resolve the base for API and WebSocket URLs from VITE_API_BASE (build time):
+ *   - empty/unset          -> urlPrefix()               (same origin, same mount)
+ *   - "/prefix"            -> "/prefix"                 (`/prefix/api/...`)
+ *   - "http://host/aaa"    -> "http://host/aaa"         (`http://host/aaa/api/...`)
+ * Trailing slashes are trimmed so callers can always prepend "/api...". */
+export function resolveApiBase(): string {
+  const raw = (import.meta.env.VITE_API_BASE ?? "").trim().replace(/\/+$/, "");
+  if (!raw) {
+    return urlPrefix();
+  }
+  if (raw.startsWith("/") || /^https?:\/\//i.test(raw)) {
+    return raw;
+  }
+  return `/${raw}`;
+}
+
+/** Same base for WebSocket callers, as an absolute ws(s):// URL prefix. */
+export function resolveWsBase(): string {
+  const base = resolveApiBase();
+  if (/^https?:\/\//i.test(base)) {
+    return base.replace(/^http/i, "ws");
+  }
+  const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${scheme}://${window.location.host}${base}`;
 }
 
 export class ApiError extends Error {
@@ -40,12 +68,12 @@ export class ApiError extends Error {
 export type ArenaApi = ReturnType<typeof createArenaApi>;
 
 /**
- * Build an API client bound to a page base URL and an arena route prefix
- * (e.g. "" for A-Share, "/futumoo", "/ib"). Global endpoints ignore the prefix;
- * per-arena endpoints mount under `/api${apiPrefix}`.
+ * Build an API client bound to an arena route prefix (e.g. "" for A-Share,
+ * "/futumoo", "/ib"). Global endpoints ignore the prefix; per-arena endpoints
+ * mount under `/api${apiPrefix}`. The base URL comes from VITE_API_BASE.
  */
-export function createArenaApi(baseUrl: string, apiPrefix = "") {
-  const base = resolveApiBase(baseUrl);
+export function createArenaApi(apiPrefix = "") {
+  const base = resolveApiBase();
 
   async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(`${base}${path}`, {

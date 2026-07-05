@@ -2,7 +2,6 @@
 
 from logging import getLogger
 import asyncio
-import os
 import secrets
 from contextlib import AsyncExitStack
 from contextlib import asynccontextmanager
@@ -10,10 +9,9 @@ from datetime import date
 from pathlib import Path
 from typing import Callable
 
-import uvicorn
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from quant_arena.schemas import AgentCreatedResponse, AgentNotificationTargets, AgentResponse, AgentSnapshotResponse, ArenaStatus, CreateAgentRequest, DailyReportPage, ManualClearPositionsRequest, NotificationDestinationsResponse, OperationListResponse, PathsResponse, PortfolioResponse, SetNapCatDestinationsRequest, SetQQOpenDestinationsRequest, ToggleArenaRequest, ToggleArenaResponse
@@ -24,7 +22,7 @@ from quant_arena.ashare import (
     create_ashare_mcp_server,
     wrap_mcp_with_agent_auth,
 )
-from quant_arena.config import AgentConfig, AppConfig, load_app_config, save_app_config
+from quant_arena.config import AgentConfig, AppConfig, ServerSettings, load_app_config, save_app_config
 from quant_arena.errors import BadRequestError, ServiceError
 from quant_arena.futumoo import (
     FutumooArenaService,
@@ -85,7 +83,7 @@ class AppState:
         self.background_tasks: list[asyncio.Task[None]] = []
 
 
-def _load_app_state(config_path: Path, market_service: AShareService | None = None) -> AppState:
+def _load_app_state(config_path: Path) -> AppState:
     config = load_app_config(config_path)
     ashare_root = (config_path.parent / "A-share").resolve()
     agents_root = ashare_root / "agents"
@@ -97,7 +95,7 @@ def _load_app_state(config_path: Path, market_service: AShareService | None = No
     market: AShareService | None = None
     arena: ArenaService | None = None
     if config.ashare.enabled:
-        market = market_service or AShareService(market_data_root)
+        market = AShareService(market_data_root)
         arena = ArenaService(
             agents_root=agents_root,
             market=market,
@@ -163,13 +161,16 @@ def _load_app_state(config_path: Path, market_service: AShareService | None = No
     )
 
 
-def create_app(
-    config_path: Path | None = None,
-    market_service: AShareService | None = None
-) -> FastAPI:
-    """Create the FastAPI app."""
+def create_app() -> FastAPI:
+    """Create the FastAPI app.
 
-    resolved_config = (config_path or DEFAULT_CONFIG_PATH).resolve()
+    uvicorn factory entrypoint: `uvicorn quant_arena.server:create_app --factory`.
+    Env settings come from `QUANT_ARENA_*` (see ServerSettings); everything else
+    is file configuration at the default config path.
+    """
+
+    settings = ServerSettings()
+    resolved_config = DEFAULT_CONFIG_PATH.resolve()
     bootstrap_config = load_app_config(resolved_config)
     ashare_enabled = bootstrap_config.ashare.enabled
     futumoo_enabled = bootstrap_config.futumoo.enabled
@@ -193,7 +194,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         async with AsyncExitStack() as stack:
-            state = _load_app_state(resolved_config, market_service=market_service)
+            state = _load_app_state(resolved_config)
             app.state.app_state = state
             if mcp_server is not None:
                 await stack.enter_async_context(mcp_server.session_manager.run())
@@ -251,7 +252,7 @@ def create_app(
                 await state.notifier.close()
 
     app = FastAPI(title="quant-arena", lifespan=lifespan)
-    base_url = os.environ.get("QUANT_ARENA_BASE_URL", "")
+    base_url = settings.url_prefix
     api = APIRouter()
 
     @app.exception_handler(ServiceError)
@@ -614,22 +615,27 @@ def create_app(
         def frontend_base_redirect() -> RedirectResponse:
             return RedirectResponse(url=f"{base_url}/", status_code=307)
 
+    def serve_index():
+        """Serve index.html with its <base href> rewritten to the URL prefix.
+
+        The frontend is built prefix-agnostic (relative asset URLs resolving
+        against `<base href="/">`); the prefix exists only here, at serve time.
+        """
+        index_path = static_dir / "index.html"
+        if not index_path.is_file():
+            return JSONResponse(status_code=404, content={"detail": "Frontend has not been built yet"})
+        if not base_url:
+            return FileResponse(index_path)
+        html = index_path.read_text(encoding="utf-8").replace(
+            '<base href="/" />', f'<base href="{base_url}/" />', 1
+        )
+        return HTMLResponse(html)
+
     @app.get(f"{base_url}/{{path:path}}" if base_url else "/{path:path}")
     def frontend(path: str):
         candidate = static_dir / path
         if path and candidate.is_file():
             return FileResponse(candidate)
-        index_path = static_dir / "index.html"
-        if index_path.is_file():
-            return FileResponse(index_path)
-        return JSONResponse(status_code=404, content={"detail": "Frontend has not been built yet"})
+        return serve_index()
 
     return app
-
-
-def run() -> None:
-    """Run the uvicorn server."""
-
-    config_path = DEFAULT_CONFIG_PATH.resolve()
-    config = load_app_config(config_path)
-    uvicorn.run("quant_arena.server:create_app", host=config.host, port=config.port, factory=True)

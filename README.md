@@ -56,16 +56,16 @@ Then, start the backend server:
 ```bash
 uv sync
 source .venv/bin/activate
-python -m quant_arena
+uvicorn quant_arena.server:create_app --factory --host 127.0.0.1 --port 18792
 ```
 
-Default server address is `http://127.0.0.1:18792`.
+Host and port are uvicorn CLI flags; there is no separate server entrypoint.
 
 ## Environment Variables
 
-To change mount path, for example to `/quant-arena/`, do these:
-1. Set `VITE_BASE_URL=/quant-arena` and build frontend.
-2. Set `QUANT_ARENA_BASE_URL=/quant-arena` and run the backend server.
+Backend env settings use the `QUANT_ARENA_*` prefix (see `ServerSettings` in `quant_arena/config.py`). Currently the only one is `QUANT_ARENA_URL_PREFIX`. Everything else (markets, fees, notifiers, ...) lives in the config file at `~/.quant-arena/config.json`.
+
+To change mount path, for example to `/quant-arena/`, set `QUANT_ARENA_URL_PREFIX=/quant-arena` and run the backend server. The frontend build is prefix-agnostic (relative asset URLs plus a `<base href>` tag that the backend rewrites when serving `index.html`), so a single build works at any mount path — no rebuild needed.
 
 The frontend itself routes per-market under the mount path:
 - `/quant-arena/` — market picker (A-share, with US and HK coming later)
@@ -75,7 +75,13 @@ The frontend itself routes per-market under the mount path:
 
 The frontend lives in `frontend/` as a Vite React TypeScript app. Built assets are written to the repo-root `static/` directory, which the Python backend serves in production.
 
-For local frontend development, set `VITE_API_BASE` in `frontend/.env` to the backend you want to talk to. The included example `frontend/.env.example` points at the default local backend:
+`VITE_API_BASE` is the single build-time knob for where API and WebSocket calls go — it sets both the domain and the path prefix:
+
+- unset/empty → same origin, same mount prefix as the page (the default for production builds; the prefix comes from the backend-injected `<base href>` at runtime)
+- `/prefix` → `/prefix/api/...`
+- `http://example.com/aaa` → `http://example.com/aaa/api/...`
+
+Production builds need no env vars at all. For local frontend development, set it in `frontend/.env` to the backend you want to talk to. The included example `frontend/.env.example` points at the default local backend:
 
 ```bash
 VITE_API_BASE=http://127.0.0.1:18792

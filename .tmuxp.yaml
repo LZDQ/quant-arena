@@ -2,8 +2,7 @@ session_name: quant-arena
 start_directory: ./
 
 environment:
-  QUANT_ARENA_BASE_URL: /quant-arena
-  VITE_BASE_URL: /quant-arena
+  QUANT_ARENA_URL_PREFIX: /quant-arena
 
 windows:
   - window_name: main

@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import { buildCurveSeries, type CurveSeries } from "./CurveChart";
 import { Leaderboard } from "./components/arena/Leaderboard";
 import { usePersistentToggle } from "./hooks/usePersistentToggle";
+import { resolveApiBase } from "./lib/api";
 
 type Currency = "CNY" | "HKD" | "USD";
 
@@ -519,7 +520,7 @@ export function ArenaDashboard({
   ibModeOptions,
   footer,
 }: ArenaDashboardProps) {
-  const apiBase = (import.meta.env.VITE_API_BASE ?? homeUrl).replace(/\/+$/, "");
+  const apiBase = resolveApiBase();
   const defaultCurrency = currencyOptions[0]?.value ?? "CNY";
   const currencyLocked = currencyOptions.length <= 1;
   const currencyLabel = (value: Currency): string =>

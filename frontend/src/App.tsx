@@ -3,9 +3,10 @@ import { useEffect, useState } from "react";
 import { AShareApp } from "./AShareApp";
 import { FutumooApp } from "./FutumooApp";
 import { IBApp } from "./IBApp";
+import { resolveApiBase, urlPrefix } from "./lib/api";
 
-const BASE_URL = import.meta.env.BASE_URL.replace(/\/+$/, "");
-const API_BASE = (import.meta.env.VITE_API_BASE ?? BASE_URL).replace(/\/+$/, "");
+const BASE_URL = urlPrefix();
+const API_BASE = resolveApiBase();
 
 type Market = {
   slug: string;

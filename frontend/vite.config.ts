@@ -1,26 +1,14 @@
-import { defineConfig, loadEnv } from "vite";
+import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-function normalizeBaseUrl(rawValue: string | undefined): string {
-	if (rawValue === undefined) {
-		return "/";
-	}
-	const normalized = rawValue.trim().replace(/^\/+|\/+$/g, "");
-	if (!normalized) {
-		return "/";
-	}
-	return `/${normalized}/`;
-}
-
-export default defineConfig(({ mode }) => {
-	const env = loadEnv(mode, ".", "");
-
-	return {
-		plugins: [react()],
-		base: normalizeBaseUrl(env.QUANT_ARENA_BASE_URL || env.VITE_BASE_URL),
-		build: {
-			outDir: "../static",
-			emptyOutDir: true,
-		},
-	};
+export default defineConfig({
+	plugins: [react()],
+	// Relative asset URLs; they resolve against the <base href> tag in
+	// index.html, which the backend rewrites to its URL prefix at serve time.
+	// One build therefore works at any mount path.
+	base: "./",
+	build: {
+		outDir: "../static",
+		emptyOutDir: true,
+	},
 });

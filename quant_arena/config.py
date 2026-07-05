@@ -5,6 +5,22 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class ServerSettings(BaseSettings):
+    """Environment settings, read from `QUANT_ARENA_*` env vars at app creation.
+
+    Everything else (markets, fees, notifiers, ...) is file configuration in
+    `AppConfig`, loaded from the default config path.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="QUANT_ARENA_")
+
+    url_prefix: str = Field(
+        default="",
+        description="URL prefix the app is mounted under, e.g. /quant-arena. Empty serves at the root.",
+    )
 
 
 class AShareFeeConfig(BaseModel):
@@ -313,16 +329,8 @@ class FutumooConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
-    """Top-level server configuration."""
+    """Top-level server configuration. Host/port are uvicorn CLI flags, not config."""
 
-    host: str = Field(
-        default="127.0.0.1",
-        description="Host interface the FastAPI server binds to.",
-    )
-    port: int = Field(
-        default=18792,
-        description="TCP port the FastAPI server listens on.",
-    )
     ashare: AShareConfig = Field(
         default_factory=AShareConfig,
         description="A-share simulator settings.",

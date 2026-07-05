@@ -16,6 +16,7 @@ dependencies = [
 	"mcp>=1.26.0,<2.0.0",
 	"pandas>=2.2.0,<3.0.0",
 	"pydantic>=2.9.0,<3.0.0",
+	"pydantic-settings>=2.13.1",
 	"python-dotenv>=1.2.2",
 	"uvicorn>=0.32.0,<1.0.0",
 	"weasyprint>=63.0",
