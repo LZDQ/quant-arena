@@ -1,0 +1,96 @@
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-feature-settings: "ss01", "tnum", "kern";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background-color: var(--paper);
+  background-image:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.08  0 0 0 0 0.07  0 0 0 0 0.05  0 0 0 0.07 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"),
+    radial-gradient(900px 600px at 8% -10%, rgba(200, 38, 27, 0.06), transparent 55%),
+    radial-gradient(900px 700px at 95% -5%, rgba(164, 122, 45, 0.06), transparent 60%);
+  background-blend-mode: multiply, normal, normal;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* ----- shared building blocks ----- */
+
+.wrap {
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: 28px clamp(20px, 4vw, 56px) 96px;
+}
+
+.rule { height: 1px; background: var(--rule); margin: 0; border: 0; }
+.rule-thick { height: 3px; background: var(--rule); margin: 0; border: 0; }
+.rule-double {
+  height: 7px;
+  border-top: 1px solid var(--rule);
+  border-bottom: 3px solid var(--rule);
+  margin: 0;
+  background: transparent;
+}
+
+.kicker {
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin: 0;
+}
+
+.dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink);
+  margin-right: 8px;
+  vertical-align: middle;
+}
+.dot-rise { background: var(--vermillion); }
+.dot-fall { background: var(--jade); }
+.dot-soft { background: var(--ink-mute); }
+
+.up { color: var(--vermillion); }
+.down { color: var(--jade); }
+.flat { color: var(--ink-mute); }
+
+.mono {
+  font-family: var(--mono);
+  font-feature-settings: "tnum", "zero", "ss01";
+}

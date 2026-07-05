@@ -1,0 +1,22 @@
+:root {
+  color-scheme: light;
+  --paper: #f1eadc;
+  --paper-soft: #f7f1e5;
+  --paper-deep: #e6dcc7;
+  --ink: #14110d;
+  --ink-soft: #463c2c;
+  --ink-mute: #877c64;
+  --rule: #14110d;
+  --rule-soft: rgba(20, 17, 13, 0.18);
+  --rule-fine: rgba(20, 17, 13, 0.08);
+  --vermillion: #c8261b;
+  --vermillion-deep: #9a1b13;
+  --vermillion-soft: rgba(200, 38, 27, 0.08);
+  --jade: #22643a;
+  --jade-deep: #173f25;
+  --gold: #a47a2d;
+  --serif: "Fraunces Variable", "Fraunces", "Times New Roman", serif;
+  --sans: "Instrument Sans Variable", "Instrument Sans", -apple-system, system-ui, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --hanzi: "Noto Serif SC", "Songti SC", "STSong", serif;
+}

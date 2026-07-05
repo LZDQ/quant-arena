@@ -1,0 +1,223 @@
+
+/* daily reports */
+/* ----- daily reports (full-width section) ----- */
+
+.reports-section {
+  margin-top: 36px;
+  padding-top: 24px;
+  border-top: 3px double var(--rule);
+}
+.reports-section-head {
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  margin-bottom: 18px;
+}
+.reports-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.reports-calendar {
+  font-family: var(--mono);
+  width: 100%;
+  max-width: 520px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--rule-fine);
+  margin: 0 auto;
+}
+.reports-detail {
+  min-width: 0;
+  width: 100%;
+}
+.reports-article {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.calendar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--rule-fine);
+  margin-bottom: 10px;
+}
+.calendar-title {
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+.calendar-nav {
+  background: transparent;
+  border: 1px solid var(--rule-soft);
+  padding: 2px 10px;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+}
+.calendar-nav:hover {
+  background: var(--paper-soft);
+}
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.calendar-dow {
+  text-align: center;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+  padding: 4px 0;
+}
+.calendar-cell {
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 6px 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+  text-align: center;
+  cursor: pointer;
+}
+.calendar-cell.is-blank {
+  cursor: default;
+  border: 0;
+}
+.calendar-cell.no-report {
+  color: var(--ink-mute);
+  cursor: default;
+}
+.calendar-cell.has-report {
+  background: var(--paper-soft);
+  border-color: var(--rule-fine);
+}
+.calendar-cell.has-report:hover {
+  background: var(--paper-deep);
+}
+.calendar-cell.is-active {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+.calendar-cell.is-today {
+  outline: 1px dashed var(--vermillion-deep);
+  outline-offset: -2px;
+}
+.calendar-meta {
+  margin-top: 10px;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+  text-align: center;
+}
+.reports-empty {
+  padding: 16px 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+.reports-detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 1px solid var(--rule-soft);
+  padding-bottom: 8px;
+  margin-bottom: 14px;
+  font-family: var(--mono);
+}
+.reports-detail-date {
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+}
+.reports-detail-meta {
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+.reports-detail-body {
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.7;
+  color: var(--ink);
+  width: 100%;
+}
+.reports-detail-body > *:first-child { margin-top: 0; }
+.reports-detail-body > *:last-child { margin-bottom: 0; }
+.reports-detail-body table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.reports-detail-body th,
+.reports-detail-body td {
+  border: 1px solid var(--rule-fine);
+  padding: 6px 10px;
+  text-align: left;
+}
+.reports-detail-body th {
+  background: var(--paper-soft);
+  font-weight: 600;
+}
+.reports-detail-body h1,
+.reports-detail-body h2,
+.reports-detail-body h3,
+.reports-detail-body h4 {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 500;
+  margin: 1em 0 0.4em;
+}
+.reports-detail-body h1 { font-size: 26px; }
+.reports-detail-body h2 { font-size: 22px; }
+.reports-detail-body h3 { font-size: 19px; }
+.reports-detail-body p { margin: 0.6em 0; }
+.reports-detail-body ul,
+.reports-detail-body ol {
+  margin: 0.6em 0;
+  padding-left: 1.4em;
+}
+.reports-detail-body code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  background: var(--paper-soft);
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+.reports-detail-body pre {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: var(--paper-soft);
+  padding: 12px 14px;
+  overflow-x: auto;
+  border-left: 3px solid var(--rule);
+}
+.reports-detail-body pre code {
+  background: transparent;
+  padding: 0;
+}
+.reports-detail-body blockquote {
+  border-left: 3px solid var(--rule-soft);
+  margin: 0.8em 0;
+  padding: 0 0 0 14px;
+  color: var(--ink-soft);
+  font-style: italic;
+}
+.reports-detail-body a {
+  color: var(--vermillion-deep);
+  text-decoration: underline;
+}
+.reports-detail-body table {
+  margin: 0.6em 0;
+}

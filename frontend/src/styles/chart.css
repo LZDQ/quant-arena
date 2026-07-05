@@ -1,0 +1,164 @@
+
+/* ── Leaderboard + reusable curve chart (visx) ─────────────────────── */
+.leaderboard {
+  margin-top: 24px;
+  border-top: 1px solid var(--rule-soft);
+  border-bottom: 1px solid var(--rule-soft);
+  padding-bottom: 14px;
+}
+.fold-toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 16px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 0;
+  font-family: var(--mono);
+}
+.fold-toggle .meta {
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+.fold-toggle .fold-icon {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--vermillion);
+  border-bottom: 1px solid transparent;
+}
+.fold-toggle:hover .fold-icon {
+  border-bottom-color: var(--vermillion);
+}
+
+.curve-chart {
+  position: relative;
+  width: 100%;
+  padding: 8px 0 4px;
+}
+.curve-svg {
+  display: block;
+  overflow: visible;
+}
+.curve-line {
+  fill: none;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  opacity: 0;
+  animation: curve-fade 600ms ease forwards;
+}
+.curve-area {
+  opacity: 0.08;
+  stroke: none;
+}
+.curve-grid {
+  stroke: var(--rule-fine);
+  stroke-width: 1;
+}
+.curve-zero {
+  stroke: var(--rule-soft);
+  stroke-width: 1;
+  stroke-dasharray: 2 4;
+}
+.curve-crosshair {
+  stroke: var(--rule-soft);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  pointer-events: none;
+}
+.curve-marker-halo {
+  fill: var(--paper);
+  stroke: var(--rule-soft);
+  stroke-width: 1;
+  pointer-events: none;
+}
+.curve-marker {
+  pointer-events: none;
+}
+.curve-tick-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  fill: var(--ink-mute);
+  letter-spacing: 0.06em;
+}
+@keyframes curve-fade {
+  to {
+    opacity: 1;
+  }
+}
+
+.curve-tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: var(--paper-soft);
+  border: 1px solid var(--rule);
+  box-shadow: 3px 3px 0 rgba(20, 17, 13, 0.12);
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  min-width: 134px;
+  z-index: 20;
+}
+.curve-tooltip .ct-name {
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  margin-bottom: 6px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--rule-soft);
+  font-size: 11.5px;
+}
+.curve-tooltip .ct-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  line-height: 1.7;
+}
+.curve-tooltip .ct-row span {
+  color: var(--ink-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 9.5px;
+}
+.curve-tooltip .ct-row b {
+  font-weight: 600;
+}
+
+.curve-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin-top: 16px;
+  padding: 0 4px;
+}
+.cl-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.cl-swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  flex: none;
+}
+.cl-label {
+  color: var(--ink-soft);
+  letter-spacing: 0.02em;
+}
+.cl-return {
+  font-weight: 600;
+}
+
+.curve-placeholder {
+  display: grid;
+  place-items: center;
+  height: 200px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  letter-spacing: 0.06em;
+}

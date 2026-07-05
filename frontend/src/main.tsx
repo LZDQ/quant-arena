@@ -11,6 +11,7 @@ import "@fontsource/noto-serif-sc/700.css";
 
 import { App } from "./App";
 import "./index.css";
+import "./styles/chart.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

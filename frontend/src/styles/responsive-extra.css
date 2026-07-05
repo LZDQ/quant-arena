@@ -1,0 +1,43 @@
+/* Phone-tier breakpoints. Purely additive — these only fire below 640px and
+   leave the desktop/tablet layout (see responsive.css) untouched. */
+
+@media (max-width: 640px) {
+  /* Stack the masthead so the giant title and the meta column don't collide. */
+  .masthead {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+  .masthead-meta {
+    text-align: left;
+    align-items: flex-start;
+  }
+  .masthead-han {
+    letter-spacing: 0.3em;
+    font-size: 18px;
+  }
+  .masthead-rail {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  /* Footers read better stacked than squeezed edge-to-edge. */
+  .picker-foot,
+  .board-foot {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /* Keep the wide ledger tables usable: scroll horizontally instead of
+     crushing nine columns into a phone width. */
+  .table-block {
+    overflow-x: auto;
+  }
+  .table-block table {
+    min-width: 560px;
+  }
+
+  /* Let the add-destination row wrap instead of overflowing. */
+  .notif-add-row {
+    flex-wrap: wrap;
+  }
+}

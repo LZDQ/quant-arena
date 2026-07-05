@@ -1,0 +1,189 @@
+
+/* ----- intro on market picker ----- */
+
+.picker-intro {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1fr;
+  gap: 36px;
+  padding: 28px 0 18px;
+}
+.picker-intro h2 {
+  margin: 0;
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(22px, 2.4vw, 32px);
+  line-height: 1.18;
+  font-variation-settings: "opsz" 60, "SOFT" 100;
+  text-wrap: balance;
+}
+.picker-intro p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+/* ----- market list ----- */
+
+.picker-list {
+  margin-top: 4px;
+}
+
+.market-row {
+  display: grid;
+  grid-template-columns: 80px 1.4fr 1.1fr 1.1fr 0.9fr;
+  align-items: center;
+  gap: 24px;
+  padding: 28px 0;
+  border-bottom: 1px solid var(--rule);
+  position: relative;
+  transition: background 200ms ease, padding-left 220ms ease;
+}
+.market-row[data-live="true"] {
+  cursor: pointer;
+}
+.market-row[data-live="true"]:hover {
+  background: var(--vermillion-soft);
+  padding-left: 12px;
+}
+.market-row[data-live="false"] {
+  color: var(--ink-mute);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.market-no {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-soft);
+  letter-spacing: 0.08em;
+}
+.market-name-block .market-name {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-style: italic;
+  font-size: clamp(34px, 4vw, 52px);
+  line-height: 1;
+  font-variation-settings: "opsz" 96, "SOFT" 80;
+}
+.market-name-block .market-han {
+  display: block;
+  margin-top: 10px;
+  font-family: var(--hanzi);
+  font-weight: 500;
+  font-size: 13px;
+  letter-spacing: 0.45em;
+  color: var(--ink-soft);
+}
+.market-tagline {
+  font-family: var(--sans);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+}
+.market-status {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.market-cta {
+  text-align: right;
+  font-family: var(--sans);
+  font-size: 13px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.market-cta .arrow {
+  display: inline-block;
+  margin-left: 6px;
+  transition: transform 220ms ease;
+}
+.market-row[data-live="true"]:hover .market-cta .arrow {
+  transform: translateX(8px);
+}
+
+.market-row-wrap {
+  position: relative;
+}
+.market-row-wrap .market-row {
+  padding-right: 124px;
+}
+.market-toggle {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+}
+.toggle-button {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  padding: 8px 16px;
+  border: 1px solid var(--rule);
+  background: var(--paper-soft, #f8f4ed);
+  cursor: pointer;
+  text-transform: uppercase;
+  font-weight: 600;
+  min-width: 96px;
+  text-align: center;
+  transition: background 160ms ease, color 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+.toggle-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.toggle-button.to-disable {
+  background: rgba(193, 18, 31, 0.08);
+  border-color: rgba(193, 18, 31, 0.55);
+  color: rgba(140, 18, 24, 1);
+}
+.toggle-button.to-enable {
+  background: rgba(34, 110, 64, 0.10);
+  border-color: rgba(34, 110, 64, 0.55);
+  color: rgba(22, 78, 46, 1);
+}
+.toggle-button:hover:not(:disabled) {
+  filter: brightness(0.96);
+  transform: translateY(-1px);
+}
+.toggle-button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.picker-foot {
+  margin-top: 36px;
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+/* ----- notice ribbon ----- */
+
+.notice {
+  margin: 18px 0 0;
+  padding: 12px 18px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  border-left: 3px solid var(--ink);
+  background: var(--paper-soft);
+}
+.notice.error {
+  border-left-color: var(--vermillion);
+  color: var(--vermillion-deep);
+  background: rgba(200, 38, 27, 0.06);
+}
+.notice.ok {
+  border-left-color: var(--jade);
+  color: var(--jade-deep);
+  background: rgba(34, 100, 58, 0.06);
+}

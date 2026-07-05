@@ -1,6 +1,9 @@
 import { ReactNode, startTransition, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { buildCurveSeries, type CurveSeries } from "./CurveChart";
+import { Leaderboard } from "./components/arena/Leaderboard";
+import { usePersistentToggle } from "./hooks/usePersistentToggle";
 
 type Currency = "CNY" | "HKD" | "USD";
 
@@ -186,6 +189,8 @@ type CreateAgentForm = {
 
 const ORDERS_PAGE_SIZE = 8;
 const REPORTS_PAGE_SIZE = 100;
+const LEADERBOARD_TOP_N = 10;
+const LEADERBOARD_WINDOW_DAYS = 30;
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function makeDefaultCreateAgentForm(
@@ -547,6 +552,7 @@ export function ArenaDashboard({
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
   const [snapshot, setSnapshot] = useState<AgentSnapshotResponse | null>(null);
   const [rankings, setRankings] = useState<RankingEntry[]>([]);
+  const [topSeries, setTopSeries] = useState<CurveSeries[]>([]);
   const [createAgentForm, setCreateAgentForm] = useState<CreateAgentForm>(() =>
     makeDefaultCreateAgentForm(defaultCurrency, defaultIbMode),
   );
@@ -555,6 +561,7 @@ export function ArenaDashboard({
   const [loadingAgents, setLoadingAgents] = useState(true);
   const [loadingSnapshot, setLoadingSnapshot] = useState(false);
   const [loadingRankings, setLoadingRankings] = useState(true);
+  const [loadingTopSeries, setLoadingTopSeries] = useState(true);
   const [message, setMessage] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [createdToken, setCreatedToken] = useState<string>("");
@@ -581,6 +588,10 @@ export function ArenaDashboard({
   );
   const [manualClearSubmitting, setManualClearSubmitting] = useState(false);
   const [manualClearError, setManualClearError] = useState("");
+  const [leaderboardOpen, toggleLeaderboard] = usePersistentToggle(
+    `quant-arena:leaderboard:${apiPrefix || "ashare"}`,
+    true,
+  );
 
   useEffect(() => {
     void refreshAgents(getAgentIdFromUrl());
@@ -767,10 +778,59 @@ export function ArenaDashboard({
     try {
       const data = await apiFetch<RankingEntry[]>(`/api${apiPrefix}/rankings`);
       setRankings(data);
+      void refreshTopSeries(data);
     } catch (fetchError) {
       setError((fetchError as Error).message);
+      setLoadingTopSeries(false);
     } finally {
       setLoadingRankings(false);
+    }
+  }
+
+  async function refreshTopSeries(nextRankings: RankingEntry[]) {
+    const topRankings = nextRankings.slice(0, LEADERBOARD_TOP_N);
+    if (topRankings.length === 0) {
+      setTopSeries([]);
+      setLoadingTopSeries(false);
+      return;
+    }
+
+    setLoadingTopSeries(true);
+    try {
+      const snapshots = await Promise.all(
+        topRankings.map((entry) =>
+          apiFetch<AgentSnapshotResponse>(`/api${apiPrefix}/agents/${entry.agent_id}`).catch(
+            (): AgentSnapshotResponse | null => null,
+          ),
+        ),
+      );
+      const fullSeries = snapshots
+        .filter(
+          (snap): snap is AgentSnapshotResponse =>
+            snap !== null && snap.equity.length > 0,
+        )
+        .map((snap) =>
+          buildCurveSeries(
+            snap.agent.agent_id,
+            snap.agent.display_name,
+            snap.agent.currency,
+            snap.agent.initial_cash,
+            snap.equity,
+          ),
+        );
+      const allDates = Array.from(
+        new Set(fullSeries.flatMap((series) => series.points.map((point) => point.date))),
+      ).sort();
+      const windowDates = new Set(allDates.slice(-LEADERBOARD_WINDOW_DAYS));
+      const windowedSeries = fullSeries
+        .map((series) => ({
+          ...series,
+          points: series.points.filter((point) => windowDates.has(point.date)),
+        }))
+        .filter((series) => series.points.length > 0);
+      setTopSeries(windowedSeries);
+    } finally {
+      setLoadingTopSeries(false);
     }
   }
 
@@ -965,6 +1025,15 @@ export function ArenaDashboard({
       {(message || error) && (
         <div className={`notice ${error ? "error" : "ok"}`}>{error || message}</div>
       )}
+
+      <Leaderboard
+        topSeries={topSeries}
+        loadingTop={loadingTopSeries}
+        rankingsCount={rankings.length}
+        open={leaderboardOpen}
+        onToggle={toggleLeaderboard}
+        formatAmount={formatAmount}
+      />
 
       <main className="board-grid">
         <aside className="board-rail">
