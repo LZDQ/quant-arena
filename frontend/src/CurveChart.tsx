@@ -5,10 +5,10 @@ import { Group } from "@visx/group";
 import { AxisLeft, AxisBottom } from "@visx/axis";
 import { useTooltip, TooltipWithBounds } from "@visx/tooltip";
 import { localPoint } from "@visx/event";
-import type { Currency } from "./lib/types";
+import type { ArenaCurrency } from "./lib/types";
 import { formatDateShort, pctClass, signedPct } from "./lib/format";
 
-export type { Currency };
+export type { ArenaCurrency };
 
 /** One vertex of an agent's curve. Returns are precomputed by the caller. */
 export type CurvePoint = {
@@ -26,7 +26,7 @@ export type CurveSeries = {
   /** Stable agent id — also drives the deterministic color. */
   id: string;
   label: string;
-  currency: Currency;
+  currency: ArenaCurrency;
   /** Deterministic stroke color (see {@link agentColor}). */
   color: string;
   points: CurvePoint[];
@@ -64,9 +64,9 @@ export type CurveChartProps = {
   /** Fixed pixel height; width is measured from the container. */
   height?: number;
   /** Currency-aware amount formatter (used in the tooltip and equity ticks). */
-  formatAmount: (value: number | null | undefined, currency: Currency) => string;
+  formatAmount: (value: number | null | undefined, currency: ArenaCurrency) => string;
   /** Compact Y-axis label formatter for equity mode. */
-  formatYAxisLabel?: (value: number, currency: Currency) => string;
+  formatYAxisLabel?: (value: number, currency: ArenaCurrency) => string;
   /** Render a color/return legend below the chart (for the multi-agent view). */
   showLegend?: boolean;
 };
@@ -208,7 +208,7 @@ function CurveChartInner({
     }
   };
 
-  const axisCurrency = series[0]?.currency ?? "USD";
+  const axisCurrency = series[0]?.currency ?? null;
   const tickEvery = Math.max(1, Math.ceil(dates.length / 6));
   const xTicks = dates.filter((_, i) => i % tickEvery === 0);
   const sorted = (s: CurveSeries) => [...s.points].sort((a, b) => a.date.localeCompare(b.date));
@@ -382,7 +382,7 @@ function CurveChartInner({
 export function buildCurveSeries(
   id: string,
   label: string,
-  currency: Currency,
+  currency: ArenaCurrency,
   initialCash: number,
   equity: { trade_date: string; total_equity: number }[],
 ): CurveSeries {

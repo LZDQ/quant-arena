@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 
 import { AShareApp } from "./AShareApp";
 import { FutumooApp } from "./FutumooApp";
-import { IBApp } from "./IBApp";
 import { resolveApiBase, urlPrefix } from "./lib/api";
 
 const BASE_URL = urlPrefix();
@@ -36,15 +35,6 @@ const MARKETS: Market[] = [
     name: "Futu Moo",
     hanzi: "富途 · 离线",
     tagline: "Offline paper · HK · US via OpenD",
-    status: "available",
-  },
-  {
-    slug: "ib",
-    backendSlug: "ib",
-    no: "03",
-    name: "Interactive Brokers",
-    hanzi: "盈 透",
-    tagline: "Online paper · Real · Gateway",
     status: "available",
   },
 ];
@@ -498,9 +488,6 @@ export function App() {
   }
   if (slug === "futumoo") {
     return <FutumooApp />;
-  }
-  if (slug === "ib") {
-    return <IBApp />;
   }
   return <MarketPicker />;
 }

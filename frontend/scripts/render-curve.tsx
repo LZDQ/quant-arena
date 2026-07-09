@@ -6,7 +6,7 @@ const series: CurveSeries[] = [
   {
     id: "agent-a",
     label: "Agent A",
-    currency: "CNY",
+    currency: null,
     color: "hsl(210 58% 42%)",
     points: [
       { date: "2026-06-01", equity: 60000, totalReturnPct: 0, dailyReturnPct: null },

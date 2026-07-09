@@ -1,5 +1,5 @@
 import { CurveChart, type CurveSeries } from "../../CurveChart";
-import type { Currency } from "../../lib/types";
+import type { ArenaCurrency } from "../../lib/types";
 
 type LeaderboardProps = {
   topSeries: CurveSeries[];
@@ -7,7 +7,7 @@ type LeaderboardProps = {
   rankingsCount: number;
   open: boolean;
   onToggle: () => void;
-  formatAmount: (value: number | null | undefined, currency: Currency) => string;
+  formatAmount: (value: number | null | undefined, currency: ArenaCurrency) => string;
 };
 
 /** Top-N return overlay above the board, foldable and persisted. */

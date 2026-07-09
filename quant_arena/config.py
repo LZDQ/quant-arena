@@ -32,7 +32,7 @@ class AShareFeeConfig(BaseModel):
     )
     min_commission: float = Field(
         default=5.0,
-        description="Minimum commission charged per filled order, in CNY.",
+        description="Minimum commission charged per filled order.",
     )
     stamp_tax_bps: float = Field(
         default=10.0,
@@ -141,60 +141,6 @@ class NapCatConfig(BaseModel):
     )
 
 
-class IBConnectionConfig(BaseModel):
-    """One IB Gateway / TWS endpoint."""
-
-    enabled: bool = Field(
-        default=False,
-        description="Whether this paper/real mode is enabled. AND'd with the top-level IBConfig.enabled to decide whether the connection is brought up.",
-    )
-    host: str = Field(
-        default="127.0.0.1",
-        description="Hostname or IP of IB Gateway or TWS.",
-    )
-    port: int = Field(
-        description="TCP port. IB Gateway: 4001 live / 4002 paper. TWS: 7496 live / 7497 paper.",
-    )
-    client_id: int = Field(
-        default=2,
-        description="ib_insync clientId for this connection.",
-    )
-    gateway_token: str = Field(
-        default="",
-        description="Optional bearer token for authenticating to IB Gateway / TWS itself. Distinct from per-agent MCP auth tokens (`AgentConfig.token_secret`).",
-    )
-
-
-class IBConfig(BaseModel):
-    """Interactive Brokers paper/real trading settings."""
-
-    enabled: bool = Field(
-        default=False,
-        description="Master switch for the IB integration. Each mode also has its own `paper.enabled` / `real.enabled`; both must be true for a mode to run.",
-    )
-    paper: IBConnectionConfig = Field(
-        default_factory=lambda: IBConnectionConfig(port=4002, client_id=2),
-        description="IB Gateway / TWS endpoint for the paper trading account.",
-    )
-    real: IBConnectionConfig = Field(
-        default_factory=lambda: IBConnectionConfig(port=4001, client_id=3),
-        description="IB Gateway / TWS endpoint for the real trading account.",
-    )
-    request_timeout_seconds: float = Field(
-        default=30.0,
-        gt=0,
-        description="Timeout for one IB MCP tool call.",
-    )
-    default_exchange: str = Field(
-        default="SMART",
-        description="Default exchange used when resolving stock contracts.",
-    )
-    default_currency: str = Field(
-        default="USD",
-        description="Default currency used when resolving stock contracts.",
-    )
-
-
 class FutumooHKFeeConfig(BaseModel):
     """HK-side fee configuration for the Futumoo paper-trading arena."""
 
@@ -229,8 +175,9 @@ class FutumooConfig(BaseModel):
     """Futumoo HK/US paper-trading arena settings.
 
     Orders are matched against `last_price` snapshots polled from Futu OpenD,
-    not filled instantly. Each agent holds two cash buckets (HKD, USD) and
-    two position books. Symbols must carry the region prefix `HK.` or `US.`.
+    not filled instantly. Each agent chooses one currency (`HKD` or `USD`),
+    which selects the HK or US region. Symbols must carry the region prefix
+    `HK.` or `US.`.
     """
 
     enabled: bool = Field(
@@ -284,22 +231,14 @@ class AppConfig(BaseModel):
         default_factory=NapCatConfig,
         description="NapCat QQ notification settings.",
     )
-    ib: IBConfig = Field(
-        default_factory=IBConfig,
-        description="Interactive Brokers paper/real trading settings.",
-    )
-
-
-AgentCurrency = Literal["CNY", "HKD", "USD"]
 
 
 class AgentConfig(BaseModel):
     """One managed trading agent.
 
-    Each agent operates in exactly one currency. A-share agents are always
-    `CNY`; Futumoo agents pick `HKD` (only `HK.<code>` symbols allowed) or
-    `USD` (only `US.<ticker>` symbols allowed); IB agents pick `HKD` or
-    `USD` as their account base currency for display.
+    Currency is arena-local. A-share leaves it unset; Futumoo agents set
+    `HKD` (only `HK.<code>` symbols allowed) or `USD` (only `US.<ticker>`
+    symbols allowed).
     """
 
     display_name: str = Field(
@@ -310,11 +249,11 @@ class AgentConfig(BaseModel):
     )
     initial_cash: float = Field(
         gt=0,
-        description="Starting cash balance, denominated in the agent's `currency`.",
+        description="Starting cash balance.",
     )
-    currency: AgentCurrency = Field(
-        default="CNY",
-        description="Single trading currency. CNY for A-share, HKD or USD for Futumoo, HKD or USD as base currency for IB.",
+    currency: str | None = Field(
+        default=None,
+        description="Arena-local trading currency. Futumoo uses HKD or USD; A-share leaves this unset.",
     )
     enabled: bool = Field(
         default=True,
@@ -323,10 +262,6 @@ class AgentConfig(BaseModel):
     role: Literal["normal", "monitor"] = Field(
         default="normal",
         description="Agent role. monitor agents can inspect other agents through MCP tools.",
-    )
-    ib_mode: Literal["paper", "real"] | None = Field(
-        default=None,
-        description="IB connection mode. Required for IB arena agents; ignored elsewhere.",
     )
     napcat_notify_targets: list[str] = Field(
         default_factory=list,

@@ -3,24 +3,20 @@ import type {
   CreateAgentForm,
   Currency,
   CurrencyOption,
-  IBMode,
-  IBModeOption,
 } from "../../lib/types";
 
-function makeDefaultForm(currency: Currency, ibMode: IBMode | null): CreateAgentForm {
+function makeDefaultForm(currency: Currency | null): CreateAgentForm {
   return {
     agent_id: "",
     display_name: "",
     initial_cash: "100000",
     currency,
     role: "normal",
-    ib_mode: ibMode,
   };
 }
 
 type EnlistFormProps = {
-  currencyOptions: CurrencyOption[];
-  ibModeOptions?: IBModeOption[];
+  currencyOptions?: CurrencyOption[];
   placeholders: { agentId: string; displayName: string };
   createdToken: string;
   createdAgentId: string;
@@ -32,34 +28,30 @@ type EnlistFormProps = {
  * own field + dropdown state; surfaces only the create action upward. */
 export function EnlistForm({
   currencyOptions,
-  ibModeOptions,
   placeholders,
   createdToken,
   createdAgentId,
   onCreate,
 }: EnlistFormProps) {
-  const defaultCurrency = currencyOptions[0]?.value ?? "CNY";
-  const currencyLocked = currencyOptions.length <= 1;
-  const defaultIbMode = ibModeOptions?.[0]?.value ?? null;
-  const currencyLabel = (value: Currency): string =>
-    currencyOptions.find((option) => option.value === value)?.label ?? value;
-  const ibModeLabel = (value: IBMode | null): string => {
-    if (value === null) return "—";
-    return ibModeOptions?.find((option) => option.value === value)?.label ?? value;
+  const options = currencyOptions ?? [];
+  const defaultCurrency = options[0]?.value ?? null;
+  const currencyLocked = options.length <= 1;
+  const currencyLabel = (value: Currency | null): string => {
+    if (value === null) return "";
+    return options.find((option) => option.value === value)?.label ?? value;
   };
 
   const [form, setForm] = useState<CreateAgentForm>(() =>
-    makeDefaultForm(defaultCurrency, defaultIbMode),
+    makeDefaultForm(defaultCurrency),
   );
   const [currencyMenuOpen, setCurrencyMenuOpen] = useState(false);
-  const [ibModeMenuOpen, setIbModeMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const created = await onCreate(form);
     if (created) {
-      setForm(makeDefaultForm(defaultCurrency, defaultIbMode));
+      setForm(makeDefaultForm(defaultCurrency));
     }
   }
 
@@ -81,7 +73,9 @@ export function EnlistForm({
           />
         </div>
         <div className="field field-half">
-          <label htmlFor="initial_cash">Initial Cash · {currencyLabel(form.currency)}</label>
+          <label htmlFor="initial_cash">
+            Initial Cash{form.currency ? ` · ${currencyLabel(form.currency)}` : ""}
+          </label>
           <input
             id="initial_cash"
             value={form.initial_cash}
@@ -101,85 +95,49 @@ export function EnlistForm({
             required
           />
         </div>
-        <div
-          className="field field-half select-wrap"
-          onBlur={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-              setCurrencyMenuOpen(false);
-            }
-          }}
-        >
-          <label>Currency</label>
-          {currencyLocked ? (
-            <button className="select-trigger" type="button" disabled aria-disabled="true">
-              <span>{currencyLabel(form.currency)}</span>
-            </button>
-          ) : (
-            <>
-              <button
-                className="select-trigger"
-                type="button"
-                aria-haspopup="listbox"
-                aria-expanded={currencyMenuOpen}
-                onClick={() => setCurrencyMenuOpen((open) => !open)}
-              >
-                <span>{currencyLabel(form.currency)}</span>
-              </button>
-              {currencyMenuOpen && (
-                <div className="select-menu" role="listbox" aria-label="Trading currency">
-                  {currencyOptions.map((option) => (
-                    <button
-                      key={option.value}
-                      className={`select-option ${form.currency === option.value ? "is-active" : ""}`}
-                      type="button"
-                      onClick={() => {
-                        setForm((prev) => ({ ...prev, currency: option.value }));
-                        setCurrencyMenuOpen(false);
-                      }}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-        </div>
-        {ibModeOptions && ibModeOptions.length > 0 && (
+        {options.length > 0 && (
           <div
             className="field field-half select-wrap"
             onBlur={(event) => {
               if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                setIbModeMenuOpen(false);
+                setCurrencyMenuOpen(false);
               }
             }}
           >
-            <label>Account</label>
-            <button
-              className="select-trigger"
-              type="button"
-              aria-haspopup="listbox"
-              aria-expanded={ibModeMenuOpen}
-              onClick={() => setIbModeMenuOpen((open) => !open)}
-            >
-              <span>{ibModeLabel(form.ib_mode)}</span>
-            </button>
-            {ibModeMenuOpen && (
-              <div className="select-menu" role="listbox" aria-label="IB account">
-                {ibModeOptions.map((option) => (
-                  <button
-                    key={option.value}
-                    className={`select-option ${form.ib_mode === option.value ? "is-active" : ""}`}
-                    type="button"
-                    onClick={() => {
-                      setForm((prev) => ({ ...prev, ib_mode: option.value }));
-                      setIbModeMenuOpen(false);
-                    }}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
+            <label>Currency</label>
+            {currencyLocked ? (
+              <button className="select-trigger" type="button" disabled aria-disabled="true">
+                <span>{currencyLabel(form.currency)}</span>
+              </button>
+            ) : (
+              <>
+                <button
+                  className="select-trigger"
+                  type="button"
+                  aria-haspopup="listbox"
+                  aria-expanded={currencyMenuOpen}
+                  onClick={() => setCurrencyMenuOpen((open) => !open)}
+                >
+                  <span>{currencyLabel(form.currency)}</span>
+                </button>
+                {currencyMenuOpen && (
+                  <div className="select-menu" role="listbox" aria-label="Trading currency">
+                    {options.map((option) => (
+                      <button
+                        key={option.value}
+                        className={`select-option ${form.currency === option.value ? "is-active" : ""}`}
+                        type="button"
+                        onClick={() => {
+                          setForm((prev) => ({ ...prev, currency: option.value }));
+                          setCurrencyMenuOpen(false);
+                        }}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}

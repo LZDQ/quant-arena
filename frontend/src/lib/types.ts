@@ -5,18 +5,16 @@
 // picker and the chart all speak the same vocabulary and a backend field rename
 // only has to be reflected in one place.
 
-export type Currency = "CNY" | "HKD" | "USD";
-
-export type IBMode = "paper" | "real";
+export type Currency = "HKD" | "USD";
+export type ArenaCurrency = Currency | null;
 
 export type AgentResponse = {
   agent_id: string;
   display_name: string;
   initial_cash: number;
-  currency: Currency;
+  currency: ArenaCurrency;
   enabled: boolean;
   role: "normal" | "monitor";
-  ib_mode: IBMode | null;
   napcat_notify_targets: string[];
   daily_report_notify_targets: string[];
 };
@@ -67,7 +65,7 @@ export type FillRecord = {
 
 export type PortfolioResponse = {
   agent_id: string;
-  currency: Currency;
+  currency: ArenaCurrency;
   cash: number;
   market_value: number;
   total_equity: number;
@@ -113,7 +111,7 @@ export type RankingEntry = {
   trade_date: string;
   agent_id: string;
   display_name: string;
-  currency: Currency;
+  currency: ArenaCurrency;
   cash: number;
   market_value: number;
   total_equity: number;
@@ -164,9 +162,8 @@ export type CreateAgentForm = {
   agent_id: string;
   display_name: string;
   initial_cash: string;
-  currency: Currency;
+  currency: Currency | null;
   role: "normal" | "monitor";
-  ib_mode: IBMode | null;
 };
 
 export type ManualClearForm = {
@@ -176,14 +173,9 @@ export type ManualClearForm = {
 };
 
 export type CurrencyOption = {
-  /** Backend currency code, e.g. "CNY", "HKD", "USD". */
+  /** Backend currency code for arenas that need one, e.g. "HKD" or "USD". */
   value: Currency;
   /** Label shown in the form (typically same as value, but may diverge). */
-  label: string;
-};
-
-export type IBModeOption = {
-  value: IBMode;
   label: string;
 };
 

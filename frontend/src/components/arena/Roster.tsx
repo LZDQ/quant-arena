@@ -1,4 +1,4 @@
-import type { AgentResponse, Currency, RankingEntry } from "../../lib/types";
+import type { AgentResponse, ArenaCurrency, RankingEntry } from "../../lib/types";
 import { percentClass, signedPct } from "../../lib/format";
 
 type RosterProps = {
@@ -7,7 +7,7 @@ type RosterProps = {
   selectedAgentId: string;
   loadingRankings: boolean;
   onSelect: (agentId: string) => void;
-  formatAmount: (value: number | null | undefined, currency: Currency) => string;
+  formatAmount: (value: number | null | undefined, currency: ArenaCurrency) => string;
 };
 
 /** Ranked agent list down the left rail; click to open an agent's book. */
@@ -34,7 +34,7 @@ export function Roster({
               key={entry.agent_id}
               type="button"
               className={`roster-row ${isActive ? "is-active" : ""}`}
-              data-currency={entry.currency}
+              data-currency={entry.currency ?? undefined}
               onClick={() => onSelect(entry.agent_id)}
             >
               <span className="roster-rank">{String(index + 1).padStart(2, "0")}</span>
@@ -45,12 +45,9 @@ export function Roster({
                   className="roster-meta-row"
                   style={{ marginTop: 8, display: "inline-flex", gap: 6 }}
                 >
-                  <span className={`roster-pill currency currency-${entry.currency}`}>
-                    {entry.currency}
-                  </span>
-                  {agent && agent.ib_mode && (
-                    <span className={`roster-pill ib-${agent.ib_mode}`}>
-                      {agent.ib_mode.toUpperCase()}
+                  {entry.currency && (
+                    <span className={`roster-pill currency currency-${entry.currency}`}>
+                      {entry.currency}
                     </span>
                   )}
                   {agent && (

@@ -7,7 +7,6 @@ from contextlib import AsyncExitStack
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
-from typing import Callable
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +14,6 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 
 from quant_arena.schemas import AgentCreatedResponse, AgentNotificationTargets, AgentResponse, AgentSnapshotResponse, ArenaStatus, CreateAgentRequest, DailyReportPage, ManualClearPositionsRequest, NotificationDestinationsResponse, OperationListResponse, PathsResponse, PortfolioResponse, SetNapCatDestinationsRequest, ToggleArenaRequest, ToggleArenaResponse
-from quant_arena.arena_base import BaseArenaService
 from quant_arena.ashare import (
     ArenaService,
     AShareService,
@@ -29,12 +27,6 @@ from quant_arena.futumoo import (
     FutumooService,
     create_futumoo_mcp_server,
     wrap_futumoo_mcp_with_agent_auth,
-)
-from quant_arena.ib import (
-    IBArenaService,
-    IBService,
-    create_ib_mcp_server,
-    wrap_ib_mcp_with_agent_auth,
 )
 from quant_arena.models import DailyReport, ManualPositionClearRecord, RankingSnapshot, SpecialEvent
 from quant_arena.notifier import NotifierService
@@ -60,10 +52,6 @@ class AppState:
         futumoo_market: FutumooService | None,
         futumoo_arena: FutumooArenaService | None,
         notifier: NotifierService,
-        ib_agents_root: Path,
-        ib_paper: IBService | None,
-        ib_real: IBService | None,
-        ib_arena: IBArenaService | None,
     ):
         self.config_path = config_path
         self.config = config
@@ -75,10 +63,6 @@ class AppState:
         self.futumoo_market = futumoo_market
         self.futumoo_arena = futumoo_arena
         self.notifier = notifier
-        self.ib_agents_root = ib_agents_root
-        self.ib_paper = ib_paper
-        self.ib_real = ib_real
-        self.ib_arena = ib_arena
         self.background_tasks: list[asyncio.Task[None]] = []
 
 
@@ -113,34 +97,6 @@ def _load_app_state(config_path: Path) -> AppState:
             config=config.futumoo,
             notifier=notifier,
         )
-    ib_root = (config_path.parent / "ib").resolve()
-    ib_agents_root = ib_root / "agents"
-    ib_paper: IBService | None = None
-    ib_real: IBService | None = None
-    ib_arena: IBArenaService | None = None
-    if config.ib.enabled:
-        if config.ib.paper.enabled:
-            ib_paper = IBService(
-                mode="paper",
-                connection=config.ib.paper,
-                default_exchange=config.ib.default_exchange,
-                default_currency=config.ib.default_currency,
-                request_timeout_seconds=config.ib.request_timeout_seconds,
-            )
-        if config.ib.real.enabled:
-            ib_real = IBService(
-                mode="real",
-                connection=config.ib.real,
-                default_exchange=config.ib.default_exchange,
-                default_currency=config.ib.default_currency,
-                request_timeout_seconds=config.ib.request_timeout_seconds,
-            )
-        ib_arena = IBArenaService(
-            agents_root=ib_agents_root,
-            paper=ib_paper,
-            real=ib_real,
-            notifier=notifier,
-        )
     return AppState(
         config_path=config_path,
         config=config,
@@ -152,10 +108,6 @@ def _load_app_state(config_path: Path) -> AppState:
         futumoo_market=futumoo_market,
         futumoo_arena=futumoo_arena,
         notifier=notifier,
-        ib_agents_root=ib_agents_root,
-        ib_paper=ib_paper,
-        ib_real=ib_real,
-        ib_arena=ib_arena,
     )
 
 
@@ -172,22 +124,8 @@ def create_app() -> FastAPI:
     bootstrap_config = load_app_config(resolved_config)
     ashare_enabled = bootstrap_config.ashare.enabled
     futumoo_enabled = bootstrap_config.futumoo.enabled
-    ib_enabled = bootstrap_config.ib.enabled
     mcp_server = create_ashare_mcp_server(lambda: app.state.app_state.arena) if ashare_enabled else None
     futumoo_mcp_server = create_futumoo_mcp_server(lambda: app.state.app_state.futumoo_arena) if futumoo_enabled else None
-    ib_mcp_server = create_ib_mcp_server() if ib_enabled else None
-
-    def _require_ib_paper() -> IBService:
-        ib = app.state.app_state.ib_paper
-        if ib is None:
-            raise RuntimeError("IB integration is not enabled in config")
-        return ib
-
-    def _require_ib_real() -> IBService:
-        ib = app.state.app_state.ib_real
-        if ib is None:
-            raise RuntimeError("IB integration is not enabled in config")
-        return ib
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -198,13 +136,7 @@ def create_app() -> FastAPI:
                 await stack.enter_async_context(mcp_server.session_manager.run())
             if futumoo_mcp_server is not None:
                 await stack.enter_async_context(futumoo_mcp_server.session_manager.run())
-            if ib_mcp_server is not None:
-                await stack.enter_async_context(ib_mcp_server.session_manager.run())
             await state.notifier.start()
-            if state.ib_paper is not None:
-                state.ib_paper.start()
-            if state.ib_real is not None:
-                state.ib_real.start()
             if (
                 state.arena is not None
                 and state.market is not None
@@ -241,10 +173,6 @@ def create_app() -> FastAPI:
                         await task
                     except asyncio.CancelledError:
                         pass
-                if state.ib_paper is not None:
-                    state.ib_paper.close()
-                if state.ib_real is not None:
-                    state.ib_real.close()
                 if state.futumoo_market is not None:
                     state.futumoo_market.close()
                 await state.notifier.close()
@@ -281,19 +209,20 @@ def create_app() -> FastAPI:
                 lambda: app.state.app_state.futumoo_arena,
             ),
         )
-    if ib_mcp_server is not None:
-        app.mount(
-            f"{base_url}/ib/mcp/" if base_url else "/ib/mcp/",
-            wrap_ib_mcp_with_agent_auth(
-                ib_mcp_server.streamable_http_app(),
-                lambda: app.state.app_state.ib_arena,
-                _require_ib_paper,
-                _require_ib_real,
-            ),
-        )
-
     def get_state() -> AppState:
         return app.state.app_state
+
+    def require_ashare_arena() -> ArenaService:
+        arena = get_state().arena
+        if arena is None:
+            raise RuntimeError("A-share arena is not enabled")
+        return arena
+
+    def require_futumoo_arena() -> FutumooArenaService:
+        arena = get_state().futumoo_arena
+        if arena is None:
+            raise RuntimeError("Futumoo arena is not enabled")
+        return arena
 
     def to_agent_response(agent_id: str, agent: AgentConfig) -> AgentResponse:
         return AgentResponse(
@@ -303,7 +232,6 @@ def create_app() -> FastAPI:
             currency=agent.currency,
             enabled=agent.enabled,
             role=agent.role,
-            ib_mode=agent.ib_mode,
             napcat_notify_targets=list(agent.napcat_notify_targets),
             daily_report_notify_targets=list(agent.daily_report_notify_targets),
         )
@@ -324,14 +252,12 @@ def create_app() -> FastAPI:
     _ARENA_LABELS: dict[str, str] = {
         "ashare": "A-Share",
         "futumoo": "Futu Moo",
-        "ib": "Interactive Brokers",
     }
 
     def _arena_statuses(config: AppConfig) -> list[ArenaStatus]:
         return [
             ArenaStatus(slug="ashare", label=_ARENA_LABELS["ashare"], enabled=config.ashare.enabled),
             ArenaStatus(slug="futumoo", label=_ARENA_LABELS["futumoo"], enabled=config.futumoo.enabled),
-            ArenaStatus(slug="ib", label=_ARENA_LABELS["ib"], enabled=config.ib.enabled),
         ]
 
     @api.get("/api/arenas", response_model=list[ArenaStatus])
@@ -346,10 +272,8 @@ def create_app() -> FastAPI:
         config = state.config
         if slug == "ashare":
             config.ashare.enabled = request.enabled
-        elif slug == "futumoo":
-            config.futumoo.enabled = request.enabled
         else:
-            config.ib.enabled = request.enabled
+            config.futumoo.enabled = request.enabled
         save_app_config(state.config_path, config)
         status = ArenaStatus(slug=slug, label=_ARENA_LABELS[slug], enabled=request.enabled)
         return ToggleArenaResponse(status=status, restart_required=True)
@@ -377,16 +301,15 @@ def create_app() -> FastAPI:
         save_app_config(state.config_path, state.config)
         return get_notification_destinations()
 
-    def _register_arena_routes(prefix: str, get_arena: Callable[[], BaseArenaService]) -> None:
+    def _register_arena_routes(prefix: str, get_arena) -> None:
         """Register the standard /agents/{,/...}/rankings endpoints for one arena.
 
         Mounts the same routes that A-share has historically exposed under
-        `/api/agents/...` against any `BaseArenaService`. The first call
+        `/api/agents/...`. The first call
         (with prefix `""`) preserves the legacy A-share paths; later calls
         attach the same handlers under a per-broker prefix like `/futumoo`.
         The create-agent POST is registered separately by the caller because
-        per-broker request shapes differ (CNY single-currency for A-share,
-        HKD+USD dual-currency for Futumoo).
+        per-broker request shapes differ.
         """
 
         @api.get(f"/api{prefix}/agents")
@@ -509,18 +432,21 @@ def create_app() -> FastAPI:
 
     def _create_agent_handler(
         request: CreateAgentRequest,
-        get_arena: Callable[[], BaseArenaService],
-        allowed_currencies: tuple[str, ...],
+        get_arena,
+        allowed_currencies: tuple[str, ...] | None,
     ) -> AgentCreatedResponse:
-        if request.currency not in allowed_currencies:
+        if allowed_currencies is not None and request.currency not in allowed_currencies:
             raise BadRequestError(
                 f"Currency {request.currency!r} not allowed on this arena. "
                 f"Choose one of {allowed_currencies}."
             )
         token_secret = secrets.token_urlsafe(24)
+        payload = request.model_dump(exclude={"agent_id"})
+        if allowed_currencies is None:
+            payload["currency"] = None
         agent = AgentConfig.model_validate(
             {
-                **request.model_dump(exclude={"agent_id"}),
+                **payload,
                 "token_secret": token_secret,
             }
         )
@@ -531,32 +457,19 @@ def create_app() -> FastAPI:
         )
 
     if ashare_enabled:
-        _register_arena_routes("", lambda: get_state().arena)
+        _register_arena_routes("", require_ashare_arena)
 
         @api.post("/api/agents", response_model=AgentCreatedResponse)
         def create_ashare_agent(request: CreateAgentRequest) -> AgentCreatedResponse:
-            return _create_agent_handler(request, lambda: get_state().arena, ("CNY",))
+            return _create_agent_handler(request, require_ashare_arena, None)
 
     if futumoo_enabled:
-        _register_arena_routes("/futumoo", lambda: get_state().futumoo_arena)
+        _register_arena_routes("/futumoo", require_futumoo_arena)
 
         @api.post("/api/futumoo/agents", response_model=AgentCreatedResponse)
         def create_futumoo_agent(request: CreateAgentRequest) -> AgentCreatedResponse:
             return _create_agent_handler(
-                request, lambda: get_state().futumoo_arena, ("HKD", "USD")
-            )
-
-    if ib_enabled:
-        _register_arena_routes("/ib", lambda: get_state().ib_arena)
-
-        @api.post("/api/ib/agents", response_model=AgentCreatedResponse)
-        def create_ib_agent(request: CreateAgentRequest) -> AgentCreatedResponse:
-            if request.ib_mode is None:
-                raise BadRequestError(
-                    "IB agents require `ib_mode` ('paper' or 'real')."
-                )
-            return _create_agent_handler(
-                request, lambda: get_state().ib_arena, ("HKD", "USD")
+                request, require_futumoo_arena, ("HKD", "USD")
             )
 
     if ashare_enabled:
@@ -569,12 +482,6 @@ def create_app() -> FastAPI:
         @api.api_route("/futumoo/mcp", methods=["GET", "POST", "DELETE"])
         def futumoo_mcp_redirect() -> RedirectResponse:
             target = f"{base_url}/futumoo/mcp/" if base_url else "/futumoo/mcp/"
-            return RedirectResponse(url=target, status_code=307)
-
-    if ib_enabled:
-        @api.api_route("/ib/mcp", methods=["GET", "POST", "DELETE"])
-        def ib_mcp_redirect() -> RedirectResponse:
-            target = f"{base_url}/ib/mcp/" if base_url else "/ib/mcp/"
             return RedirectResponse(url=target, status_code=307)
 
     app.include_router(api, prefix=base_url)

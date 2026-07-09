@@ -44,7 +44,7 @@ class FutumooAgentState(BaseModel):
     day_trades: list[DayTradeRecord] = Field(default_factory=list)
     equity_history: list[EquityPoint] = Field(
         default_factory=list,
-        description="Kept for base-arena compatibility but not populated; daily history is not persisted on the Futumoo arena.",
+        description="Reserved for future persisted daily history; currently the Futumoo arena refreshes only today's in-memory equity point.",
     )
     manual_position_clears: list[ManualPositionClearRecord] = Field(
         default_factory=list,

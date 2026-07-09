@@ -9,9 +9,6 @@ from quant_arena.config import NapCatTargetConfig
 from quant_arena.models import DailyReportSummary, EquityPoint, FillRecord, OrderRecord
 
 
-AgentCurrency = Literal["CNY", "HKD", "USD"]
-
-
 class PositionView(BaseModel):
     """API view of one portfolio position."""
 
@@ -27,10 +24,10 @@ class PositionView(BaseModel):
 
 
 class PortfolioResponse(BaseModel):
-    """Portfolio plus pending orders. All monetary fields are in `currency`."""
+    """Portfolio plus pending orders. `currency` is arena-local and may be unset."""
 
     agent_id: str
-    currency: AgentCurrency = "CNY"
+    currency: str | None = None
     cash: float
     market_value: float
     total_equity: float
@@ -60,19 +57,16 @@ class PathsResponse(BaseModel):
 class CreateAgentRequest(BaseModel):
     """Request to create a new agent.
 
-    `currency` selects the single denomination the agent will trade in.
-    A-share accepts only `CNY`; Futumoo accepts `HKD` or `USD`; IB
-    accepts `HKD` or `USD` as the account base currency. `ib_mode` is
-    required for IB agents and ignored elsewhere.
+    `currency` is arena-local. A-share ignores it and stores no currency.
+    Futumoo requires `HKD` or `USD`.
     """
 
     agent_id: str
     display_name: str
     initial_cash: float = Field(gt=0)
-    currency: AgentCurrency = "CNY"
+    currency: str | None = None
     enabled: bool = True
     role: Literal["normal", "monitor"] = "normal"
-    ib_mode: Literal["paper", "real"] | None = None
 
 
 class AgentResponse(BaseModel):
@@ -81,10 +75,9 @@ class AgentResponse(BaseModel):
     agent_id: str
     display_name: str
     initial_cash: float
-    currency: AgentCurrency
+    currency: str | None = None
     enabled: bool
     role: Literal["normal", "monitor"]
-    ib_mode: Literal["paper", "real"] | None = None
     napcat_notify_targets: list[str] = Field(default_factory=list)
     daily_report_notify_targets: list[str] = Field(default_factory=list)
 
@@ -99,7 +92,7 @@ class AgentCreatedResponse(BaseModel):
 class ArenaStatus(BaseModel):
     """Whether one arena is enabled at startup. Persisted in config.json."""
 
-    slug: Literal["ashare", "futumoo", "ib"]
+    slug: Literal["ashare", "futumoo"]
     label: str
     enabled: bool
 

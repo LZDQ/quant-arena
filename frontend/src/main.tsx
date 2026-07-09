@@ -10,11 +10,14 @@ import "@fontsource/noto-serif-sc/500.css";
 import "@fontsource/noto-serif-sc/700.css";
 
 import { App } from "./App";
+import { UiProvider } from "./components/ui";
 import "./index.css";
 import "./styles/chart.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    <UiProvider>
+      <App />
+    </UiProvider>
   </React.StrictMode>,
 );

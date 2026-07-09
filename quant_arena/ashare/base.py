@@ -1,14 +1,8 @@
-"""Shared scaffolding for arena simulators (A-share, Futumoo, …).
+"""A-share-local arena scaffolding.
 
-Holds everything that's identical across the per-broker arenas: the
-agent registry, persisted state CRUD, daily-report storage, equity
-curve / rankings / operations queries, the equity-point freeze, and
-the common cancel-order flow.
-
-Subclasses must provide a `_now()` clock and a `_build_portfolio()`
-implementation tailored to their position-accounting model. The
-state type is passed as a constructor argument so the base can
-validate / construct it from disk.
+This is intentionally copied into the A-share arena instead of shared with
+other arenas. It owns the agent registry, persisted state, daily reports,
+rankings, cancel flow, and manual position clear for A-share state.
 """
 
 import json
@@ -19,11 +13,11 @@ import threading
 from datetime import date, datetime
 from logging import getLogger
 from pathlib import Path
-from typing import Any, Generic, TypeVar
 
 from quant_arena.config import AgentConfig
 from quant_arena.errors import BadRequestError, ConflictError, NotFoundError
 from quant_arena.models import (
+    AgentState,
     DailyReport,
     DailyReportSummary,
     EquityPoint,
@@ -37,9 +31,6 @@ from quant_arena.models import (
 from quant_arena.notifier import NotifierService
 
 logger = getLogger(__name__)
-
-
-StateT = TypeVar("StateT")
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -71,8 +62,8 @@ def _atomic_write_json(path: Path, payload: object) -> None:
         raise
 
 
-class BaseArenaService(Generic[StateT]):
-    """Common arena scaffolding. See module docstring for the contract."""
+class AShareArenaBase:
+    """A-share-local arena scaffolding. See module docstring for the contract."""
 
     _DAILY_REPORT_MAX_BYTES = 256 * 1024
 
@@ -81,16 +72,14 @@ class BaseArenaService(Generic[StateT]):
         *,
         agents_root: Path,
         notifier: NotifierService,
-        state_cls: type,
     ):
         self.agents_root = agents_root
         self.notifier = notifier
-        self._state_cls = state_cls
         self._rankings_cache: list[RankingSnapshot] | None = None
         self._today_equity_points: dict[str, EquityPoint] = {}
         self.agents_root.mkdir(parents=True, exist_ok=True)
         self._agents: dict[str, AgentConfig] = {}
-        self._states: dict[str, StateT] = {}
+        self._states: dict[str, AgentState] = {}
         self._load_agents()
         self._order_lock = threading.RLock()
 
@@ -100,11 +89,11 @@ class BaseArenaService(Generic[StateT]):
         """Return the timezone-aware current time used for clocks/dates."""
         raise NotImplementedError
 
-    def _build_portfolio(self, state: StateT) -> PortfolioSnapshot:
+    def _build_portfolio(self, state: AgentState) -> PortfolioSnapshot:
         """Build the live portfolio snapshot for `state`."""
         raise NotImplementedError
 
-    def _special_events(self, state: StateT) -> list[SpecialEvent]:
+    def _special_events(self, state: AgentState) -> list[SpecialEvent]:
         """Subclass hook: non-trade account events (corporate actions, …) for `state`.
 
         Default is no events; arenas that model such events override this.
@@ -125,9 +114,10 @@ class BaseArenaService(Generic[StateT]):
     def add_agent(self, agent_id: str, agent: AgentConfig) -> AgentConfig:
         if agent_id in self._agents:
             raise ConflictError(f"Agent already exists: {agent_id}")
+        agent.currency = None
         self._agents[agent_id] = agent
         self._save_agent_config(agent_id, agent)
-        state = self._state_cls(agent_id=agent_id, cash=agent.initial_cash)
+        state = AgentState(agent_id=agent_id, cash=agent.initial_cash)
         self._save_agent_state(state)
         self._rankings_cache = None
         return agent
@@ -174,7 +164,7 @@ class BaseArenaService(Generic[StateT]):
     def cancel_order(self, agent_id: str, order_id: str) -> OrderRecord:
         agent = self.get_agent(agent_id)
         with self._order_lock:
-            state: Any = self._state(agent_id)
+            state = self._state(agent_id)
             target: OrderRecord | None = None
             for order in state.orders:
                 if order.order_id == order_id:
@@ -211,8 +201,7 @@ class BaseArenaService(Generic[StateT]):
 
         All pending orders are canceled because the book is now empty. A
         `ManualPositionClearRecord` is appended to the state and surfaced as
-        a `SpecialEvent`. Arenas backed by a live broker (e.g. IB) override
-        this to reject the operation.
+        a `SpecialEvent`.
         """
         if not comment.strip():
             raise BadRequestError("Manual clear comment must not be empty.")
@@ -295,13 +284,13 @@ class BaseArenaService(Generic[StateT]):
     def get_portfolio(self, agent_id: str) -> PortfolioSnapshot:
         self.get_agent(agent_id)
         with self._order_lock:
-            state: Any = self._state(agent_id)
+            state = self._state(agent_id)
             portfolio = self._build_portfolio(state)
             portfolio.day_return_pct = self._compute_day_return_pct(state, portfolio)
             return portfolio
 
     def _compute_day_return_pct(
-        self, state: Any, portfolio: PortfolioSnapshot
+        self, state: AgentState, portfolio: PortfolioSnapshot
     ) -> float | None:
         """Percent change vs the last `EquityPoint` whose `trade_date` is strictly
         before today. Returns None when no such point exists (day-1, fresh
@@ -335,7 +324,7 @@ class BaseArenaService(Generic[StateT]):
     ) -> OperationLog:
         self.get_agent(agent_id)
         with self._order_lock:
-            state: Any = self._state(agent_id)
+            state = self._state(agent_id)
             orders = [order for order in state.orders if self._in_range(order.submitted_at, start, end)]
             fills = [fill for fill in state.fills if self._in_range(fill.executed_at, start, end)]
             if limit is not None:
@@ -351,7 +340,7 @@ class BaseArenaService(Generic[StateT]):
     ) -> list[EquityPoint]:
         self.get_agent(agent_id)
         with self._order_lock:
-            state: Any = self._state(agent_id)
+            state = self._state(agent_id)
             points = list(state.equity_history)
             today_point = self._today_equity_points.get(agent_id)
             if today_point is not None and (
@@ -378,7 +367,7 @@ class BaseArenaService(Generic[StateT]):
         """
         self.get_agent(agent_id)
         with self._order_lock:
-            state: Any = self._state(agent_id)
+            state = self._state(agent_id)
             events = list(self._special_events(state))
         events.sort(key=lambda event: (event.event_date, event.occurred_at))
         if start_date is not None:
@@ -395,7 +384,7 @@ class BaseArenaService(Generic[StateT]):
         entries: list[RankingSnapshot] = []
         for agent_id, agent in self.list_agents():
             with self._order_lock:
-                state: Any = self._state(agent_id)
+                state = self._state(agent_id)
                 portfolio = self._build_portfolio(state)
                 point = self._resolve_equity_point(state, target_date, portfolio)
             return_pct = (
@@ -406,7 +395,7 @@ class BaseArenaService(Generic[StateT]):
                     trade_date=point.trade_date,
                     agent_id=agent_id,
                     display_name=agent.display_name,
-                    currency=agent.currency,
+                    currency=None,
                     cash=round(portfolio.cash, 2),
                     market_value=round(portfolio.market_value, 2),
                     total_equity=round(point.total_equity, 2),
@@ -415,7 +404,7 @@ class BaseArenaService(Generic[StateT]):
                     unrealized_pnl=round(point.unrealized_pnl, 2),
                 )
             )
-        # Rank by % return so HKD and USD agents sit on a comparable scale.
+        # Rank by % return rather than absolute account size.
         ranked = sorted(entries, key=lambda entry: (-entry.return_pct, entry.agent_id))
         if target_date is None:
             self._rankings_cache = ranked
@@ -423,7 +412,7 @@ class BaseArenaService(Generic[StateT]):
 
     def _resolve_equity_point(
         self,
-        state: Any,
+        state: AgentState,
         target_date: date | None,
         portfolio: PortfolioSnapshot,
     ) -> EquityPoint:
@@ -441,7 +430,7 @@ class BaseArenaService(Generic[StateT]):
             unrealized_pnl=portfolio.unrealized_pnl,
         )
 
-    def _build_today_equity_point(self, state: StateT) -> EquityPoint:
+    def _build_today_equity_point(self, state: AgentState) -> EquityPoint:
         portfolio = self._build_portfolio(state)
         return EquityPoint(
             trade_date=self._now().date(),
@@ -452,11 +441,11 @@ class BaseArenaService(Generic[StateT]):
             unrealized_pnl=portfolio.unrealized_pnl,
         )
 
-    def _update_today_equity_point(self, state: Any) -> None:
+    def _update_today_equity_point(self, state: AgentState) -> None:
         """In-memory only — caller is responsible for persistence."""
         self._today_equity_points[state.agent_id] = self._build_today_equity_point(state)
 
-    def _freeze_today_equity(self, state: Any) -> None:
+    def _freeze_today_equity(self, state: AgentState) -> None:
         """Replace or append today's equity point in `state.equity_history`."""
         today = self._now().date()
         point = self._build_today_equity_point(state)
@@ -586,7 +575,7 @@ class BaseArenaService(Generic[StateT]):
             return False
         return True
 
-    def _state(self, agent_id: str) -> StateT:
+    def _state(self, agent_id: str) -> AgentState:
         state = self._states.get(agent_id)
         if state is not None:
             return state
@@ -594,9 +583,9 @@ class BaseArenaService(Generic[StateT]):
         path = self._state_path(agent_id)
         if path.exists():
             with path.open("r", encoding="utf-8") as handle:
-                state = self._state_cls.model_validate(json.load(handle))
+                state = AgentState.model_validate(json.load(handle))
         else:
-            state = self._state_cls(agent_id=agent_id, cash=agent.initial_cash)
+            state = AgentState(agent_id=agent_id, cash=agent.initial_cash)
             self._save_agent_state(state)
         self._states[agent_id] = state
         return state
@@ -607,19 +596,22 @@ class BaseArenaService(Generic[StateT]):
             if not config_path.exists():
                 continue
             with config_path.open("r", encoding="utf-8") as handle:
-                self._agents[agent_dir.name] = AgentConfig.model_validate(json.load(handle))
+                agent = AgentConfig.model_validate(json.load(handle))
+                agent.currency = None
+                self._agents[agent_dir.name] = agent
             state_path = agent_dir / "state.json"
             if state_path.exists():
                 with state_path.open("r", encoding="utf-8") as handle:
-                    self._states[agent_dir.name] = self._state_cls.model_validate(
-                        json.load(handle)
-                    )
+                    self._states[agent_dir.name] = AgentState.model_validate(json.load(handle))
 
     def _save_agent_config(self, agent_id: str, agent: AgentConfig) -> None:
         self._agent_dir(agent_id).mkdir(parents=True, exist_ok=True)
-        _atomic_write_json(self._config_path(agent_id), agent.model_dump(mode="json"))
+        _atomic_write_json(
+            self._config_path(agent_id),
+            agent.model_dump(mode="json", exclude_none=True),
+        )
 
-    def _save_agent_state(self, state: Any) -> None:
+    def _save_agent_state(self, state: AgentState) -> None:
         self._states[state.agent_id] = state
         self._agent_dir(state.agent_id).mkdir(parents=True, exist_ok=True)
         _atomic_write_json(self._state_path(state.agent_id), state.model_dump(mode="json"))

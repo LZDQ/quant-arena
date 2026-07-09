@@ -1,8 +1,7 @@
 """Render a daily-report markdown document to PDF bytes.
 
-Shared by every arena via :class:`BaseArenaService`; implemented once here so
-the three arenas (A-share / Futumoo / IB) all produce identical output. The
-pipeline is ``python-markdown`` -> HTML+CSS -> ``weasyprint`` -> PDF, chosen
+Used by arena-local daily-report flows. The pipeline is ``python-markdown`` ->
+HTML+CSS -> ``weasyprint`` -> PDF, chosen
 for solid CJK font handling and wide-table layout without needing a headless
 browser. Reports are written in Chinese and contain wide multi-column tables,
 so the CSS below is tuned for those (small fixed-layout tables, CJK font

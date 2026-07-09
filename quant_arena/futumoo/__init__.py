@@ -2,8 +2,8 @@
 
 Trading is fully offline — orders are queued as pending and matched
 against `last_price` snapshots polled from Futu OpenD. Each agent
-holds two cash buckets (HKD, USD) and two position books, and the
-HK and US books are governed by separate `RegionArena` strategies
+chooses one currency (HKD or USD), and the HK and US books are governed by
+separate `RegionArena` strategies
 that own their session windows, trading-day calendars, lot-size
 rules, and (for the US) Pattern-Day-Trader enforcement. Symbols
 must use the `HK.` or `US.` Futu prefix; other markets are rejected.

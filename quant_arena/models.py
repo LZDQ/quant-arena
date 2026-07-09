@@ -250,10 +250,10 @@ class PositionSnapshot(BaseModel):
 
 
 class PortfolioSnapshot(BaseModel):
-    """Domain portfolio snapshot. All monetary fields are in `currency`."""
+    """Domain portfolio snapshot. `currency` is arena-local and may be unset."""
 
     agent_id: str
-    currency: Literal["CNY", "HKD", "USD"] = "CNY"
+    currency: str | None = None
     cash: float
     market_value: float
     total_equity: float
@@ -273,12 +273,12 @@ class OperationLog(BaseModel):
 
 
 class RankingSnapshot(BaseModel):
-    """Domain ranking row. Monetary fields are in the agent's own currency."""
+    """Domain ranking row. Monetary fields use the arena's own denomination."""
 
     trade_date: date
     agent_id: str
     display_name: str
-    currency: Literal["CNY", "HKD", "USD"]
+    currency: str | None = None
     cash: float
     market_value: float
     total_equity: float
@@ -294,7 +294,7 @@ class MonitoredAgentSnapshot(BaseModel):
     name: str
     display_name: str
     role: Literal["normal", "monitor"]
-    currency: Literal["CNY", "HKD", "USD"]
+    currency: str | None = None
     initial_cash: float
     return_pct: float
     portfolio: PortfolioSnapshot
@@ -307,7 +307,7 @@ class AgentMetadata(BaseModel):
     name: str
     display_name: str
     role: Literal["normal", "monitor"]
-    currency: Literal["CNY", "HKD", "USD"]
+    currency: str | None = None
 
 
 class DailyReport(BaseModel):

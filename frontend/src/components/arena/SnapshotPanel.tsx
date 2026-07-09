@@ -3,7 +3,7 @@ import { CurveChart, buildCurveSeries, type CurveSeries } from "../../CurveChart
 import type {
   AgentNotificationTargets,
   AgentSnapshotResponse,
-  Currency,
+  ArenaCurrency,
   NotificationDestinations,
   RankingEntry,
   SpecialEvent,
@@ -33,8 +33,8 @@ type SnapshotPanelProps = {
   onManualReset: () => void;
   onDelete: () => void;
   symbolHeader: string;
-  formatAmount: (value: number | null | undefined, currency: Currency) => string;
-  formatYAxisLabel: (value: number, currency: Currency) => string;
+  formatAmount: (value: number | null | undefined, currency: ArenaCurrency) => string;
+  formatYAxisLabel: (value: number, currency: ArenaCurrency) => string;
   formatDateTime: (value: string | null | undefined) => string;
   formatTime: (value: string | null | undefined) => string;
 };
@@ -98,7 +98,6 @@ export function SnapshotPanel({
           {snapshot ? (
             <div className="id">
               {snapshot.agent.agent_id} ·{" "}
-              {snapshot.agent.ib_mode ? `${snapshot.agent.ib_mode.toUpperCase()} · ` : ""}
               {snapshot.agent.role.toUpperCase()} ·{" "}
               {snapshot.agent.enabled ? "LIVE" : "OFFLINE"}
             </div>
@@ -135,7 +134,9 @@ export function SnapshotPanel({
         <>
           <section className="stat-row">
             <article className="stat-tile">
-              <p className="label">Total Equity · {snapshot.agent.currency}</p>
+              <p className="label">
+                Total Equity{snapshot.agent.currency ? ` · ${snapshot.agent.currency}` : ""}
+              </p>
               <div className="value">
                 {formatAmount(snapshot.portfolio.total_equity, snapshot.agent.currency)}
               </div>

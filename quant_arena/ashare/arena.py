@@ -1,10 +1,8 @@
 """A-share trading simulation engine.
 
-Inherits common scaffolding (agent registry, equity curve, daily
-reports, persistence) from `BaseArenaService`. The A-share-specific
-parts are: T+1 lot accounting, intraday-tick order matching against
-AKShare-sina data, daily price-band gating, 100-lot rule, main-board
-gating, and the 9:30 / 15:00 session window.
+Owns the A-share simulator, including T+1 lot accounting, intraday-tick
+order matching against AKShare-sina data, daily price-band gating, 100-lot
+rule, main-board gating, and the 9:30 / 15:00 session window.
 """
 
 import asyncio
@@ -18,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from quant_arena.arena_base import BaseArenaService
+from quant_arena.ashare.base import AShareArenaBase
 from quant_arena.ashare.service import AShareService
 from quant_arena.clock import SHANGHAI_TZ, now_shanghai
 from quant_arena.config import AShareFeeConfig
@@ -49,7 +47,7 @@ class IntradayCodeState:
     latest_count: int | None = None
 
 
-class ArenaService(BaseArenaService[AgentState]):
+class ArenaService(AShareArenaBase):
     """A-share trading simulator: agent state, order matching, ranking."""
 
     def __init__(
@@ -63,7 +61,6 @@ class ArenaService(BaseArenaService[AgentState]):
         super().__init__(
             agents_root=agents_root,
             notifier=notifier,
-            state_cls=AgentState,
         )
         self.market = market
         self.fees = fees
@@ -652,11 +649,8 @@ class ArenaService(BaseArenaService[AgentState]):
             )
         total_equity = state.cash + market_value
         pending_orders = [order for order in state.orders if order.status == "pending"]
-        agent = self._agents.get(state.agent_id)
-        currency = agent.currency if agent is not None else "CNY"
         return PortfolioSnapshot(
             agent_id=state.agent_id,
-            currency=currency,
             cash=round(state.cash, 2),
             market_value=round(market_value, 2),
             total_equity=round(total_equity, 2),

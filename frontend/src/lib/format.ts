@@ -1,11 +1,9 @@
 // Formatting helpers shared across the app.
 //
-// Previously these were copy-pasted: the currency/date formatters were
-// byte-identical in FutumooApp and IBApp, and `todayStamp`, `signedPct`,
-// `percentClass` and `formatDateShort` were duplicated between ArenaDashboard
-// and CurveChart. They now live here so there is exactly one implementation.
+// Shared small formatting helpers for dates, percentages, and Futu currency
+// formatting.
 
-import type { Currency } from "./types";
+import type { ArenaCurrency, Currency } from "./types";
 
 export function pad2(value: number): string {
   return value.toString().padStart(2, "0");
@@ -74,20 +72,18 @@ export function todayStamp(): Stamp {
 // --- Currency / per-arena formatting factory -----------------------------
 
 const CURRENCY_FORMATTERS: Record<Currency, Intl.NumberFormat> = {
-  CNY: new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY", maximumFractionDigits: 2 }),
   HKD: new Intl.NumberFormat("en-HK", { style: "currency", currency: "HKD", maximumFractionDigits: 2 }),
   USD: new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }),
 };
 
 const CURRENCY_GLYPH: Record<Currency, string> = {
-  CNY: "¥",
   HKD: "HK$",
   USD: "$",
 };
 
 export type ArenaFormatting = {
-  formatAmount: (value: number | null | undefined, currency: Currency) => string;
-  formatYAxisLabel: (value: number, currency: Currency) => string;
+  formatAmount: (value: number | null | undefined, currency: ArenaCurrency) => string;
+  formatYAxisLabel: (value: number, currency: ArenaCurrency) => string;
   formatDateTime: (value: string | null | undefined) => string;
   formatTime: (value: string | null | undefined) => string;
 };
@@ -101,9 +97,7 @@ export type ArenaFormattingOptions = {
 };
 
 /**
- * Build the four currency-aware formatters an arena needs. Collapses the
- * previously-identical FutumooApp/IBApp blocks and AShareApp's near-identical
- * one into a single configurable factory.
+ * Build the four currency-aware formatters an arena needs.
  */
 export function createArenaFormatting(options: ArenaFormattingOptions = {}): ArenaFormatting {
   const dateLocale = options.dateLocale ?? "en-US";
@@ -125,9 +119,13 @@ export function createArenaFormatting(options: ArenaFormattingOptions = {}): Are
 
   return {
     formatAmount: (value, currency) =>
-      value == null ? "--" : CURRENCY_FORMATTERS[currency].format(value),
+      value == null
+        ? "--"
+        : currency
+          ? CURRENCY_FORMATTERS[currency].format(value)
+          : value.toLocaleString("en-US", { maximumFractionDigits: 2 }),
     formatYAxisLabel: (value, currency) =>
-      `${CURRENCY_GLYPH[currency]}${Math.round(value).toLocaleString("en-US")}`,
+      `${currency ? CURRENCY_GLYPH[currency] : ""}${Math.round(value).toLocaleString("en-US")}`,
     formatDateTime: (value) => (value ? datetimeFormatter.format(new Date(value)) : "--"),
     formatTime: (value) => (value ? timeFormatter.format(new Date(value)) : "--"),
   };

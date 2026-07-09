@@ -1,9 +1,7 @@
 // One typed API client for the whole frontend.
 //
-// Replaces the two ad-hoc fetch layers (App.tsx's inline `fetch` calls and
-// ArenaDashboard's in-component `apiFetch`) that each resolved the base URL
-// their own way. Every endpoint is a typed method here, and the base-URL rule
-// lives in exactly one place.
+// Every endpoint is a typed method here, and the base-URL rule lives in
+// exactly one place.
 
 import type {
   AgentCreatedResponse,
@@ -67,8 +65,8 @@ export class ApiError extends Error {
 export type ArenaApi = ReturnType<typeof createArenaApi>;
 
 /**
- * Build an API client bound to an arena route prefix (e.g. "" for A-Share,
- * "/futumoo", "/ib"). Global endpoints ignore the prefix; per-arena endpoints
+ * Build an API client bound to an arena route prefix (e.g. "" for A-share or
+ * "/futumoo"). Global endpoints ignore the prefix; per-arena endpoints
  * mount under `/api${apiPrefix}`. The base URL comes from VITE_API_BASE.
  */
 export function createArenaApi(apiPrefix = "") {
@@ -94,6 +92,25 @@ export function createArenaApi(apiPrefix = "") {
 
   const arena = (suffix: string) => `/api${apiPrefix}${suffix}`;
 
+  function createAgentPayload(form: CreateAgentForm) {
+    const payload: {
+      agent_id: string;
+      display_name: string;
+      initial_cash: number;
+      role: "normal" | "monitor";
+      currency?: string;
+    } = {
+      agent_id: form.agent_id,
+      display_name: form.display_name,
+      initial_cash: Number(form.initial_cash),
+      role: form.role,
+    };
+    if (form.currency) {
+      payload.currency = form.currency;
+    }
+    return payload;
+  }
+
   return {
     base,
     request,
@@ -118,7 +135,7 @@ export function createArenaApi(apiPrefix = "") {
     createAgent: (form: CreateAgentForm) =>
       request<AgentCreatedResponse>(arena(`/agents`), {
         method: "POST",
-        body: JSON.stringify({ ...form, initial_cash: Number(form.initial_cash) }),
+        body: JSON.stringify(createAgentPayload(form)),
       }),
     deleteAgent: (agentId: string) =>
       request<void>(arena(`/agents/${agentId}`), { method: "DELETE" }),

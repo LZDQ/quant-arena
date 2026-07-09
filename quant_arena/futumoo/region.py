@@ -29,12 +29,9 @@ US:
       predict from the pending order before it fills.
 """
 
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
 from datetime import date, datetime, time, timedelta
 from logging import getLogger
-from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from quant_arena.config import FutumooConfig, FutumooHKFeeConfig, FutumooUSFeeConfig
@@ -44,10 +41,8 @@ from quant_arena.futumoo.models import (
     FutumooAgentState,
     FutumooPosition,
 )
+from quant_arena.futumoo.service import FutumooService
 from quant_arena.models import FillRecord, OrderRecord, SubmitOrder
-
-if TYPE_CHECKING:
-    from quant_arena.futumoo.service import FutumooService
 
 logger = getLogger(__name__)
 

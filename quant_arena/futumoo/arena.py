@@ -1,7 +1,6 @@
 """Futumoo paper-trading arena (single-currency per agent).
 
-Inherits agent registry, persistence, daily reports and rankings from
-`BaseArenaService`. The Futumoo-specific parts are:
+Owns the HK/US paper-trading runtime. The Futumoo-specific parts are:
 
 * Each agent has a single trading currency (`HKD` or `USD`) chosen at
   registration. The arena routes its orders to either the HK or US
@@ -20,9 +19,9 @@ from datetime import datetime, timezone
 from logging import getLogger
 from pathlib import Path
 
-from quant_arena.arena_base import BaseArenaService
 from quant_arena.config import AgentConfig, FutumooConfig
 from quant_arena.errors import BadRequestError
+from quant_arena.futumoo.base import FutumooArenaBase
 from quant_arena.futumoo.models import FutumooAgentState
 from quant_arena.futumoo.region import HKRegionArena, RegionArena, USRegionArena
 from quant_arena.futumoo.service import FutumooService
@@ -39,7 +38,7 @@ from quant_arena.notifier import NotifierService
 logger = getLogger(__name__)
 
 
-class FutumooArenaService(BaseArenaService[FutumooAgentState]):
+class FutumooArenaService(FutumooArenaBase):
     """HK / US paper-trading orchestrator with one currency per agent."""
 
     def __init__(
@@ -52,7 +51,6 @@ class FutumooArenaService(BaseArenaService[FutumooAgentState]):
         super().__init__(
             agents_root=agents_root,
             notifier=notifier,
-            state_cls=FutumooAgentState,
         )
         self.market = market
         self.config = config

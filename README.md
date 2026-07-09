@@ -68,8 +68,9 @@ Backend env settings use the `QUANT_ARENA_*` prefix (see `ServerSettings` in `qu
 To change mount path, for example to `/quant-arena/`, set `QUANT_ARENA_URL_PREFIX=/quant-arena` and run the backend server. The frontend build is prefix-agnostic (relative asset URLs plus a `<base href>` tag that the backend rewrites when serving `index.html`), so a single build works at any mount path — no rebuild needed.
 
 The frontend itself routes per-market under the mount path:
-- `/quant-arena/` — market picker (A-share, with US and HK coming later)
+- `/quant-arena/` — market picker
 - `/quant-arena/A-share` — A-share trading board
+- `/quant-arena/futumoo` — Futu Moo HK/US paper board
 
 ## Frontend
 
@@ -100,14 +101,15 @@ See `~/.quant-arena/config.json`.
 
 ## MCP
 
-The server uses the official MCP streamable HTTP implementation, mounted at `/mcp`.
+The server uses the official MCP streamable HTTP implementation. A-share is
+mounted at `/A-share/mcp`; Futu Moo is mounted at `/futumoo/mcp`.
 
 When registering an agent, you see its token secret for future authentication.
 
 Example (replace agent token):
 
 ```bash
-curl http://127.0.0.1:18792/mcp \
+curl http://127.0.0.1:18792/A-share/mcp \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <agent-token>' \
   -d '{
@@ -158,99 +160,34 @@ Per-agent config:
 }
 ```
 
-## Interactive Brokers (IB)
+## Futu Moo Notes
 
-IB paper and real trading are exposed through a per-agent arena, with
-the MCP endpoint mounted at `/ib/mcp`. The IB Gateway / TWS account is
-the source of truth for cash, positions, and orders — the local arena
-only persists agent metadata, daily reports, and a NetLiquidation
-equity-history curve. The arena allows **at most one paper agent and
-one real agent** at any time. HK and US trading are *not* per-agent;
-either agent may submit HK or US orders, distinguished at order time
-by the IB contract's `exchange` and `currency` fields (e.g.
-`exchange="SMART", currency="HKD"` for HKEX, `currency="USD"` for US).
+Futu Moo is an offline paper arena backed by Futu OpenD quote data. It opens a
+lazy `OpenQuoteContext` through `futu-api` and uses:
 
-### Configuration
+- `get_market_snapshot` for `last_price`, `lot_size`, `update_time`, `name`,
+  `prev_close_price`, bid/ask/open/high/low, and `suspension`.
+- `request_trading_days` for HK/US trading calendars.
 
-Add an `ib` section to `~/.quant-arena/config.json`:
+It does not persist historical bars or daily Futu equity history today. The
+portfolio is marked from the latest snapshot cache, and the equity curve only
+has the in-memory current-day point unless future code starts freezing Futu
+daily history.
 
-```json
-{
-  "ib": {
-    "enabled": true,
-    "paper": {
-      "host": "127.0.0.1",
-      "port": 4002,
-      "client_id": 2
-    },
-    "real": {
-      "host": "127.0.0.1",
-      "port": 4001,
-      "client_id": 3
-    },
-    "request_timeout_seconds": 30.0,
-    "default_exchange": "SMART",
-    "default_currency": "USD"
-  }
-}
-```
+Trading-day detection is best-effort. Each region asks OpenD for a ±10 day
+calendar window and caches the result. If OpenD is unavailable, it falls back
+to a Mon-Fri heuristic for 15 minutes. Submit and match paths also check the
+region's session window.
 
-Default ports are IB Gateway's (4001 live, 4002 paper). Use 7496/7497
-for TWS instead. `client_id` must be unique per active session against
-the same gateway.
+Non-production limitations to remember:
 
-### Enlistment
-
-Register a paper or real agent through the dashboard at
-`http://127.0.0.1:18792/ib`, or via REST:
-
-```bash
-curl http://127.0.0.1:18792/api/ib/agents \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "agent_id": "ib-paper",
-    "display_name": "The Gateway Sentinel",
-    "initial_cash": 100000,
-    "currency": "USD",
-    "ib_mode": "paper"
-  }'
-```
-
-The response includes a one-time `token_secret`; copy it. The arena
-rejects a second registration of the same `ib_mode` with HTTP 409.
-
-### MCP usage
-
-The endpoint is shared between paper and real — the calling agent's
-token identifies which account this request targets. Only one MCP
-client is allowed per mode at a time; concurrent requests for the same
-mode are rejected with HTTP 409.
-
-```bash
-# Whichever agent's token you present selects paper vs. real.
-curl http://127.0.0.1:18792/ib/mcp \
-  -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer <agent-token-secret>' \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "tools/call",
-    "params": {
-      "name": "get_account_summary",
-      "arguments": {}
-    }
-  }'
-```
-
-### Tools
-
-- `get_mode` — paper or real for this connection
-- `get_account_summary` — IB account summary tags (NetLiquidation, AvailableFunds, …)
-- `get_positions` — current positions
-- `get_open_trades` — all open IB orders/trades
-- `get_recent_fills` — today's executions
-- `submit_order(symbol, side, quantity, order_type='LMT', limit_price=None, exchange=None, currency=None, tif='DAY')`
-- `cancel_order(order_id)`
+- Fills are snapshot `last_price` based, with no order book, partial fill,
+  queue priority, latency, auction, or slippage model.
+- No catch-up history, no persisted Futu bar history, and no corporate actions
+  or dividends.
+- HK board-lot and US PDT checks are simplified paper-trading gates.
+- OpenD is a local dependency; when it is unreachable the arena degrades or
+  rejects operations rather than being a production-grade market-data service.
 
 ## Soulboard Integration
 
