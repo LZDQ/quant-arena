@@ -1,9 +1,9 @@
 """Futumoo paper-trading arena (single-currency per agent).
 
-Owns the HK/US paper-trading runtime. The Futumoo-specific parts are:
+Owns the HK/US/CN paper-trading runtime. The Futumoo-specific parts are:
 
-* Each agent has a single trading currency (`HKD` or `USD`) chosen at
-  registration. The arena routes its orders to either the HK or US
+* Each agent has a single trading currency (`HKD`, `USD`, or `CNY`) chosen at
+  registration. The arena routes its orders to either the HK, US, or CN
   region accordingly; orders for codes that don't match the agent's
   region are rejected at submission.
 * Pending-order matching against `last_price` polled from Futu OpenD,
@@ -23,7 +23,7 @@ from quant_arena.config import AgentConfig, FutumooConfig
 from quant_arena.errors import BadRequestError
 from quant_arena.futumoo.base import FutumooArenaBase
 from quant_arena.futumoo.models import FutumooAgentState
-from quant_arena.futumoo.region import HKRegionArena, RegionArena, USRegionArena
+from quant_arena.futumoo.region import CNRegionArena, HKRegionArena, RegionArena, USRegionArena
 from quant_arena.futumoo.service import FutumooService
 from quant_arena.models import (
     ManualPositionClearRecord,
@@ -39,7 +39,7 @@ logger = getLogger(__name__)
 
 
 class FutumooArenaService(FutumooArenaBase):
-    """HK / US paper-trading orchestrator with one currency per agent."""
+    """HK / US / CN paper-trading orchestrator with one currency per agent."""
 
     def __init__(
         self,
@@ -56,11 +56,13 @@ class FutumooArenaService(FutumooArenaBase):
         self.config = config
         self.hk = HKRegionArena(market=market, fees=config.hk_fees)
         self.us = USRegionArena(market=market, fees=config.us_fees, config=config)
+        self.cn = CNRegionArena(market=market, fees=config.cn_fees)
         self._region_by_currency: dict[str, RegionArena] = {
             self.hk.currency: self.hk,
             self.us.currency: self.us,
+            self.cn.currency: self.cn,
         }
-        self.regions: tuple[RegionArena, ...] = (self.hk, self.us)
+        self.regions: tuple[RegionArena, ...] = (self.hk, self.us, self.cn)
         self._latest_prices: dict[str, float] = {}
         self._code_names: dict[str, str] = {}
         self._snapshot_as_of: datetime | None = None
@@ -83,7 +85,7 @@ class FutumooArenaService(FutumooArenaBase):
     def add_agent(self, agent_id: str, agent: AgentConfig) -> AgentConfig:
         if agent.currency not in self._region_by_currency:
             raise BadRequestError(
-                f"Futumoo agents must use HKD or USD; got {agent.currency!r}."
+                f"Futumoo agents must use HKD, USD, or CNY; got {agent.currency!r}."
             )
         return super().add_agent(agent_id, agent)
 
@@ -110,7 +112,7 @@ class FutumooArenaService(FutumooArenaBase):
         if not region.owns_code(request.code):
             raise BadRequestError(
                 f"Agent {agent_id} trades {agent.currency} and can only submit "
-                f"`{region.code_prefix()}<symbol>` codes; got {request.code!r}."
+                f"`{region.code_format()}` codes; got {request.code!r}."
             )
         now = region.now()
         if submitted_at is not None:
@@ -152,7 +154,7 @@ class FutumooArenaService(FutumooArenaBase):
         """Snapshot once for `region` and try to fill its pending orders.
 
         Walks every agent whose currency maps to `region` (HKD agents for
-        HK, USD agents for US). Skips outside-of-session ticks.
+        HK, USD agents for US, CNY agents for CN). Skips outside-of-session ticks.
         """
         if not region.is_trading_day(region.now().date()):
             return

@@ -149,11 +149,19 @@
   border-color: rgba(34, 110, 64, 0.55);
   color: rgba(22, 78, 46, 1);
 }
+.roster-pill.currency-CNY {
+  background: rgba(164, 122, 45, 0.14);
+  border-color: rgba(164, 122, 45, 0.6);
+  color: rgba(120, 82, 24, 1);
+}
 .roster-row[data-currency="HKD"]::before {
   background: rgba(20, 80, 160, 0.45);
 }
 .roster-row[data-currency="USD"]::before {
   background: rgba(34, 110, 64, 0.45);
+}
+.roster-row[data-currency="CNY"]::before {
+  background: rgba(164, 122, 45, 0.5);
 }
 .roster-row.is-active[data-currency]::before {
   background: var(--vermillion);

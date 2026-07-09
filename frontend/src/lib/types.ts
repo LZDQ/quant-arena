@@ -5,7 +5,7 @@
 // picker and the chart all speak the same vocabulary and a backend field rename
 // only has to be reflected in one place.
 
-export type Currency = "HKD" | "USD";
+export type Currency = "HKD" | "USD" | "CNY";
 export type ArenaCurrency = Currency | null;
 
 export type AgentResponse = {
@@ -156,6 +156,29 @@ export type AgentNotificationTargets = {
 
 export type ArenaStatus = { slug: string; label: string; enabled: boolean };
 
+export type FutumooUserInfo = {
+  nick_name: string | null;
+  avatar_url: string | null;
+  user_id: string | null;
+  login_user_id: string | null;
+  user_attr: string | null;
+  api_level: string | null;
+  hk_qot_right: string | null;
+  us_qot_right: string | null;
+  cn_qot_right: string | null;
+  sub_quota: number | null;
+  history_kl_quota: number | null;
+  qot_logined: boolean;
+  trd_logined: boolean;
+  program_status_type: string | null;
+  program_status_desc: string | null;
+  server_ver: string | null;
+  market_hk: string | null;
+  market_us: string | null;
+  market_sh: string | null;
+  market_sz: string | null;
+};
+
 // --- Form / draft view-models -------------------------------------------
 
 export type CreateAgentForm = {
@@ -173,7 +196,7 @@ export type ManualClearForm = {
 };
 
 export type CurrencyOption = {
-  /** Backend currency code for arenas that need one, e.g. "HKD" or "USD". */
+  /** Backend currency code for arenas that need one, e.g. "HKD", "USD", or "CNY". */
   value: Currency;
   /** Label shown in the form (typically same as value, but may diverge). */
   label: string;

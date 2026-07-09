@@ -58,7 +58,7 @@ class CreateAgentRequest(BaseModel):
     """Request to create a new agent.
 
     `currency` is arena-local. A-share ignores it and stores no currency.
-    Futumoo requires `HKD` or `USD`.
+    Futumoo requires `HKD`, `USD`, or `CNY`.
     """
 
     agent_id: str
@@ -142,6 +142,31 @@ class NotificationDestinationsResponse(BaseModel):
 
     napcat_enabled: bool
     napcat_destinations: dict[str, NapCatTargetConfig]
+
+
+class FutumooUserInfoResponse(BaseModel):
+    """Logged-in Futu OpenD user and connection state."""
+
+    nick_name: str | None = None
+    avatar_url: str | None = None
+    user_id: str | None = None
+    login_user_id: str | None = None
+    user_attr: str | None = None
+    api_level: str | None = None
+    hk_qot_right: str | None = None
+    us_qot_right: str | None = None
+    cn_qot_right: str | None = None
+    sub_quota: int | None = None
+    history_kl_quota: int | None = None
+    qot_logined: bool
+    trd_logined: bool
+    program_status_type: str | None = None
+    program_status_desc: str | None = None
+    server_ver: str | None = None
+    market_hk: str | None = None
+    market_us: str | None = None
+    market_sh: str | None = None
+    market_sz: str | None = None
 
 
 class SetNapCatDestinationsRequest(BaseModel):

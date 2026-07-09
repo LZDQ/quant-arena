@@ -74,11 +74,13 @@ export function todayStamp(): Stamp {
 const CURRENCY_FORMATTERS: Record<Currency, Intl.NumberFormat> = {
   HKD: new Intl.NumberFormat("en-HK", { style: "currency", currency: "HKD", maximumFractionDigits: 2 }),
   USD: new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }),
+  CNY: new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY", maximumFractionDigits: 2 }),
 };
 
 const CURRENCY_GLYPH: Record<Currency, string> = {
   HKD: "HK$",
   USD: "$",
+  CNY: "¥",
 };
 
 export type ArenaFormatting = {

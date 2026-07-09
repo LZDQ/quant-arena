@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { EnlistForm } from "./components/arena/EnlistForm";
 import { Leaderboard } from "./components/arena/Leaderboard";
@@ -12,7 +12,7 @@ import { useLeaderboardCurves } from "./hooks/useLeaderboardCurves";
 import { usePersistentToggle } from "./hooks/usePersistentToggle";
 import { createArenaApi, urlPrefix } from "./lib/api";
 import { todayStamp } from "./lib/format";
-import type { ArenaCurrency, Currency } from "./lib/types";
+import type { ArenaCurrency, Currency, FutumooUserInfo } from "./lib/types";
 
 const BASE_URL = urlPrefix();
 
@@ -27,11 +27,17 @@ const currencyFormatters: Record<Currency, Intl.NumberFormat> = {
     currency: "USD",
     maximumFractionDigits: 2,
   }),
+  CNY: new Intl.NumberFormat("zh-CN", {
+    style: "currency",
+    currency: "CNY",
+    maximumFractionDigits: 2,
+  }),
 };
 
 const currencyGlyph: Record<Currency, string> = {
   HKD: "HK$",
   USD: "$",
+  CNY: "¥",
 };
 
 function formatAmount(value: number | null | undefined, currency: ArenaCurrency): string {
@@ -78,6 +84,100 @@ function formatYAxisLabel(value: number, currency: ArenaCurrency): string {
   return `${glyph}${Math.round(value).toLocaleString("en-US")}`;
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Failed to load Futu user info";
+}
+
+function statusText(value: boolean): string {
+  return value ? "ON" : "OFF";
+}
+
+function quotaText(value: number | null): string {
+  return value == null ? "--" : value.toLocaleString("en-US");
+}
+
+function FutumooUserInfoPanel({
+  info,
+  loading,
+  error,
+}: {
+  info: FutumooUserInfo | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  if (loading) {
+    return (
+      <div className="futumoo-user-panel is-muted">
+        <span className="futumoo-user-kicker">Futu User</span>
+        <strong>Connecting to OpenD</strong>
+        <span>Loading login state</span>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="futumoo-user-panel is-error">
+        <span className="futumoo-user-kicker">Futu User</span>
+        <strong>Unavailable</strong>
+        <span>{error}</span>
+      </div>
+    );
+  }
+  if (!info) {
+    return (
+      <div className="futumoo-user-panel is-muted">
+        <span className="futumoo-user-kicker">Futu User</span>
+        <strong>No OpenD user</strong>
+        <span>Quote context returned no profile</span>
+      </div>
+    );
+  }
+
+  const displayName = info.nick_name ?? (info.user_id ? `User ${info.user_id}` : "OpenD User");
+  const userId = info.user_id ?? info.login_user_id ?? "--";
+  const programStatus = info.program_status_type ?? "UNKNOWN";
+  const openDVersion = info.server_ver ? `OpenD ${info.server_ver}` : "OpenD";
+
+  return (
+    <div className="futumoo-user-panel">
+      <div className="futumoo-user-main">
+        {info.avatar_url && (
+          <img className="futumoo-user-avatar" src={info.avatar_url} alt="" referrerPolicy="no-referrer" />
+        )}
+        <div className="futumoo-user-identity">
+          <span className="futumoo-user-kicker">Futu User</span>
+          <strong>{displayName}</strong>
+          <span>ID {userId}</span>
+        </div>
+      </div>
+      <div className="futumoo-user-grid">
+        <span>QOT</span>
+        <strong>{statusText(info.qot_logined)}</strong>
+        <span>TRD</span>
+        <strong>{statusText(info.trd_logined)}</strong>
+        <span>HK</span>
+        <strong>{info.hk_qot_right ?? "--"}</strong>
+        <span>US</span>
+        <strong>{info.us_qot_right ?? "--"}</strong>
+        <span>CN</span>
+        <strong>{info.cn_qot_right ?? "--"}</strong>
+        <span>SH</span>
+        <strong>{info.market_sh ?? "--"}</strong>
+        <span>SZ</span>
+        <strong>{info.market_sz ?? "--"}</strong>
+        <span>SUB</span>
+        <strong>{quotaText(info.sub_quota)}</strong>
+        <span>KL</span>
+        <strong>{quotaText(info.history_kl_quota)}</strong>
+      </div>
+      <div className="futumoo-user-status">
+        <span>{programStatus}</span>
+        <span>{openDVersion}</span>
+      </div>
+    </div>
+  );
+}
+
 export function FutumooApp() {
   const api = useMemo(() => createArenaApi("/futumoo"), []);
   const arena = useArena(api);
@@ -88,7 +188,37 @@ export function FutumooApp() {
     true,
   );
   const [manualResetOpen, setManualResetOpen] = useState(false);
+  const [userInfo, setUserInfo] = useState<FutumooUserInfo | null>(null);
+  const [loadingUserInfo, setLoadingUserInfo] = useState(true);
+  const [userInfoError, setUserInfoError] = useState<string | null>(null);
   const stamp = todayStamp();
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingUserInfo(true);
+    setUserInfoError(null);
+    api
+      .getFutumooUserInfo()
+      .then((data) => {
+        if (!cancelled) {
+          setUserInfo(data);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setUserInfo(null);
+          setUserInfoError(errorMessage(err));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingUserInfo(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
 
   const selectedRanking = arena.snapshot
     ? arena.rankings.find((entry) => entry.agent_id === arena.snapshot?.agent.agent_id) ?? null
@@ -126,7 +256,7 @@ export function FutumooApp() {
         </div>
         <div className="masthead-meta">
           <span>OFFLINE PAPER · BUREAU OF SIMULATED EQUITIES</span>
-          <span>HK · US VIA FUTU OPEND</span>
+          <span>HK · US · CN VIA FUTU OPEND</span>
           <span>ONE CURRENCY PER AGENT · NO T+1</span>
           <span>
             {arena.loadingAgents || arena.loadingRankings ? (
@@ -141,6 +271,7 @@ export function FutumooApp() {
               </>
             )}
           </span>
+          <FutumooUserInfoPanel info={userInfo} loading={loadingUserInfo} error={userInfoError} />
         </div>
       </header>
       <div className="rule-thick" />
@@ -172,6 +303,7 @@ export function FutumooApp() {
             currencyOptions={[
               { value: "HKD", label: "HKD · Hong Kong Dollar" },
               { value: "USD", label: "USD · US Dollar" },
+              { value: "CNY", label: "CNY · Chinese Yuan" },
             ]}
           />
         </aside>

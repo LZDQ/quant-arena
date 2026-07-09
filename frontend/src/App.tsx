@@ -34,7 +34,7 @@ const MARKETS: Market[] = [
     no: "02",
     name: "Futu Moo",
     hanzi: "富途 · 离线",
-    tagline: "Offline paper · HK · US via OpenD",
+    tagline: "Offline paper · HK · US · CN via OpenD",
     status: "available",
   },
 ];

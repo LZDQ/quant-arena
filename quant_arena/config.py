@@ -171,13 +171,30 @@ class FutumooUSFeeConfig(BaseModel):
     )
 
 
+class FutumooCNFeeConfig(BaseModel):
+    """Mainland China-side fee configuration for the Futumoo paper-trading arena."""
+
+    commission_bps: float = Field(
+        default=0.0,
+        description="Broker commission in basis points applied to each filled CN order, in CNY.",
+    )
+    min_commission: float = Field(
+        default=0.0,
+        description="Minimum commission charged per filled CN order, in CNY.",
+    )
+    stamp_tax_bps: float = Field(
+        default=5.0,
+        description="Mainland stock stamp tax in basis points applied to sell fills.",
+    )
+
+
 class FutumooConfig(BaseModel):
-    """Futumoo HK/US paper-trading arena settings.
+    """Futumoo HK/US/CN paper-trading arena settings.
 
     Orders are matched against `last_price` snapshots polled from Futu OpenD,
-    not filled instantly. Each agent chooses one currency (`HKD` or `USD`),
-    which selects the HK or US region. Symbols must carry the region prefix
-    `HK.` or `US.`.
+    not filled instantly. Each agent chooses one currency (`HKD`, `USD`, or
+    `CNY`), which selects the HK, US, or mainland China region. Symbols must
+    carry the region prefix `HK.`, `US.`, `SH.`, or `SZ.`.
     """
 
     enabled: bool = Field(
@@ -214,6 +231,10 @@ class FutumooConfig(BaseModel):
         default_factory=FutumooUSFeeConfig,
         description="Fee schedule applied to US fills.",
     )
+    cn_fees: FutumooCNFeeConfig = Field(
+        default_factory=FutumooCNFeeConfig,
+        description="Fee schedule applied to mainland China fills.",
+    )
 
 
 class AppConfig(BaseModel):
@@ -237,8 +258,9 @@ class AgentConfig(BaseModel):
     """One managed trading agent.
 
     Currency is arena-local. A-share leaves it unset; Futumoo agents set
-    `HKD` (only `HK.<code>` symbols allowed) or `USD` (only `US.<ticker>`
-    symbols allowed).
+    `HKD` (only `HK.<code>` symbols allowed), `USD` (only `US.<ticker>`
+    symbols allowed), or `CNY` (only `SH.<code>` / `SZ.<code>` symbols
+    allowed).
     """
 
     display_name: str = Field(
@@ -253,7 +275,7 @@ class AgentConfig(BaseModel):
     )
     currency: str | None = Field(
         default=None,
-        description="Arena-local trading currency. Futumoo uses HKD or USD; A-share leaves this unset.",
+        description="Arena-local trading currency. Futumoo uses HKD, USD, or CNY; A-share leaves this unset.",
     )
     enabled: bool = Field(
         default=True,

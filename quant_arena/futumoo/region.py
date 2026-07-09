@@ -1,9 +1,9 @@
 """Per-region trading rule enforcers for the Futumoo arena.
 
-Each region — HK and US — owns its own session window, calendar source,
+Each region — HK, US, and mainland China — owns its own session window, calendar source,
 order-validation rules, and fee schedule. Each agent has a single
-currency (`HKD` or `USD`) and only ever interacts with one region:
-HKD → HK, USD → US. The top-level `FutumooArenaService` picks the
+currency (`HKD`, `USD`, or `CNY`) and only ever interacts with one region:
+HKD → HK, USD → US, CNY → CN. The top-level `FutumooArenaService` picks the
 region by agent currency and rejects any code whose prefix doesn't
 match.
 
@@ -27,6 +27,14 @@ US:
       a buy and a sell have filled — a deliberate simplification of
       FINRA Rule 4210(f)(8)'s direction-change counting that's easy to
       predict from the pending order before it fills.
+
+CN:
+    * 9:30–11:30 + 13:00–15:00 China time, Mon–Fri excluding mainland
+      market holidays from Futu's CN calendar.
+    * Symbols must use `SH.` or `SZ.`.
+    * Buy quantity must be a multiple of the per-symbol lot size reported
+      in Futu's snapshot; sell quantity may be any amount up to inventory.
+    * No T+1 settlement holdback in this paper arena.
 """
 
 from abc import ABC, abstractmethod
@@ -34,7 +42,7 @@ from datetime import date, datetime, time, timedelta
 from logging import getLogger
 from zoneinfo import ZoneInfo
 
-from quant_arena.config import FutumooConfig, FutumooHKFeeConfig, FutumooUSFeeConfig
+from quant_arena.config import FutumooCNFeeConfig, FutumooConfig, FutumooHKFeeConfig, FutumooUSFeeConfig
 from quant_arena.errors import BadRequestError, ServiceError
 from quant_arena.futumoo.models import (
     DayTradeRecord,
@@ -49,13 +57,14 @@ logger = getLogger(__name__)
 
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
 US_TZ = ZoneInfo("America/New_York")
+CN_TZ = ZoneInfo("Asia/Shanghai")
 
 
 class RegionArena(ABC):
-    """Abstract base for one regional arena (HK or US)."""
+    """Abstract base for one regional arena."""
 
-    region: str  # "HK" or "US"
-    currency: str  # "HKD" or "USD"
+    region: str  # "HK", "US", or "CN"
+    currency: str  # "HKD", "USD", or "CNY"
     futu_market: str  # value passed to `service.request_trading_days`
     tz: ZoneInfo
 
@@ -71,6 +80,10 @@ class RegionArena(ABC):
     @classmethod
     def code_prefix(cls) -> str:
         return f"{cls.region}."
+
+    @classmethod
+    def code_format(cls) -> str:
+        return f"{cls.code_prefix()}<symbol>"
 
     def owns_code(self, code: str) -> bool:
         return code.startswith(self.code_prefix())
@@ -461,3 +474,67 @@ class USRegionArena(RegionArena):
         if already_counted:
             return
         state.day_trades.append(DayTradeRecord(trade_date=local_date, code=fill.code))
+
+
+class CNRegionArena(RegionArena):
+    region = "CN"
+    currency = "CNY"
+    futu_market = "CN"
+    tz = CN_TZ
+
+    _MORNING_OPEN = time(9, 30)
+    _MORNING_CLOSE = time(11, 30)
+    _AFTERNOON_OPEN = time(13, 0)
+    _AFTERNOON_CLOSE = time(15, 0)
+
+    def __init__(self, market: FutumooService, fees: FutumooCNFeeConfig):
+        super().__init__(market)
+        self.fees = fees
+
+    @classmethod
+    def code_format(cls) -> str:
+        return "SH.<code> or SZ.<code>"
+
+    def owns_code(self, code: str) -> bool:
+        return code.startswith("SH.") or code.startswith("SZ.")
+
+    def in_session(self, moment: datetime) -> bool:
+        local = moment.astimezone(self.tz).time()
+        if self._MORNING_OPEN <= local <= self._MORNING_CLOSE:
+            return True
+        if self._AFTERNOON_OPEN <= local <= self._AFTERNOON_CLOSE:
+            return True
+        return False
+
+    def _validate_buy(
+        self,
+        state: FutumooAgentState,
+        request: SubmitOrder,
+        snapshot_row: dict,
+    ) -> None:
+        lot_size_raw = snapshot_row.get("lot_size")
+        try:
+            lot_size = int(lot_size_raw)
+        except (TypeError, ValueError):
+            raise BadRequestError(
+                f"Could not resolve CN lot size for {request.code} (got {lot_size_raw!r})."
+            )
+        if lot_size <= 0:
+            raise BadRequestError(
+                f"Invalid CN lot size {lot_size} for {request.code}."
+            )
+        if request.quantity % lot_size != 0:
+            raise BadRequestError(
+                f"CN buy quantity {request.quantity} for {request.code} must be a "
+                f"multiple of the lot size {lot_size}."
+            )
+        super()._validate_buy(state, request, snapshot_row)
+
+    def fees_for(self, notional: float, side: str) -> tuple[float, float]:
+        commission = self._bps_commission(notional, self.fees)
+        stamp_tax = (
+            round(notional * self.fees.stamp_tax_bps / 10000.0, 2)
+            if side == "sell" and notional > 0 and self.fees.stamp_tax_bps > 0
+            else 0.0
+        )
+        return commission, stamp_tax

@@ -1,4 +1,4 @@
-"""Persisted state shapes for the Futumoo (HK or US) paper-trading arena."""
+"""Persisted state shapes for the Futumoo paper-trading arena."""
 
 from datetime import date
 
@@ -8,7 +8,7 @@ from quant_arena.models import EquityPoint, FillRecord, ManualPositionClearRecor
 
 
 class FutumooPosition(BaseModel):
-    """One open long position. HK and US neither enforce T+1 sellability,
+    """One open long position. Futumoo regions do not enforce T+1 sellability,
     so a single (qty, avg_cost) pair is sufficient — no per-lot tracking."""
 
     quantity: int = Field(ge=0)

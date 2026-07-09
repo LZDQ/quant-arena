@@ -403,7 +403,7 @@ class FutumooArenaBase:
                     unrealized_pnl=round(point.unrealized_pnl, 2),
                 )
             )
-        # Rank by % return so HKD and USD agents sit on a comparable scale.
+        # Rank by % return so different Futumoo currencies sit on a comparable scale.
         ranked = sorted(entries, key=lambda entry: (-entry.return_pct, entry.agent_id))
         if target_date is None:
             self._rankings_cache = ranked

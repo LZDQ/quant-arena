@@ -1,13 +1,13 @@
-"""Thin Futu OpenD client used by the HK/US paper-trading arena.
+"""Thin Futu OpenD client used by the HK/US/CN paper-trading arena.
 
 Wraps `OpenQuoteContext` for two operations:
 
 * `get_snapshots(codes)` — returns a per-code dict that includes
   `last_price`, `lot_size`, `update_time` (region-local: HKT for HK,
-  ET for US), `prev_close_price`, and `suspension`. Used both for
+  ET for US, China time for CN), `prev_close_price`, and `suspension`. Used both for
   pending-order matching and for live portfolio mark-to-market.
 * `request_trading_days(market, start, end)` — returns the set of
-  trading dates Futu reports for the given market, used by the HK/US
+  trading dates Futu reports for the given market, used by the Futumoo
   region arenas as their session calendars.
 
 The connection is opened lazily and reused across calls. Because
@@ -26,6 +26,8 @@ import threading
 import time
 from datetime import date, datetime
 from logging import getLogger
+
+from pandas import DataFrame
 
 from quant_arena.errors import ServiceError
 
@@ -46,6 +48,35 @@ _SNAPSHOT_FIELDS: tuple[str, ...] = (
     "suspension",
     "update_time",
 )
+
+
+def _text_or_none(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text == "N/A":
+        return None
+    return text
+
+
+def _int_or_none(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value))
+    except ValueError:
+        return None
+
+
+def _bool_from_sdk(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    text = str(value).strip().lower()
+    return text in {"1", "true", "yes", "y"}
 
 
 class FutumooService:
@@ -185,7 +216,7 @@ class FutumooService:
         if not data:
             return days
         # Some SDK versions return a DataFrame; treat both shapes uniformly.
-        rows = data.to_dict(orient="records") if hasattr(data, "to_dict") else data
+        rows = data.to_dict(orient="records") if isinstance(data, DataFrame) else data
         for entry in rows:
             raw = entry.get("time") if isinstance(entry, dict) else None
             if not raw:
@@ -195,6 +226,43 @@ class FutumooService:
             except ValueError:
                 continue
         return days
+
+    def get_user_info(self) -> dict[str, object]:
+        """Return the logged-in Futu OpenD user plus quote/trade login state."""
+        ctx = self._ensure_quote_ctx()
+        ret, user_data = ctx.get_user_info(info_field=[1, 2, 4, 8, 16])
+        if ret != 0:
+            raise ServiceError(f"futu get_user_info failed: {user_data}")
+        if not isinstance(user_data, dict):
+            raise ServiceError("futu get_user_info returned an unexpected payload")
+        ret, state_data = ctx.get_global_state()
+        if ret != 0:
+            raise ServiceError(f"futu get_global_state failed: {state_data}")
+        if not isinstance(state_data, dict):
+            raise ServiceError("futu get_global_state returned an unexpected payload")
+
+        return {
+            "nick_name": _text_or_none(user_data.get("nick_name")),
+            "avatar_url": _text_or_none(user_data.get("avatar_url")),
+            "user_id": _text_or_none(user_data.get("user_id")),
+            "login_user_id": _text_or_none(ctx.get_login_user_id()),
+            "user_attr": _text_or_none(user_data.get("user_attr")),
+            "api_level": _text_or_none(user_data.get("api_level")),
+            "hk_qot_right": _text_or_none(user_data.get("hk_qot_right")),
+            "us_qot_right": _text_or_none(user_data.get("us_qot_right")),
+            "cn_qot_right": _text_or_none(user_data.get("cn_qot_right")),
+            "sub_quota": _int_or_none(user_data.get("sub_quota")),
+            "history_kl_quota": _int_or_none(user_data.get("history_kl_quota")),
+            "qot_logined": _bool_from_sdk(state_data.get("qot_logined")),
+            "trd_logined": _bool_from_sdk(state_data.get("trd_logined")),
+            "program_status_type": _text_or_none(state_data.get("program_status_type")),
+            "program_status_desc": _text_or_none(state_data.get("program_status_desc")),
+            "server_ver": _text_or_none(state_data.get("server_ver")),
+            "market_hk": _text_or_none(state_data.get("market_hk")),
+            "market_us": _text_or_none(state_data.get("market_us")),
+            "market_sh": _text_or_none(state_data.get("market_sh")),
+            "market_sz": _text_or_none(state_data.get("market_sz")),
+        }
 
     def close(self) -> None:
         with self._lock:

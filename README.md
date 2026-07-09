@@ -70,7 +70,7 @@ To change mount path, for example to `/quant-arena/`, set `QUANT_ARENA_URL_PREFI
 The frontend itself routes per-market under the mount path:
 - `/quant-arena/` — market picker
 - `/quant-arena/A-share` — A-share trading board
-- `/quant-arena/futumoo` — Futu Moo HK/US paper board
+- `/quant-arena/futumoo` — Futu Moo HK/US/CN paper board
 
 ## Frontend
 
@@ -167,7 +167,7 @@ lazy `OpenQuoteContext` through `futu-api` and uses:
 
 - `get_market_snapshot` for `last_price`, `lot_size`, `update_time`, `name`,
   `prev_close_price`, bid/ask/open/high/low, and `suspension`.
-- `request_trading_days` for HK/US trading calendars.
+- `request_trading_days` for HK/US/CN trading calendars.
 
 It does not persist historical bars or daily Futu equity history today. The
 portfolio is marked from the latest snapshot cache, and the equity curve only
@@ -185,7 +185,7 @@ Non-production limitations to remember:
   queue priority, latency, auction, or slippage model.
 - No catch-up history, no persisted Futu bar history, and no corporate actions
   or dividends.
-- HK board-lot and US PDT checks are simplified paper-trading gates.
+- HK/CN lot-size and US PDT checks are simplified paper-trading gates.
 - OpenD is a local dependency; when it is unreachable the arena degrades or
   rejects operations rather than being a production-grade market-data service.
 

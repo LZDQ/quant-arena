@@ -15,6 +15,7 @@ import type {
   ManualClearForm,
   NapCatTarget,
   NotificationDestinations,
+  FutumooUserInfo,
   RankingEntry,
   SpecialEvent,
 } from "./types";
@@ -128,6 +129,7 @@ export function createArenaApi(apiPrefix = "") {
         method: "PUT",
         body: JSON.stringify({ destinations }),
       }),
+    getFutumooUserInfo: () => request<FutumooUserInfo>(`/api/futumoo/user-info`),
     // --- Per-arena endpoints ---------------------------------------------
     listAgents: () => request<AgentResponse[]>(arena(`/agents`)),
     getSnapshot: (agentId: string) =>

@@ -1,4 +1,4 @@
-"""Futumoo MCP server: agent-token auth on top of the HK/US paper arena."""
+"""Futumoo MCP server: agent-token auth on top of the HK/US/CN paper arena."""
 
 from contextvars import ContextVar
 from datetime import date, datetime, timezone
@@ -70,7 +70,7 @@ def _current_agent_id() -> str:
 def create_futumoo_mcp_server(
     get_arena: Callable[[], FutumooArenaService],
 ) -> FastMCP:
-    """Create the Futumoo HK/US paper-trading MCP server."""
+    """Create the Futumoo HK/US/CN paper-trading MCP server."""
 
     def parse_filter_datetime(value: str | None) -> datetime | None:
         if not value:
@@ -165,14 +165,15 @@ def create_futumoo_mcp_server(
     @mcp.tool(
         description=(
             "Submit a limit-price buy or sell order on the Futumoo paper arena. "
-            "Each agent trades in a single currency (HKD or USD); HKD agents "
+            "Each agent trades in a single currency (HKD, USD, or CNY); HKD agents "
             "may only submit `HK.<code>` symbols and USD agents may only submit "
-            "`US.<ticker>` symbols. Orders are queued as pending and matched "
+            "`US.<ticker>` symbols; CNY agents may only submit `SH.<code>` or "
+            "`SZ.<code>` symbols. Orders are queued as pending and matched "
             "against `last_price` polled from Futu OpenD. Submissions are "
             "validated against the region's session window, trading-day "
-            "calendar, suspension flag, and side-specific rules: HK buys must "
-            "be a multiple of the per-symbol board lot, sells require "
-            "sufficient sellable inventory, and the US side enforces the FINRA "
+            "calendar, suspension flag, and side-specific rules: HK/CN buys "
+            "must be a multiple of the per-symbol lot size, sells require "
+            "sufficient inventory, and the US side enforces the FINRA "
             "pattern-day-trader limit (max 3 day-trades in any rolling 5 US "
             "business days while total equity is below 25,000 USD). Invalid "
             "orders are rejected at submission and never appear in the order log."

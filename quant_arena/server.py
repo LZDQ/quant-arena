@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from quant_arena.schemas import AgentCreatedResponse, AgentNotificationTargets, AgentResponse, AgentSnapshotResponse, ArenaStatus, CreateAgentRequest, DailyReportPage, ManualClearPositionsRequest, NotificationDestinationsResponse, OperationListResponse, PathsResponse, PortfolioResponse, SetNapCatDestinationsRequest, ToggleArenaRequest, ToggleArenaResponse
+from quant_arena.schemas import AgentCreatedResponse, AgentNotificationTargets, AgentResponse, AgentSnapshotResponse, ArenaStatus, CreateAgentRequest, DailyReportPage, FutumooUserInfoResponse, ManualClearPositionsRequest, NotificationDestinationsResponse, OperationListResponse, PathsResponse, PortfolioResponse, SetNapCatDestinationsRequest, ToggleArenaRequest, ToggleArenaResponse
 from quant_arena.ashare import (
     ArenaService,
     AShareService,
@@ -466,10 +466,17 @@ def create_app() -> FastAPI:
     if futumoo_enabled:
         _register_arena_routes("/futumoo", require_futumoo_arena)
 
+        @api.get("/api/futumoo/user-info", response_model=FutumooUserInfoResponse)
+        def get_futumoo_user_info() -> FutumooUserInfoResponse:
+            market = get_state().futumoo_market
+            if market is None:
+                raise RuntimeError("Futumoo market data is not enabled")
+            return FutumooUserInfoResponse.model_validate(market.get_user_info())
+
         @api.post("/api/futumoo/agents", response_model=AgentCreatedResponse)
         def create_futumoo_agent(request: CreateAgentRequest) -> AgentCreatedResponse:
             return _create_agent_handler(
-                request, require_futumoo_arena, ("HKD", "USD")
+                request, require_futumoo_arena, ("HKD", "USD", "CNY")
             )
 
     if ashare_enabled:
