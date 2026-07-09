@@ -52,6 +52,8 @@ class PathsResponse(BaseModel):
     config_path: str
     agents_root: str
     market_data_root: str
+    eodhd_agents_root: str | None = None
+    eodhd_market_data_root: str | None = None
 
 
 class CreateAgentRequest(BaseModel):
@@ -92,7 +94,7 @@ class AgentCreatedResponse(BaseModel):
 class ArenaStatus(BaseModel):
     """Whether one arena is enabled at startup. Persisted in config.json."""
 
-    slug: Literal["ashare", "futumoo"]
+    slug: Literal["ashare", "futumoo", "eodhd"]
     label: str
     enabled: bool
 
@@ -167,6 +169,19 @@ class FutumooUserInfoResponse(BaseModel):
     market_us: str | None = None
     market_sh: str | None = None
     market_sz: str | None = None
+
+
+class EODHDUserInfoResponse(BaseModel):
+    """Configured EODHD package/token/cache status for the page header."""
+
+    api_token_label: str
+    package_version: str
+    configured_exchanges: list[str]
+    market_data_root: str
+    code_names_count: int
+    last_daily_date: str | None = None
+    last_five_minute_date: str | None = None
+    all_in_one_assumed: bool
 
 
 class SetNapCatDestinationsRequest(BaseModel):

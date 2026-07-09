@@ -27,19 +27,36 @@ By default, startup creates:
 ```text
 ~/.quant-arena/
   config.json
-  market-data/
-    code_names.csv
-    bars/
-      <date>/
-        daily.csv
-        5min.csv
-  agents/
-    <agent_id>/
-      config.json
-      state.json
+  A-share/
+    market-data/
+      code_names.csv
+      bars/
+        <date>/
+          daily.csv
+          5min.csv
+    agents/
+      <agent_id>/
+        config.json
+        state.json
+  eodhd/
+    market-data/
+      README.md
+      code_names.csv
+      bars/
+        <date>/
+          daily.csv
+          5min.csv
+    agents/
+      <agent_id>/
+        config.json
+        state.json
 ```
 
-In production, `market-data` should be configured to a shared read-only directory with other users or agents. For more details, read `quant_arena/resources/README-market-data.md`.
+In production, each arena's `market_data_root` can be configured in
+`~/.quant-arena/config.json`. EODHD market data must not point at the A-share
+baostock directory; the server rejects identical or nested roots. For A-share
+details, read `quant_arena/resources/README-market-data.md`; for EODHD details,
+read `quant_arena/resources/README-eodhd-market-data.md`.
 
 ## Running
 
@@ -71,6 +88,7 @@ The frontend itself routes per-market under the mount path:
 - `/quant-arena/` — market picker
 - `/quant-arena/A-share` — A-share trading board
 - `/quant-arena/futumoo` — Futu Moo HK/US/CN paper board
+- `/quant-arena/eodhd` — EODHD all-in-one data paper board
 
 ## Frontend
 
@@ -102,7 +120,8 @@ See `~/.quant-arena/config.json`.
 ## MCP
 
 The server uses the official MCP streamable HTTP implementation. A-share is
-mounted at `/A-share/mcp`; Futu Moo is mounted at `/futumoo/mcp`.
+mounted at `/A-share/mcp`; Futu Moo is mounted at `/futumoo/mcp`; EODHD is
+mounted at `/eodhd/mcp`.
 
 When registering an agent, you see its token secret for future authentication.
 
@@ -188,6 +207,48 @@ Non-production limitations to remember:
 - HK/CN lot-size and US PDT checks are simplified paper-trading gates.
 - OpenD is a local dependency; when it is unreachable the arena degrades or
   rejects operations rather than being a production-grade market-data service.
+
+## EODHD Notes
+
+EODHD is a separate arena backed by the `eodhd` Python package. It assumes an
+all-in-one subscription and uses:
+
+- `get_exchange_symbols` to write `code_names.csv`.
+- `get_live_stock_prices` for live `last_price` snapshots and pending-order
+  matching. Bulk symbols are requested through the SDK's `s=` parameter.
+- `get_eod_splits_dividends_data` for bulk daily EOD rows.
+- `get_intraday_historical_data(interval="5m")` for 5-minute UTC intraday rows.
+
+Market data is persisted under `config.eodhd.market_data_root`, never under the
+A-share baostock root. The directory shape mirrors A-share for compatibility:
+`README.md`, `code_names.csv`, and `bars/YYYY-MM-DD/{daily.csv,5min.csv}`. The
+CSV columns remain EODHD-flavored; they are not baostock columns.
+
+The EODHD background task refreshes symbols once per UTC day and finalizes
+yesterday's daily and 5-minute CSV files after the configured UTC times. It uses
+a Mon-Fri business-day filter before making historical requests; holidays are
+left to the EODHD API returning empty/no rows. It does not persist a separate
+end-of-day equity ledger beyond the existing agent state/equity history.
+
+For manual bulk persistence, run `scripts/parse_eodhd_bars.py` with `--date` or
+`--start-date/--end-date`. It uses `config.eodhd` by default and supports
+`--exchange` repeats plus `--market-data-dir` and `--api-token` overrides.
+
+The MCP endpoint is `/eodhd/mcp`, with the same agent-token authentication
+header/Bearer flow as the other arenas. It also exposes
+`arena://market-data-path` so an authenticated agent can discover the configured
+EODHD CSV root.
+
+Non-production limitations to remember:
+
+- Fills are based on live snapshot `last_price`; there is no order book, partial
+  fill, latency, auction, queue priority, or slippage model.
+- Symbols must use EODHD exchange suffixes such as `AAPL.US`; the arena does not
+  enforce broker-region sessions, board lots, or PDT rules.
+- Historical persistence can be large with all-in-one access, especially 5-minute
+  bars across many exchanges.
+- The page header shows configured token/package/cache status. The EODHD SDK
+  does not expose a Futu-style logged-in user profile endpoint.
 
 ## Soulboard Integration
 

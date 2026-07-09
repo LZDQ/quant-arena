@@ -12,6 +12,7 @@ import type {
   CreateAgentForm,
   DailyReport,
   DailyReportPage,
+  EODHDUserInfo,
   ManualClearForm,
   NapCatTarget,
   NotificationDestinations,
@@ -130,6 +131,7 @@ export function createArenaApi(apiPrefix = "") {
         body: JSON.stringify({ destinations }),
       }),
     getFutumooUserInfo: () => request<FutumooUserInfo>(`/api/futumoo/user-info`),
+    getEODHDUserInfo: () => request<EODHDUserInfo>(`/api/eodhd/user-info`),
     // --- Per-arena endpoints ---------------------------------------------
     listAgents: () => request<AgentResponse[]>(arena(`/agents`)),
     getSnapshot: (agentId: string) =>

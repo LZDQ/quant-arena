@@ -237,6 +237,64 @@ class FutumooConfig(BaseModel):
     )
 
 
+class EODHDFeeConfig(BaseModel):
+    """Fee configuration for the EODHD paper-trading arena."""
+
+    commission_bps: float = Field(
+        default=0.0,
+        description="Broker commission in basis points applied to each EODHD fill.",
+    )
+    min_commission: float = Field(
+        default=0.0,
+        description="Minimum commission charged per EODHD fill.",
+    )
+
+
+class EODHDConfig(BaseModel):
+    """EODHD all-in-one market-data and paper-trading arena settings."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Whether the EODHD arena is enabled. When false, its routes, MCP mount, and background tasks are skipped.",
+    )
+    api_token: str = Field(
+        default="demo",
+        description="EODHD API token. The demo token is useful only for smoke checks.",
+    )
+    market_data_root: str = Field(
+        default=str(Path.home() / ".quant-arena" / "eodhd" / "market-data"),
+        description="Public root directory for EODHD market data files. Must not be the A-share baostock directory.",
+    )
+    exchanges: list[str] = Field(
+        default_factory=lambda: ["US"],
+        description="EODHD exchange codes to persist, for example US, NASDAQ, NYSE, LSE, XETRA.",
+    )
+    allowed_currencies: list[str] = Field(
+        default_factory=lambda: ["USD", "HKD", "CNY"],
+        description="Currencies agents may choose in the EODHD paper arena.",
+    )
+    default_currency: str = Field(
+        default="USD",
+        description="Currency used when creating an EODHD agent without an explicit currency.",
+    )
+    polling_interval_seconds: int = Field(
+        default=60,
+        description="Seconds between EODHD live-price match cycles and market-data finalization checks.",
+    )
+    daily_finalize_utc: str = Field(
+        default="01:30",
+        description="UTC HH:MM time after which yesterday's bulk EODHD daily bars are persisted.",
+    )
+    five_min_finalize_utc: str = Field(
+        default="02:00",
+        description="UTC HH:MM time after which yesterday's EODHD 5-minute bars are persisted.",
+    )
+    fees: EODHDFeeConfig = Field(
+        default_factory=EODHDFeeConfig,
+        description="Fee schedule applied to EODHD fills.",
+    )
+
+
 class AppConfig(BaseModel):
     """Top-level server configuration. Host/port are uvicorn CLI flags, not config."""
 
@@ -247,6 +305,10 @@ class AppConfig(BaseModel):
     futumoo: FutumooConfig = Field(
         default_factory=FutumooConfig,
         description="Futumoo offline paper trading settings.",
+    )
+    eodhd: EODHDConfig = Field(
+        default_factory=EODHDConfig,
+        description="EODHD all-in-one market-data and paper-trading settings.",
     )
     napcat: NapCatConfig = Field(
         default_factory=NapCatConfig,
@@ -260,7 +322,7 @@ class AgentConfig(BaseModel):
     Currency is arena-local. A-share leaves it unset; Futumoo agents set
     `HKD` (only `HK.<code>` symbols allowed), `USD` (only `US.<ticker>`
     symbols allowed), or `CNY` (only `SH.<code>` / `SZ.<code>` symbols
-    allowed).
+    allowed). EODHD agents use arena-configured currencies.
     """
 
     display_name: str = Field(
@@ -275,7 +337,7 @@ class AgentConfig(BaseModel):
     )
     currency: str | None = Field(
         default=None,
-        description="Arena-local trading currency. Futumoo uses HKD, USD, or CNY; A-share leaves this unset.",
+        description="Arena-local trading currency. Futumoo uses HKD, USD, or CNY; EODHD uses configured currencies; A-share leaves this unset.",
     )
     enabled: bool = Field(
         default=True,

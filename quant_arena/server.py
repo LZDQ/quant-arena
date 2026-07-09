@@ -13,7 +13,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from quant_arena.schemas import AgentCreatedResponse, AgentNotificationTargets, AgentResponse, AgentSnapshotResponse, ArenaStatus, CreateAgentRequest, DailyReportPage, FutumooUserInfoResponse, ManualClearPositionsRequest, NotificationDestinationsResponse, OperationListResponse, PathsResponse, PortfolioResponse, SetNapCatDestinationsRequest, ToggleArenaRequest, ToggleArenaResponse
+from quant_arena.schemas import (
+    AgentCreatedResponse,
+    AgentNotificationTargets,
+    AgentResponse,
+    AgentSnapshotResponse,
+    ArenaStatus,
+    CreateAgentRequest,
+    DailyReportPage,
+    EODHDUserInfoResponse,
+    FutumooUserInfoResponse,
+    ManualClearPositionsRequest,
+    NotificationDestinationsResponse,
+    OperationListResponse,
+    PathsResponse,
+    PortfolioResponse,
+    SetNapCatDestinationsRequest,
+    ToggleArenaRequest,
+    ToggleArenaResponse,
+)
 from quant_arena.ashare import (
     ArenaService,
     AShareService,
@@ -27,6 +45,12 @@ from quant_arena.futumoo import (
     FutumooService,
     create_futumoo_mcp_server,
     wrap_futumoo_mcp_with_agent_auth,
+)
+from quant_arena.eodhd import (
+    EODHDArenaService,
+    EODHDService,
+    create_eodhd_mcp_server,
+    wrap_eodhd_mcp_with_agent_auth,
 )
 from quant_arena.models import DailyReport, ManualPositionClearRecord, RankingSnapshot, SpecialEvent
 from quant_arena.notifier import NotifierService
@@ -51,6 +75,10 @@ class AppState:
         futumoo_agents_root: Path,
         futumoo_market: FutumooService | None,
         futumoo_arena: FutumooArenaService | None,
+        eodhd_agents_root: Path,
+        eodhd_market_data_root: Path,
+        eodhd_market: EODHDService | None,
+        eodhd_arena: EODHDArenaService | None,
         notifier: NotifierService,
     ):
         self.config_path = config_path
@@ -62,8 +90,32 @@ class AppState:
         self.futumoo_agents_root = futumoo_agents_root
         self.futumoo_market = futumoo_market
         self.futumoo_arena = futumoo_arena
+        self.eodhd_agents_root = eodhd_agents_root
+        self.eodhd_market_data_root = eodhd_market_data_root
+        self.eodhd_market = eodhd_market
+        self.eodhd_arena = eodhd_arena
         self.notifier = notifier
         self.background_tasks: list[asyncio.Task[None]] = []
+
+
+def _path_is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def _ensure_separate_market_data_roots(ashare_root: Path, eodhd_root: Path) -> None:
+    if (
+        ashare_root == eodhd_root
+        or _path_is_relative_to(ashare_root, eodhd_root)
+        or _path_is_relative_to(eodhd_root, ashare_root)
+    ):
+        raise ServiceError(
+            "EODHD market_data_root must be separate from the A-share baostock "
+            f"market_data_root. Got A-share={ashare_root} and EODHD={eodhd_root}."
+        )
 
 
 def _load_app_state(config_path: Path) -> AppState:
@@ -97,6 +149,26 @@ def _load_app_state(config_path: Path) -> AppState:
             config=config.futumoo,
             notifier=notifier,
         )
+    eodhd_root = (config_path.parent / "eodhd").resolve()
+    eodhd_agents_root = eodhd_root / "agents"
+    eodhd_market_data_root = Path(config.eodhd.market_data_root).resolve()
+    eodhd_market: EODHDService | None = None
+    eodhd_arena: EODHDArenaService | None = None
+    if config.eodhd.enabled:
+        _ensure_separate_market_data_roots(market_data_root, eodhd_market_data_root)
+        eodhd_market = EODHDService(
+            api_token=config.eodhd.api_token,
+            market_data_root=eodhd_market_data_root,
+            exchanges=config.eodhd.exchanges,
+            daily_finalize_utc=config.eodhd.daily_finalize_utc,
+            five_min_finalize_utc=config.eodhd.five_min_finalize_utc,
+        )
+        eodhd_arena = EODHDArenaService(
+            agents_root=eodhd_agents_root,
+            market=eodhd_market,
+            config=config.eodhd,
+            notifier=notifier,
+        )
     return AppState(
         config_path=config_path,
         config=config,
@@ -107,6 +179,10 @@ def _load_app_state(config_path: Path) -> AppState:
         futumoo_agents_root=futumoo_agents_root,
         futumoo_market=futumoo_market,
         futumoo_arena=futumoo_arena,
+        eodhd_agents_root=eodhd_agents_root,
+        eodhd_market_data_root=eodhd_market_data_root,
+        eodhd_market=eodhd_market,
+        eodhd_arena=eodhd_arena,
         notifier=notifier,
     )
 
@@ -124,8 +200,10 @@ def create_app() -> FastAPI:
     bootstrap_config = load_app_config(resolved_config)
     ashare_enabled = bootstrap_config.ashare.enabled
     futumoo_enabled = bootstrap_config.futumoo.enabled
+    eodhd_enabled = bootstrap_config.eodhd.enabled
     mcp_server = create_ashare_mcp_server(lambda: app.state.app_state.arena) if ashare_enabled else None
     futumoo_mcp_server = create_futumoo_mcp_server(lambda: app.state.app_state.futumoo_arena) if futumoo_enabled else None
+    eodhd_mcp_server = create_eodhd_mcp_server(lambda: app.state.app_state.eodhd_arena) if eodhd_enabled else None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -136,6 +214,8 @@ def create_app() -> FastAPI:
                 await stack.enter_async_context(mcp_server.session_manager.run())
             if futumoo_mcp_server is not None:
                 await stack.enter_async_context(futumoo_mcp_server.session_manager.run())
+            if eodhd_mcp_server is not None:
+                await stack.enter_async_context(eodhd_mcp_server.session_manager.run())
             await state.notifier.start()
             if (
                 state.arena is not None
@@ -160,6 +240,25 @@ def create_app() -> FastAPI:
                     asyncio.create_task(
                         state.futumoo_arena.run(
                             state.config.futumoo.polling_interval_seconds
+                        )
+                    )
+                )
+            if (
+                state.eodhd_market is not None
+                and state.eodhd_arena is not None
+                and state.config.eodhd.polling_interval_seconds > 0
+            ):
+                state.background_tasks.append(
+                    asyncio.create_task(
+                        state.eodhd_market.run(
+                            state.config.eodhd.polling_interval_seconds
+                        )
+                    )
+                )
+                state.background_tasks.append(
+                    asyncio.create_task(
+                        state.eodhd_arena.run(
+                            state.config.eodhd.polling_interval_seconds
                         )
                     )
                 )
@@ -209,6 +308,14 @@ def create_app() -> FastAPI:
                 lambda: app.state.app_state.futumoo_arena,
             ),
         )
+    if eodhd_mcp_server is not None:
+        app.mount(
+            f"{base_url}/eodhd/mcp/" if base_url else "/eodhd/mcp/",
+            wrap_eodhd_mcp_with_agent_auth(
+                eodhd_mcp_server.streamable_http_app(),
+                lambda: app.state.app_state.eodhd_arena,
+            ),
+        )
     def get_state() -> AppState:
         return app.state.app_state
 
@@ -222,6 +329,12 @@ def create_app() -> FastAPI:
         arena = get_state().futumoo_arena
         if arena is None:
             raise RuntimeError("Futumoo arena is not enabled")
+        return arena
+
+    def require_eodhd_arena() -> EODHDArenaService:
+        arena = get_state().eodhd_arena
+        if arena is None:
+            raise RuntimeError("EODHD arena is not enabled")
         return arena
 
     def to_agent_response(agent_id: str, agent: AgentConfig) -> AgentResponse:
@@ -247,17 +360,21 @@ def create_app() -> FastAPI:
             config_path=str(state.config_path),
             agents_root=str(state.ashare_agents_root),
             market_data_root=str(state.ashare_market_data_root),
+            eodhd_agents_root=str(state.eodhd_agents_root),
+            eodhd_market_data_root=str(state.eodhd_market_data_root),
         )
 
     _ARENA_LABELS: dict[str, str] = {
         "ashare": "A-Share",
         "futumoo": "Futu Moo",
+        "eodhd": "EODHD",
     }
 
     def _arena_statuses(config: AppConfig) -> list[ArenaStatus]:
         return [
             ArenaStatus(slug="ashare", label=_ARENA_LABELS["ashare"], enabled=config.ashare.enabled),
             ArenaStatus(slug="futumoo", label=_ARENA_LABELS["futumoo"], enabled=config.futumoo.enabled),
+            ArenaStatus(slug="eodhd", label=_ARENA_LABELS["eodhd"], enabled=config.eodhd.enabled),
         ]
 
     @api.get("/api/arenas", response_model=list[ArenaStatus])
@@ -272,8 +389,10 @@ def create_app() -> FastAPI:
         config = state.config
         if slug == "ashare":
             config.ashare.enabled = request.enabled
-        else:
+        elif slug == "futumoo":
             config.futumoo.enabled = request.enabled
+        else:
+            config.eodhd.enabled = request.enabled
         save_app_config(state.config_path, config)
         status = ArenaStatus(slug=slug, label=_ARENA_LABELS[slug], enabled=request.enabled)
         return ToggleArenaResponse(status=status, restart_required=True)
@@ -434,16 +553,20 @@ def create_app() -> FastAPI:
         request: CreateAgentRequest,
         get_arena,
         allowed_currencies: tuple[str, ...] | None,
+        default_currency: str | None = None,
     ) -> AgentCreatedResponse:
-        if allowed_currencies is not None and request.currency not in allowed_currencies:
+        currency = request.currency if request.currency is not None else default_currency
+        if allowed_currencies is not None and currency not in allowed_currencies:
             raise BadRequestError(
-                f"Currency {request.currency!r} not allowed on this arena. "
+                f"Currency {currency!r} not allowed on this arena. "
                 f"Choose one of {allowed_currencies}."
             )
         token_secret = secrets.token_urlsafe(24)
         payload = request.model_dump(exclude={"agent_id"})
         if allowed_currencies is None:
             payload["currency"] = None
+        else:
+            payload["currency"] = currency
         agent = AgentConfig.model_validate(
             {
                 **payload,
@@ -479,6 +602,25 @@ def create_app() -> FastAPI:
                 request, require_futumoo_arena, ("HKD", "USD", "CNY")
             )
 
+    if eodhd_enabled:
+        _register_arena_routes("/eodhd", require_eodhd_arena)
+
+        @api.get("/api/eodhd/user-info", response_model=EODHDUserInfoResponse)
+        def get_eodhd_user_info() -> EODHDUserInfoResponse:
+            market = get_state().eodhd_market
+            if market is None:
+                raise RuntimeError("EODHD market data is not enabled")
+            return EODHDUserInfoResponse.model_validate(market.get_user_info())
+
+        @api.post("/api/eodhd/agents", response_model=AgentCreatedResponse)
+        def create_eodhd_agent(request: CreateAgentRequest) -> AgentCreatedResponse:
+            return _create_agent_handler(
+                request,
+                require_eodhd_arena,
+                tuple(get_state().config.eodhd.allowed_currencies),
+                get_state().config.eodhd.default_currency,
+            )
+
     if ashare_enabled:
         @api.api_route("/A-share/mcp", methods=["GET", "POST", "DELETE"])
         def mcp_redirect() -> RedirectResponse:
@@ -489,6 +631,12 @@ def create_app() -> FastAPI:
         @api.api_route("/futumoo/mcp", methods=["GET", "POST", "DELETE"])
         def futumoo_mcp_redirect() -> RedirectResponse:
             target = f"{base_url}/futumoo/mcp/" if base_url else "/futumoo/mcp/"
+            return RedirectResponse(url=target, status_code=307)
+
+    if eodhd_enabled:
+        @api.api_route("/eodhd/mcp", methods=["GET", "POST", "DELETE"])
+        def eodhd_mcp_redirect() -> RedirectResponse:
+            target = f"{base_url}/eodhd/mcp/" if base_url else "/eodhd/mcp/"
             return RedirectResponse(url=target, status_code=307)
 
     app.include_router(api, prefix=base_url)

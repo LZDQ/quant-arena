@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { AShareApp } from "./AShareApp";
+import { EODHDApp } from "./EODHDApp";
 import { FutumooApp } from "./FutumooApp";
 import { resolveApiBase, urlPrefix } from "./lib/api";
 
@@ -35,6 +36,15 @@ const MARKETS: Market[] = [
     name: "Futu Moo",
     hanzi: "富途 · 离线",
     tagline: "Offline paper · HK · US · CN via OpenD",
+    status: "available",
+  },
+  {
+    slug: "eodhd",
+    backendSlug: "eodhd",
+    no: "03",
+    name: "EODHD",
+    hanzi: "全 市 场",
+    tagline: "All-in-one data · CSV cache · global symbols",
     status: "available",
   },
 ];
@@ -488,6 +498,9 @@ export function App() {
   }
   if (slug === "futumoo") {
     return <FutumooApp />;
+  }
+  if (slug === "eodhd") {
+    return <EODHDApp />;
   }
   return <MarketPicker />;
 }
