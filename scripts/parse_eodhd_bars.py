@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin CLI wrapper over `EODHDService.persist_history`."""
+"""Manual EODHD daily-bulk or intraday-symbol persistence."""
 
 import argparse
 import logging
@@ -78,21 +78,43 @@ def _resolve_market_schedules(
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    parser = argparse.ArgumentParser(description="Persist EODHD daily / 5min bars for a date range.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Persist EODHD daily bulk bars or 5min intraday bars for a date range. "
+            "Run daily and 5min separately because EODHD exposes different API shapes."
+        )
+    )
     parser.add_argument("--start-date", type=date.fromisoformat)
     parser.add_argument("--end-date", type=date.fromisoformat)
     parser.add_argument("--date", type=date.fromisoformat, help="Persist a single UTC date.")
     parser.add_argument("--today", action="store_true", help="Persist today's UTC date.")
-    parser.add_argument("--bars", choices=["daily", "5min", "both"], default="both")
+    parser.add_argument("--bars", choices=["daily", "5min"], required=True)
     parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH,
-                        help="Path to quant-arena config.json (defaults to ~/.quant-arena/config.json)")
-    parser.add_argument("--market-data-dir", type=Path, default=None,
-                        help="Override config's eodhd.market_data_root.")
-    parser.add_argument("--api-token", type=str, default=None,
-                        help="Override config's eodhd.api_token.")
-    parser.add_argument("--exchange", action="append", dest="exchanges", default=None,
-                        help="Override EODHD exchange list. Repeat for multiple exchanges.")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG_PATH,
+        help="Path to quant-arena config.json (defaults to ~/.quant-arena/config.json)",
+    )
+    parser.add_argument(
+        "--market-data-dir",
+        type=Path,
+        default=None,
+        help="Override config's eodhd.market_data_root.",
+    )
+    parser.add_argument(
+        "--api-token",
+        type=str,
+        default=None,
+        help="Override config's eodhd.api_token.",
+    )
+    parser.add_argument(
+        "--exchange",
+        action="append",
+        dest="exchanges",
+        default=None,
+        help="Override EODHD exchange list. Repeat for multiple exchanges.",
+    )
     parser.add_argument("--persist-every", type=int, default=100)
     parser.add_argument("--verbose", action="store_true",
                         help="Log each fetched symbol and bar kind at INFO level.")
@@ -114,15 +136,31 @@ def main() -> None:
             args.exchanges,
         ),
     )
-    market.persist_history(
+    if args.bars == "daily":
+        rows = market.persist_daily_history(
+            start_date,
+            end_date,
+            overwrite=args.overwrite,
+            show_progress=True,
+            verbose=args.verbose,
+            exchanges=args.exchanges,
+        )
+    else:
+        rows = market.persist_intraday_history(
+            start_date,
+            end_date,
+            overwrite=args.overwrite,
+            persist_every=args.persist_every,
+            show_progress=True,
+            verbose=args.verbose,
+            exchanges=args.exchanges,
+        )
+    logging.info(
+        "Finished EODHD %s persistence for [%s, %s] (rows=%d)",
+        args.bars,
         start_date,
         end_date,
-        bars=args.bars,
-        overwrite=args.overwrite,
-        persist_every=args.persist_every,
-        show_progress=True,
-        verbose=args.verbose,
-        exchanges=args.exchanges,
+        rows,
     )
 
 

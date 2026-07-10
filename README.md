@@ -41,11 +41,12 @@ By default, startup creates:
   eodhd/
     market-data/
       README.md
-      code_names.csv
-      bars/
-        <date>/
-          daily.csv
-          5min.csv
+      <exchange>/
+        code_names.csv
+        daily/
+          <date>.csv
+        5min/
+          <date>.csv
     agents/
       <agent_id>/
         config.json
@@ -213,16 +214,21 @@ Non-production limitations to remember:
 EODHD is a separate arena backed by the `eodhd` Python package. It assumes an
 all-in-one subscription and uses:
 
-- `get_exchange_symbols` to write `code_names.csv`.
+- `get_exchange_symbols` to write each exchange's `code_names.csv`.
 - `get_live_stock_prices` for live `last_price` snapshots and pending-order
   matching. Bulk symbols are requested through the SDK's `s=` parameter.
-- `get_eod_splits_dividends_data` for bulk daily EOD rows.
+- `get_eod_splits_dividends_data`, which wraps EODHD's `eod-bulk-last-day`
+  endpoint with no split/dividend type parameter, for bulk daily EOD rows, and
+  with `type="splits"` / `type="dividends"` for corporate-action scans.
 - `get_intraday_historical_data(interval="5m")` for 5-minute UTC intraday rows.
 
 Market data is persisted under `config.eodhd.market_data_root`, never under the
-A-share baostock root. The directory shape mirrors A-share for compatibility:
-`README.md`, `code_names.csv`, and `bars/YYYY-MM-DD/{daily.csv,5min.csv}`. The
-CSV columns remain EODHD-flavored; they are not baostock columns.
+A-share baostock root. The EODHD root contains `README.md` plus one directory
+per exchange, for example `HK/code_names.csv`, `HK/daily/YYYY-MM-DD.csv`, and
+`HK/5min/YYYY-MM-DD.csv`. Daily files are whole-exchange bulk snapshots for one
+date. Five-minute files are assembled by iterating symbols because EODHD
+intraday history is symbol/range based. The CSV columns remain EODHD-flavored;
+they are not baostock columns.
 
 The EODHD background task refreshes symbols once per UTC day and finalizes
 daily and 5-minute CSV files per configured market schedule. The default
@@ -238,9 +244,22 @@ holidays are left to the EODHD API returning empty/no rows. It does not persist
 a separate end-of-day equity ledger beyond the existing agent state/equity
 history.
 
-For manual bulk persistence, run `scripts/parse_eodhd_bars.py` with `--date` or
-`--start-date/--end-date`. It uses `config.eodhd` by default and supports
-`--exchange` repeats plus `--market-data-dir` and `--api-token` overrides.
+The EODHD arena scans split/dividend events once per UTC date before the normal
+match cycle. It groups currently held suffixed symbols by exchange, fetches the
+bulk `splits` and `dividends` rows for that date, and applies matching events
+idempotently per agent/symbol/ex-date. Splits adjust integer share quantity and
+average cost; fractional shares are cashed out using the latest cached price
+when available, with average cost as fallback. Dividends are credited as gross
+cash with no A-share-style tax model and no FX conversion into the agent's
+configured currency. There is no multi-day catch-up scan if the server was down.
+
+For manual persistence, run `scripts/parse_eodhd_bars.py` with `--bars daily`
+or `--bars 5min`, plus `--date` or `--start-date/--end-date`. Daily and
+5-minute parsing are intentionally separate because daily iterates dates and
+uses bulk exchange downloads, while 5-minute parsing iterates symbols and
+merges them into per-exchange day files. The script uses `config.eodhd` by
+default and supports `--exchange` repeats plus `--market-data-dir` and
+`--api-token` overrides.
 
 The MCP endpoint is `/eodhd/mcp`, with the same agent-token authentication
 header/Bearer flow as the other arenas. It also exposes

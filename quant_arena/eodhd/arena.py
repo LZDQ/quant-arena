@@ -7,15 +7,20 @@ latest `last_price` snapshots.
 """
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from logging import getLogger
+from math import floor
 from pathlib import Path
 
 from quant_arena.config import AgentConfig, EODHDConfig
 from quant_arena.errors import BadRequestError
 from quant_arena.eodhd.base import EODHDArenaBase
-from quant_arena.eodhd.models import EODHDAgentState, EODHDPosition
-from quant_arena.eodhd.service import EODHDService
+from quant_arena.eodhd.models import (
+    EODHDAgentState,
+    EODHDCorporateActionRecord,
+    EODHDPosition,
+)
+from quant_arena.eodhd.service import EODHDCorporateAction, EODHDService
 from quant_arena.models import (
     FillRecord,
     ManualPositionClearRecord,
@@ -334,10 +339,200 @@ class EODHDArenaService(EODHDArenaBase):
     # ----- special events -----
 
     def _special_events(self, state: EODHDAgentState) -> list[SpecialEvent]:
-        return [
-            self._render_manual_clear_event(record)
-            for record in state.manual_position_clears
+        events: list[SpecialEvent] = []
+        for record in state.corporate_actions:
+            events.append(
+                SpecialEvent(
+                    event_id=record.record_id,
+                    event_type="corporate_action",
+                    event_date=record.ex_date,
+                    code=record.code,
+                    summary=self._render_corporate_action(
+                        record, self.market.get_code_name(record.code)
+                    ),
+                    occurred_at=record.applied_at,
+                )
+            )
+        for record in state.manual_position_clears:
+            events.append(self._render_manual_clear_event(record))
+        return events
+
+    @staticmethod
+    def _render_corporate_action(
+        record: EODHDCorporateActionRecord, name: str | None
+    ) -> str:
+        label = f"{record.code} ({name})" if name else record.code
+        lines = [
+            f"EODHD corporate action {label} on {record.ex_date.isoformat()}: "
+            f"{record.scheme or 'split/dividend'}",
+            f"Position {record.shares_before} -> {record.shares_after} shares",
+            f"Avg cost {record.avg_cost_before:.4f} -> {record.avg_cost_after:.4f}",
         ]
+        if abs(record.split_ratio - 1.0) > 0.000000001:
+            lines.append(f"Split ratio {record.split_ratio:.8g}")
+        if record.cash_dividend_gross > 0.0:
+            currency = f"{record.dividend_currency} " if record.dividend_currency else ""
+            lines.append(
+                f"Cash dividend +{currency}{record.cash_dividend_gross:.2f} "
+                f"(net {currency}{record.cash_dividend_net:.2f})"
+            )
+        if record.fractional_cash > 0.0:
+            currency = f"{record.dividend_currency} " if record.dividend_currency else ""
+            lines.append(
+                f"Fractional shares {record.fractional_shares:.6f} "
+                f"cashed out +{currency}{record.fractional_cash:.2f}"
+            )
+        return "\n".join(lines)
+
+    def apply_corporate_actions(self, ex_date: date) -> None:
+        """
+        Apply EODHD split/dividend events for held positions on ``ex_date``.
+
+        EODHD provides split/dividend data as exchange/date bulk rows. The
+        service fetches only exchanges represented by current holdings, then
+        this method applies matching events idempotently per agent/code/date.
+        """
+        held_codes: set[str] = set()
+        for agent_id, _ in self.list_agents():
+            state = self._state(agent_id)
+            held_codes |= {
+                code
+                for code, position in state.positions.items()
+                if position.quantity > 0
+            }
+        if not held_codes:
+            logger.info("No EODHD holdings for corporate-action scan on %s", ex_date)
+            return
+
+        actions = self.market.fetch_corporate_actions(ex_date, held_codes)
+        if not actions:
+            logger.info("No EODHD corporate actions for held positions on %s", ex_date)
+            return
+
+        actions_by_code = {action.code: action for action in actions}
+        timestamp = self._now()
+        applied_count = 0
+        with self._order_lock:
+            for agent_id, _ in self.list_agents():
+                state = self._state(agent_id)
+                changed = False
+                for code, action in actions_by_code.items():
+                    position = state.positions.get(code)
+                    if position is None or position.quantity <= 0:
+                        continue
+                    already_applied = any(
+                        record.code == code and record.ex_date == ex_date
+                        for record in state.corporate_actions
+                    )
+                    if already_applied:
+                        continue
+                    self._apply_one_corporate_action(state, action, timestamp)
+                    changed = True
+                    applied_count += 1
+                if changed:
+                    self._update_today_equity_point(state)
+                    self._save_agent_state(state)
+        if applied_count > 0:
+            self._rankings_cache = None
+        logger.info(
+            "Applied EODHD corporate actions for %s (agent-position events=%d)",
+            ex_date,
+            applied_count,
+        )
+
+    def _apply_one_corporate_action(
+        self,
+        state: EODHDAgentState,
+        action: EODHDCorporateAction,
+        timestamp: datetime,
+    ) -> None:
+        position = state.positions[action.code]
+        shares_before = position.quantity
+        avg_cost_before = position.avg_cost
+
+        split_ratio = action.split_ratio
+        shares_after = shares_before
+        avg_cost_after = avg_cost_before
+        fractional_shares = 0.0
+        fractional_cash = 0.0
+        if abs(split_ratio - 1.0) > 0.000000001:
+            exact_after = shares_before * split_ratio
+            shares_after = floor(exact_after)
+            fractional_shares = max(0.0, exact_after - shares_after)
+            fractional_price = self._corporate_action_fractional_price(action, position)
+            fractional_cash = fractional_shares * fractional_price
+            if shares_after > 0:
+                avg_cost_after = avg_cost_before * shares_before / shares_after
+                state.positions[action.code] = EODHDPosition(
+                    quantity=shares_after,
+                    avg_cost=round(avg_cost_after, 4),
+                )
+            else:
+                avg_cost_after = 0.0
+                del state.positions[action.code]
+
+        cash_gross = shares_before * action.cash_dividend_per_share
+        cash_net = cash_gross
+        state.cash += cash_net + fractional_cash
+
+        record = EODHDCorporateActionRecord(
+            agent_id=state.agent_id,
+            code=action.code,
+            exchange=action.exchange,
+            ex_date=action.ex_date,
+            scheme=self._corporate_action_scheme(action),
+            split_ratio=round(split_ratio, 10),
+            cash_dividend_per_share=round(action.cash_dividend_per_share, 10),
+            dividend_currency=action.dividend_currency,
+            shares_before=shares_before,
+            shares_after=shares_after,
+            share_delta=shares_after - shares_before,
+            avg_cost_before=round(avg_cost_before, 6),
+            avg_cost_after=round(avg_cost_after, 6),
+            cash_dividend_gross=round(cash_gross, 2),
+            cash_dividend_net=round(cash_net, 2),
+            fractional_shares=round(fractional_shares, 8),
+            fractional_cash=round(fractional_cash, 2),
+            applied_at=timestamp,
+        )
+        state.corporate_actions.append(record)
+        logger.info(
+            "Applied EODHD corporate action: agent=%s code=%s ex=%s split=%.8g "
+            "dividend=%.6f shares=%d->%d cash=%.2f fractional_cash=%.2f "
+            "avg_cost=%.4f->%.4f",
+            state.agent_id,
+            action.code,
+            action.ex_date,
+            split_ratio,
+            action.cash_dividend_per_share,
+            shares_before,
+            shares_after,
+            cash_net + fractional_cash,
+            fractional_cash,
+            avg_cost_before,
+            avg_cost_after,
+        )
+
+    def _corporate_action_fractional_price(
+        self, action: EODHDCorporateAction, position: EODHDPosition
+    ) -> float:
+        if action.split_ratio <= 0.0:
+            return 0.0
+        latest_price = self._latest_prices.get(action.code)
+        if latest_price is not None and latest_price > 0.0:
+            return latest_price / action.split_ratio
+        return position.avg_cost / action.split_ratio
+
+    @staticmethod
+    def _corporate_action_scheme(action: EODHDCorporateAction) -> str:
+        parts: list[str] = []
+        if abs(action.split_ratio - 1.0) > 0.000000001:
+            split_label = action.split_text or f"{action.split_ratio:.8g}"
+            parts.append(f"split {split_label}")
+        if action.cash_dividend_per_share > 0.0:
+            currency = f" {action.dividend_currency}" if action.dividend_currency else ""
+            parts.append(f"dividend {action.cash_dividend_per_share:.6f}{currency}/share")
+        return ", ".join(parts)
 
     @staticmethod
     def _render_manual_clear_event(record: ManualPositionClearRecord) -> SpecialEvent:
@@ -434,7 +629,15 @@ class EODHDArenaService(EODHDArenaBase):
                 self._update_today_equity_point(self._state(agent_id))
 
     async def run(self, polling_interval_seconds: int) -> None:
+        last_corporate_action_date: date | None = None
         while True:
+            today = self._now().date()
+            if last_corporate_action_date != today:
+                try:
+                    await asyncio.to_thread(self.apply_corporate_actions, today)
+                    last_corporate_action_date = today
+                except Exception:
+                    logger.exception("EODHD corporate-action scan failed")
             try:
                 await asyncio.to_thread(self.match_pending_orders)
             except Exception:

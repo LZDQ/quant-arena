@@ -2,6 +2,7 @@
 
 import asyncio
 import shutil
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from importlib import resources
@@ -60,6 +61,18 @@ class _RuntimeMarketSchedule:
     target_date_offset_days: int
 
 
+@dataclass(slots=True)
+class EODHDCorporateAction:
+    code: str
+    exchange: str
+    ex_date: date
+    cash_dividend_per_share: float = 0.0
+    dividend_currency: str | None = None
+    split_ratio: float = 1.0
+    split_text: str = ""
+    dividend_period: str | None = None
+
+
 class EODHDService:
     """EODHD all-in-one data persistence plus live quote snapshots."""
 
@@ -72,15 +85,16 @@ class EODHDService:
     ):
         self.api_token = api_token
         self.market_data_root = market_data_root
-        self.market_bars_dir = market_data_root / "bars"
         self.market_schedules = self._normalize_market_schedules(market_schedules)
         self.exchanges = [schedule.exchange for schedule in self.market_schedules]
-        self._code_names_path = market_data_root / "code_names.csv"
+        self._code_names_by_exchange: dict[str, pd.DataFrame] = {}
         self._code_names: pd.DataFrame | None = None
         self._code_name_index: dict[str, str] | None = None
         self._latest_daily_frame: pd.DataFrame | None = None
         self._client = None  # eodhd.APIClient, created lazily
-        self.market_bars_dir.mkdir(parents=True, exist_ok=True)
+        self.market_data_root.mkdir(parents=True, exist_ok=True)
+        for exchange in self.exchanges:
+            self._ensure_exchange_dirs(exchange)
         shutil.copyfile(
             resources.files("quant_arena.resources").joinpath("README-eodhd-market-data.md"),
             market_data_root / "README.md",
@@ -118,6 +132,29 @@ class EODHDService:
             self._client = APIClient(self.api_token)
         return self._client
 
+    def _ensure_exchange_dirs(self, exchange: str) -> None:
+        self._exchange_dir(exchange).mkdir(parents=True, exist_ok=True)
+        self._daily_dir(exchange).mkdir(parents=True, exist_ok=True)
+        self._five_min_dir(exchange).mkdir(parents=True, exist_ok=True)
+
+    def _exchange_dir(self, exchange: str) -> Path:
+        return self.market_data_root / exchange
+
+    def _exchange_code_names_path(self, exchange: str) -> Path:
+        return self._exchange_dir(exchange) / "code_names.csv"
+
+    def _daily_dir(self, exchange: str) -> Path:
+        return self._exchange_dir(exchange) / "daily"
+
+    def _five_min_dir(self, exchange: str) -> Path:
+        return self._exchange_dir(exchange) / "5min"
+
+    def _daily_path(self, exchange: str, day: date) -> Path:
+        return self._daily_dir(exchange) / f"{day.isoformat()}.csv"
+
+    def _five_min_path(self, exchange: str, day: date) -> Path:
+        return self._five_min_dir(exchange) / f"{day.isoformat()}.csv"
+
     def get_user_info(self) -> dict[str, object]:
         """Return configured EODHD identity/status for the page header."""
         return {
@@ -142,8 +179,14 @@ class EODHDService:
         return 0 if frame is None else len(frame)
 
     def get_code_names(self) -> pd.DataFrame | None:
-        if self._code_names is None and self._code_names_path.exists():
-            self._code_names = self._read_csv(self._code_names_path)
+        if self._code_names is None:
+            frames: list[pd.DataFrame] = []
+            for exchange in self.exchanges:
+                frame = self._get_exchange_code_names(exchange)
+                if frame is not None and not frame.empty:
+                    frames.append(frame)
+            if frames:
+                self._code_names = self._combine_code_name_frames(frames)
         return self._code_names
 
     def get_code_name(self, code: str) -> str | None:
@@ -175,25 +218,53 @@ class EODHDService:
             "country": _text_or_none(self._field(record, ("country", "Country"))),
         }
 
-    def refresh_code_names(self) -> None:
+    def refresh_code_names(self, exchanges: list[str] | None = None) -> None:
         client = self._api_client()
         frames: list[pd.DataFrame] = []
-        for exchange in self.exchanges:
+        target_exchanges = self._normalize_exchange_filter(exchanges)
+        for exchange in target_exchanges:
+            logger.info("Refreshing EODHD code_names.csv for %s", exchange)
             frame = client.get_exchange_symbols(uri=exchange, delisted=False)
             if frame.empty:
                 logger.warning("EODHD returned no symbols for exchange %s", exchange)
                 continue
-            frames.append(self._normalize_symbol_table(frame, exchange))
+            normalized = self._normalize_symbol_table(frame, exchange)
+            normalized = normalized.drop_duplicates(["symbol"], keep="last").sort_values(
+                ["code"]
+            )
+            self._ensure_exchange_dirs(exchange)
+            normalized.to_csv(self._exchange_code_names_path(exchange), index=False)
+            self._code_names_by_exchange[exchange] = normalized
+            frames.append(normalized)
+            logger.info(
+                "Wrote EODHD %s/code_names.csv (rows=%d)",
+                exchange,
+                len(normalized),
+            )
         if not frames:
-            raise ServiceError("EODHD returned no symbol tables for configured exchanges")
+            raise ServiceError(
+                f"EODHD returned no symbol tables for exchanges {target_exchanges}"
+            )
+        self._code_names = None
+        self._code_name_index = None
+
+    def _get_exchange_code_names(self, exchange: str) -> pd.DataFrame | None:
+        cached = self._code_names_by_exchange.get(exchange)
+        if cached is not None:
+            return cached
+        path = self._exchange_code_names_path(exchange)
+        if not path.exists():
+            return None
+        frame = self._read_csv(path)
+        self._code_names_by_exchange[exchange] = frame
+        return frame
+
+    @staticmethod
+    def _combine_code_name_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
         combined = pd.concat(frames, ignore_index=True, copy=False)
-        combined = combined.drop_duplicates(["symbol"], keep="last").sort_values(
+        return combined.drop_duplicates(["symbol"], keep="last").sort_values(
             ["exchange", "code"]
         )
-        self._code_names_path.parent.mkdir(parents=True, exist_ok=True)
-        combined.to_csv(self._code_names_path, index=False)
-        self._code_names = combined
-        self._code_name_index = None
 
     def _normalize_symbol_table(self, frame: pd.DataFrame, exchange: str) -> pd.DataFrame:
         rows: list[dict[str, object]] = []
@@ -290,20 +361,265 @@ class EODHDService:
                 return value
         return None
 
+    def fetch_corporate_actions(
+        self, ex_date: date, codes: Iterable[str]
+    ) -> list[EODHDCorporateAction]:
+        """
+        Fetch EODHD split/dividend events for held suffixed symbols on ``ex_date``.
+
+        EODHD exposes these through the same bulk endpoint as daily EOD bars,
+        but with ``type="splits"`` or ``type="dividends"``. The endpoint is
+        exchange/date based, so this method groups held symbols by exchange,
+        downloads each exchange's full event set for the date, and filters rows
+        down to the held symbols.
+        """
+        requested_by_exchange: dict[str, dict[str, str]] = {}
+        for raw_code in codes:
+            requested = self._normalize_requested_symbol(raw_code)
+            if requested is None:
+                logger.warning(
+                    "Skipping EODHD corporate-action lookup for unsuffixed symbol %r",
+                    raw_code,
+                )
+                continue
+            held_symbol, exchange, lookup_key = requested
+            requested_by_exchange.setdefault(exchange, {})[lookup_key] = held_symbol
+
+        if not requested_by_exchange:
+            return []
+
+        actions: list[EODHDCorporateAction] = []
+        for exchange, requested_symbols in sorted(requested_by_exchange.items()):
+            exchange_actions: dict[str, EODHDCorporateAction] = {}
+            self._merge_dividend_actions(
+                exchange_actions,
+                requested_symbols,
+                self._fetch_bulk_corporate_action_rows(exchange, ex_date, "dividends"),
+                exchange,
+                ex_date,
+            )
+            self._merge_split_actions(
+                exchange_actions,
+                requested_symbols,
+                self._fetch_bulk_corporate_action_rows(exchange, ex_date, "splits"),
+                exchange,
+                ex_date,
+            )
+            kept = [
+                action
+                for action in exchange_actions.values()
+                if action.cash_dividend_per_share > 0.0
+                or abs(action.split_ratio - 1.0) > 0.000000001
+            ]
+            actions.extend(kept)
+            logger.info(
+                "EODHD corporate actions for %s %s: held=%d applicable=%d",
+                exchange,
+                ex_date,
+                len(requested_symbols),
+                len(kept),
+            )
+        return sorted(actions, key=lambda action: action.code)
+
+    def _normalize_requested_symbol(self, raw_code: str) -> tuple[str, str, str] | None:
+        symbol = raw_code.strip()
+        if "." not in symbol:
+            return None
+        code, exchange = self._split_symbol(symbol)
+        exchange = exchange.upper()
+        if not code or not exchange:
+            return None
+        return symbol, exchange, f"{code}.{exchange}".upper()
+
+    def _fetch_bulk_corporate_action_rows(
+        self, exchange: str, ex_date: date, action_type: str
+    ) -> list[dict[str, object]]:
+        client = self._api_client()
+        logger.info(
+            "Fetching EODHD %s bulk events for %s %s",
+            action_type,
+            exchange,
+            ex_date,
+        )
+        payload = client.get_eod_splits_dividends_data(
+            country=exchange,
+            date=ex_date.isoformat(),
+            type=action_type,
+        )
+        rows = self._payload_rows(payload)
+        logger.info(
+            "Fetched EODHD %s bulk events for %s %s (rows=%d)",
+            action_type,
+            exchange,
+            ex_date,
+            len(rows),
+        )
+        return rows
+
+    def _merge_dividend_actions(
+        self,
+        actions: dict[str, EODHDCorporateAction],
+        requested_symbols: dict[str, str],
+        rows: list[dict[str, object]],
+        exchange: str,
+        ex_date: date,
+    ) -> None:
+        for row in rows:
+            if not self._corporate_action_row_matches_date(row, ex_date):
+                continue
+            symbol = self._corporate_action_symbol(row, exchange)
+            if symbol is None:
+                continue
+            requested = requested_symbols.get(symbol.upper())
+            if requested is None:
+                continue
+            amount = self._dividend_amount_from_row(row)
+            if amount is None or amount <= 0.0:
+                continue
+            action = self._corporate_action_for(actions, requested, exchange, ex_date)
+            action.cash_dividend_per_share += amount
+            currency = _text_or_none(self._field(row, ("currency", "Currency")))
+            if currency is not None:
+                action.dividend_currency = currency
+            period = _text_or_none(self._field(row, ("period", "Period")))
+            if period is not None:
+                action.dividend_period = period
+
+    def _merge_split_actions(
+        self,
+        actions: dict[str, EODHDCorporateAction],
+        requested_symbols: dict[str, str],
+        rows: list[dict[str, object]],
+        exchange: str,
+        ex_date: date,
+    ) -> None:
+        for row in rows:
+            if not self._corporate_action_row_matches_date(row, ex_date):
+                continue
+            symbol = self._corporate_action_symbol(row, exchange)
+            if symbol is None:
+                continue
+            requested = requested_symbols.get(symbol.upper())
+            if requested is None:
+                continue
+            split_text = _text_or_none(self._field(row, ("split", "Split", "ratio", "Ratio")))
+            ratio = self._split_ratio_from_text(split_text)
+            if ratio is None or ratio <= 0.0 or abs(ratio - 1.0) <= 0.000000001:
+                continue
+            action = self._corporate_action_for(actions, requested, exchange, ex_date)
+            action.split_ratio *= ratio
+            if split_text is not None:
+                if action.split_text:
+                    action.split_text = f"{action.split_text}; {split_text}"
+                else:
+                    action.split_text = split_text
+
+    @staticmethod
+    def _corporate_action_for(
+        actions: dict[str, EODHDCorporateAction],
+        symbol: str,
+        exchange: str,
+        ex_date: date,
+    ) -> EODHDCorporateAction:
+        action = actions.get(symbol)
+        if action is None:
+            action = EODHDCorporateAction(code=symbol, exchange=exchange, ex_date=ex_date)
+            actions[symbol] = action
+        return action
+
+    def _corporate_action_symbol(
+        self, row: dict[str, object], fallback_exchange: str
+    ) -> str | None:
+        raw_code = _text_or_none(
+            self._field(row, ("code", "Code", "symbol", "Symbol", "ticker", "Ticker"))
+        )
+        if raw_code is None:
+            return None
+        if "." in raw_code:
+            code, exchange = self._split_symbol(raw_code)
+            exchange = exchange.upper()
+            return f"{code}.{exchange}" if code and exchange else None
+        return f"{raw_code}.{fallback_exchange}"
+
+    def _corporate_action_row_matches_date(
+        self, row: dict[str, object], ex_date: date
+    ) -> bool:
+        raw_date = _text_or_none(
+            self._field(row, ("date", "Date", "exDate", "ex_date", "exDividendDate"))
+        )
+        if raw_date is None:
+            return True
+        try:
+            return date.fromisoformat(raw_date[:10]) == ex_date
+        except ValueError:
+            logger.warning(
+                "Could not parse EODHD corporate-action date %r; keeping row",
+                raw_date,
+            )
+            return True
+
+    def _dividend_amount_from_row(self, row: dict[str, object]) -> float | None:
+        for name in (
+            "unadjustedValue",
+            "unadjusted_value",
+            "dividend",
+            "Dividend",
+            "value",
+            "Value",
+            "amount",
+            "Amount",
+        ):
+            value = _float_or_none(self._field(row, (name,)))
+            if value is not None and value > 0.0:
+                return value
+        return None
+
+    @staticmethod
+    def _split_ratio_from_text(value: str | None) -> float | None:
+        if value is None:
+            return None
+        text = value.strip()
+        if not text:
+            return None
+        for delimiter in (":", "/"):
+            if delimiter not in text:
+                continue
+            parts = text.split(delimiter)
+            if len(parts) != 2:
+                return None
+            numerator = _float_or_none(parts[0].strip())
+            denominator = _float_or_none(parts[1].strip())
+            if numerator is None or denominator is None or denominator == 0.0:
+                return None
+            return numerator / denominator
+        return _float_or_none(text)
+
     def get_latest_daily_bar(self) -> pd.DataFrame | None:
         if self._latest_daily_frame is not None:
             return self._latest_daily_frame
-        for day_dir in sorted(
-            (path for path in self.market_bars_dir.iterdir() if path.is_dir()),
-            key=lambda path: path.name,
-            reverse=True,
-        ):
-            path = day_dir / "daily.csv"
-            if path.exists():
-                frame = self._read_csv(path)
-                if not frame.empty:
-                    self._latest_daily_frame = frame
-                    return self._latest_daily_frame
+        latest_day: str | None = None
+        for exchange in self.exchanges:
+            daily_dir = self._daily_dir(exchange)
+            if not daily_dir.exists():
+                continue
+            for path in daily_dir.glob("*.csv"):
+                if latest_day is None or path.stem > latest_day:
+                    latest_day = path.stem
+        if latest_day is None:
+            return None
+
+        frames: list[pd.DataFrame] = []
+        for exchange in self.exchanges:
+            path = self._daily_dir(exchange) / f"{latest_day}.csv"
+            if not path.exists():
+                continue
+            frame = self._read_csv(path)
+            if not frame.empty:
+                frames.append(frame)
+        if frames:
+            self._latest_daily_frame = pd.concat(frames, ignore_index=True, copy=False)
+            self._latest_daily_frame = self._latest_daily_frame.sort_values(["exchange", "code"])
+            return self._latest_daily_frame
         return None
 
     def persist_history(
@@ -326,35 +642,116 @@ class EODHDService:
         if not want_daily and not want_5min:
             raise ValueError("bars must be daily, 5min, or both")
 
+        total_rows = 0
+        if want_daily:
+            total_rows += self.persist_daily_history(
+                start_date,
+                end_date,
+                overwrite=overwrite,
+                show_progress=show_progress,
+                verbose=verbose,
+                exchanges=exchanges,
+            )
+        if want_5min:
+            total_rows += self.persist_intraday_history(
+                start_date,
+                end_date,
+                overwrite=overwrite,
+                persist_every=persist_every,
+                show_progress=show_progress,
+                verbose=verbose,
+                exchanges=exchanges,
+            )
+        return total_rows
+
+    def persist_daily_history(
+        self,
+        start_date: date,
+        end_date: date,
+        *,
+        overwrite: bool = False,
+        show_progress: bool = False,
+        verbose: bool = False,
+        exchanges: list[str] | None = None,
+    ) -> int:
+        if end_date < start_date:
+            raise ValueError("end_date must be on or after start_date")
         target_exchanges = self._normalize_exchange_filter(exchanges)
         dates = self._business_dates(start_date, end_date)
         total_rows = 0
-        if want_daily:
-            for day in dates:
-                if not overwrite and (self.market_bars_dir / day.isoformat() / "daily.csv").exists():
-                    existing = self._read_csv(self.market_bars_dir / day.isoformat() / "daily.csv")
-                    existing_exchanges = set(existing["exchange"].astype(str)) if not existing.empty else set()
-                    if all(exchange in existing_exchanges for exchange in target_exchanges):
-                        continue
-                frame = self._fetch_bulk_daily(day, target_exchanges)
-                if not frame.empty:
-                    self._persist_daily_frame(frame)
-                    total_rows += len(frame)
-            self._latest_daily_frame = None
-        if want_5min:
-            frame = self.get_code_names()
-            if frame is None or frame.empty:
-                self.refresh_code_names()
-                frame = self.get_code_names()
-            if frame is None or frame.empty:
-                raise ServiceError("No EODHD symbols available for 5-minute persistence")
-            frame = frame[frame["exchange"].astype(str).isin(target_exchanges)]
-            if frame.empty:
-                raise ServiceError(
-                    f"No EODHD symbols available for exchanges {target_exchanges}"
+        logger.info(
+            "Persisting EODHD daily bulk bars for %d exchanges and %d dates",
+            len(target_exchanges),
+            len(dates),
+        )
+        for exchange in target_exchanges:
+            self._ensure_exchange_dirs(exchange)
+        for day in dates:
+            for exchange in target_exchanges:
+                path = self._daily_path(exchange, day)
+                if not overwrite and path.exists():
+                    if verbose:
+                        logger.info(
+                            "Skipping existing EODHD daily bars for %s %s",
+                            exchange,
+                            day,
+                        )
+                    continue
+                if show_progress:
+                    logger.info("Fetching EODHD daily bulk bars for %s %s", exchange, day)
+                frame = self._fetch_bulk_daily(day, exchange)
+                if frame.empty:
+                    logger.info("EODHD daily bulk returned no rows for %s %s", exchange, day)
+                    continue
+                self._persist_daily_frame(frame, exchange, day)
+                total_rows += len(frame)
+                logger.info(
+                    "Persisted EODHD daily bars for %s %s (rows=%d)",
+                    exchange,
+                    day,
+                    len(frame),
                 )
+        self._latest_daily_frame = None
+        return total_rows
+
+    def persist_intraday_history(
+        self,
+        start_date: date,
+        end_date: date,
+        *,
+        overwrite: bool = False,
+        persist_every: int = 100,
+        show_progress: bool = False,
+        verbose: bool = False,
+        exchanges: list[str] | None = None,
+    ) -> int:
+        if end_date < start_date:
+            raise ValueError("end_date must be on or after start_date")
+        if persist_every <= 0:
+            raise ValueError("persist_every must be positive")
+        target_exchanges = self._normalize_exchange_filter(exchanges)
+        total_rows = 0
+        logger.info(
+            "Persisting EODHD 5min intraday bars for %d exchanges",
+            len(target_exchanges),
+        )
+        for exchange in target_exchanges:
+            self._ensure_exchange_dirs(exchange)
+            frame = self._get_exchange_code_names(exchange)
+            if frame is None or frame.empty:
+                self.refresh_code_names([exchange])
+                frame = self._get_exchange_code_names(exchange)
+            if frame is None or frame.empty:
+                raise ServiceError(f"No EODHD symbols available for exchange {exchange}")
+            symbols = frame["symbol"].astype(str).tolist()
+            logger.info(
+                "Persisting EODHD 5min intraday bars for %s by symbol (symbols=%d)",
+                exchange,
+                len(symbols),
+            )
             total_rows += self._persist_intraday_for_symbols(
-                frame["symbol"].astype(str).tolist(),
+                exchange,
+                symbols,
                 start_date,
                 end_date,
                 overwrite=overwrite,
@@ -389,15 +786,14 @@ class EODHDService:
             cursor += timedelta(days=1)
         return dates
 
-    def _fetch_bulk_daily(self, day: date, exchanges: list[str]) -> pd.DataFrame:
+    def _fetch_bulk_daily(self, day: date, exchange: str) -> pd.DataFrame:
         client = self._api_client()
         rows: list[dict[str, object]] = []
-        for exchange in exchanges:
-            payload = client.get_eod_splits_dividends_data(country=exchange, date=day.isoformat())
-            for row in self._payload_rows(payload):
-                normalized = self._normalize_daily_row(row, exchange, day)
-                if normalized is not None:
-                    rows.append(normalized)
+        payload = client.get_eod_splits_dividends_data(country=exchange, date=day.isoformat())
+        for row in self._payload_rows(payload):
+            normalized = self._normalize_daily_row(row, exchange, day)
+            if normalized is not None:
+                rows.append(normalized)
         return pd.DataFrame(
             rows,
             columns=[
@@ -441,6 +837,7 @@ class EODHDService:
 
     def _persist_intraday_for_symbols(
         self,
+        exchange: str,
         symbols: list[str],
         start_date: date,
         end_date: date,
@@ -452,11 +849,17 @@ class EODHDService:
     ) -> int:
         total_rows = 0
         buffers: list[pd.DataFrame] = []
-        existing = self._existing_intraday_symbols(start_date, end_date) if not overwrite else {}
+        existing = (
+            self._existing_intraday_symbols(exchange, start_date, end_date)
+            if not overwrite
+            else {}
+        )
         if show_progress:
-            logger.info("Fetching EODHD 5min bars for %d symbols", len(symbols))
+            logger.info("Fetching EODHD 5min bars for %s (%d symbols)", exchange, len(symbols))
         for index, symbol in enumerate(symbols, start=1):
             if not overwrite and self._symbol_has_all_dates(symbol, start_date, end_date, existing):
+                if verbose:
+                    logger.info("Skipping existing EODHD 5min bars for %s", symbol)
                 continue
             frame = self._fetch_five_minute_bars(symbol, start_date, end_date)
             if not frame.empty:
@@ -469,17 +872,24 @@ class EODHDService:
                 total_rows += len(combined)
                 buffers.clear()
                 if show_progress:
-                    logger.info("Persisted EODHD 5min bars through symbol %d/%d", index, len(symbols))
+                    logger.info(
+                        "Persisted EODHD 5min bars for %s through symbol %d/%d",
+                        exchange,
+                        index,
+                        len(symbols),
+                    )
         if buffers:
             combined = pd.concat(buffers, ignore_index=True, copy=False)
             self._persist_five_minute_frame(combined)
             total_rows += len(combined)
         return total_rows
 
-    def _existing_intraday_symbols(self, start_date: date, end_date: date) -> dict[str, set[str]]:
+    def _existing_intraday_symbols(
+        self, exchange: str, start_date: date, end_date: date
+    ) -> dict[str, set[str]]:
         existing: dict[str, set[str]] = {}
         for day in self._business_dates(start_date, end_date):
-            path = self.market_bars_dir / day.isoformat() / "5min.csv"
+            path = self._five_min_path(exchange, day)
             if not path.exists():
                 existing[day.isoformat()] = set()
                 continue
@@ -495,7 +905,9 @@ class EODHDService:
             for day in self._business_dates(start_date, end_date)
         )
 
-    def _fetch_five_minute_bars(self, symbol: str, start_date: date, end_date: date) -> pd.DataFrame:
+    def _fetch_five_minute_bars(
+        self, symbol: str, start_date: date, end_date: date
+    ) -> pd.DataFrame:
         client = self._api_client()
         start_dt = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
         end_dt = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
@@ -621,27 +1033,28 @@ class EODHDService:
         code, exchange = symbol.rsplit(".", 1)
         return code, exchange
 
-    def _persist_daily_frame(self, frame: pd.DataFrame) -> None:
+    def _persist_daily_frame(self, frame: pd.DataFrame, exchange: str, day: date) -> None:
         if frame.empty:
             return
-        for day_iso, sub in frame.groupby("date", sort=False):
-            self._merge_and_write(
-                self.market_bars_dir / str(day_iso) / "daily.csv",
-                sub,
-                ["symbol"],
-                sort_keys=["exchange", "code"],
-            )
+        cleaned = frame.drop_duplicates(["symbol"], keep="last").sort_values(["code"])
+        self._write_frame(self._daily_path(exchange, day), cleaned)
 
     def _persist_five_minute_frame(self, frame: pd.DataFrame) -> None:
         if frame.empty:
             return
-        for day_iso, sub in frame.groupby("date", sort=False):
+        for (exchange, day_iso), sub in frame.groupby(["exchange", "date"], sort=False):
+            day = date.fromisoformat(str(day_iso))
             self._merge_and_write(
-                self.market_bars_dir / str(day_iso) / "5min.csv",
+                self._five_min_path(str(exchange), day),
                 sub,
                 ["symbol", "timestamp"],
                 sort_keys=["timestamp", "symbol"],
             )
+
+    @staticmethod
+    def _write_frame(path: Path, frame: pd.DataFrame) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        frame.to_csv(path, index=False)
 
     def _merge_and_write(
         self,
@@ -688,15 +1101,13 @@ class EODHDService:
                             target,
                         )
                         rows = await asyncio.to_thread(
-                            self.persist_history,
+                            self.persist_daily_history,
                             target,
                             target,
-                            "daily",
-                            True,
-                            500,
-                            False,
-                            False,
-                            [schedule.exchange],
+                            overwrite=True,
+                            show_progress=False,
+                            verbose=False,
+                            exchanges=[schedule.exchange],
                         )
                         last_finalized_daily.add(key)
                         logger.info(
@@ -722,15 +1133,14 @@ class EODHDService:
                             target,
                         )
                         rows = await asyncio.to_thread(
-                            self.persist_history,
+                            self.persist_intraday_history,
                             target,
                             target,
-                            "5min",
-                            True,
-                            100,
-                            False,
-                            False,
-                            [schedule.exchange],
+                            overwrite=True,
+                            persist_every=100,
+                            show_progress=False,
+                            verbose=False,
+                            exchanges=[schedule.exchange],
                         )
                         last_finalized_5min.add(key)
                         logger.info(
