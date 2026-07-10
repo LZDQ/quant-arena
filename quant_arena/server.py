@@ -270,6 +270,8 @@ def create_app() -> FastAPI:
                         await task
                     except asyncio.CancelledError:
                         pass
+                if state.eodhd_market is not None:
+                    state.eodhd_market.close()
                 if state.futumoo_market is not None:
                     state.futumoo_market.close()
                 await state.notifier.close()

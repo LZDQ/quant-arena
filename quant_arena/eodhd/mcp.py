@@ -321,7 +321,9 @@ def create_eodhd_mcp_server(
     @mcp.tool(
         description=(
             "Get batched live EODHD quotes for provider symbols such as "
-            "`AAPL.US` or `0005.HK`. The EODHD API key stays server-side. "
+            "`AAPL.US`, `EURUSD.FOREX`, or `BTC-USD.CC`. The EODHD API key stays "
+            "server-side. Quotes come from EODHD websocket streams, not the "
+            "delayed REST snapshot API. "
             "Returns one row per requested symbol with `status='not_found'` "
             "when EODHD does not return a usable live price."
         )
@@ -456,11 +458,12 @@ def create_eodhd_mcp_server(
         description=(
             "Submit a limit-price buy or sell order on the EODHD paper arena. "
             "Use EODHD provider symbols with an exchange suffix, for example "
-            "`AAPL.US` or `0005.HK`. Each agent trades in a single configured "
-            "currency, but EODHD itself is used as a data source, so there is "
-            "no broker-region routing. Orders are queued as pending and matched "
-            "against live `last_price` snapshots from the EODHD API. Invalid "
-            "orders are rejected at submission and never appear in the order log."
+            "`AAPL.US`, `EURUSD.FOREX`, or `BTC-USD.CC`. Each agent trades in a "
+            "single configured currency, but EODHD itself is used as a data source, "
+            "so there is no broker-region routing. Orders are queued as pending and "
+            "matched against live websocket `last_price` snapshots from the EODHD "
+            "API. Invalid orders are rejected at submission and never appear in the "
+            "order log."
         )
     )
     async def submit_operation(

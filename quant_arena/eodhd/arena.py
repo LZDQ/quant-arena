@@ -83,6 +83,11 @@ class EODHDArenaService(EODHDArenaBase):
         snapshot = await asyncio.to_thread(self.market.get_snapshots, [code])
         snapshot_row = snapshot.get(code)
         if snapshot_row is None:
+            if not self.market.is_websocket_live_quote_supported(code):
+                raise BadRequestError(
+                    "EODHD websocket live quotes support US equities, FOREX, "
+                    f"and crypto symbols only; got {code}."
+                )
             raise BadRequestError(
                 f"EODHD returned no live snapshot for {code}; cannot submit."
             )

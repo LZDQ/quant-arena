@@ -1,16 +1,22 @@
 """EODHD-backed market-data service and live quote adapter."""
 
 import asyncio
+import json
 import shutil
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from importlib import resources
 from importlib.metadata import PackageNotFoundError, version
 from logging import getLogger
 from pathlib import Path
+import threading
+import time as time_module
+from urllib.parse import quote
 
 import pandas as pd
+from websockets.exceptions import ConnectionClosed
+from websockets.sync.client import ClientConnection, connect
 
 from quant_arena.config import EODHDMarketScheduleConfig
 from quant_arena.errors import ServiceError
@@ -53,12 +59,234 @@ def _utc_time_from_text(value: str) -> time:
     return parsed.time()
 
 
+def _field_from_mapping(row: dict[str, object], names: tuple[str, ...]) -> object:
+    for name in names:
+        if name in row:
+            return row[name]
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class _RuntimeMarketSchedule:
     exchange: str
     daily_finalize_time_utc: time
     five_min_finalize_time_utc: time
     target_date_offset_days: int
+
+
+@dataclass(frozen=True, slots=True)
+class _WebSocketTarget:
+    endpoint: str
+    wire_symbol: str
+    code: str
+
+
+@dataclass(slots=True)
+class _WebSocketEndpointState:
+    endpoint: str
+    index: int
+    desired: dict[str, str] = field(default_factory=dict)
+    subscribed: set[str] = field(default_factory=set)
+    stop_event: threading.Event = field(default_factory=threading.Event)
+    snapshot_event: threading.Event = field(default_factory=threading.Event)
+    thread: threading.Thread | None = None
+
+
+class _EODHDWebSocketQuoteStream:
+    _MAX_SYMBOLS_PER_CONNECTION = 50
+    _RECONNECT_BACKOFF_SECONDS = 5.0
+    _RECV_TIMEOUT_SECONDS = 1.0
+    _FIRST_QUOTE_TIMEOUT_SECONDS = 3.0
+
+    def __init__(self, api_token: str):
+        self._api_token = api_token
+        self._lock = threading.RLock()
+        self._states: dict[str, list[_WebSocketEndpointState]] = {}
+        self._snapshots: dict[str, dict[str, object]] = {}
+
+    def subscribe(self, targets: list[_WebSocketTarget]) -> None:
+        with self._lock:
+            for target in targets:
+                state = self._state_for_target(target)
+                state.desired[target.wire_symbol] = target.code
+                if state.thread is None or not state.thread.is_alive():
+                    state.subscribed.clear()
+                    state.stop_event.clear()
+                    state.thread = threading.Thread(
+                        target=self._run_endpoint,
+                        args=(state,),
+                        name=f"eodhd-websocket-{state.endpoint}-{state.index}",
+                        daemon=True,
+                    )
+                    state.thread.start()
+
+    def wait_for_snapshots(self, codes: list[str]) -> dict[str, dict[str, object]]:
+        deadline = time_module.monotonic() + self._FIRST_QUOTE_TIMEOUT_SECONDS
+        missing = set(codes)
+        out: dict[str, dict[str, object]] = {}
+        while missing:
+            with self._lock:
+                out = {
+                    code: dict(snapshot)
+                    for code, snapshot in self._snapshots.items()
+                    if code in codes
+                }
+                missing = {code for code in codes if code not in out}
+                events = [
+                    state.snapshot_event
+                    for states in self._states.values()
+                    for state in states
+                ]
+            if not missing:
+                return out
+            remaining = deadline - time_module.monotonic()
+            if remaining <= 0 or not events:
+                return out
+            for event in events:
+                event.wait(min(remaining, 0.25))
+                event.clear()
+                if time_module.monotonic() >= deadline:
+                    break
+        return out
+
+    def close(self) -> None:
+        with self._lock:
+            states = [
+                state
+                for endpoint_states in self._states.values()
+                for state in endpoint_states
+            ]
+            for state in states:
+                state.stop_event.set()
+        current = threading.current_thread()
+        for state in states:
+            thread = state.thread
+            if thread is not None and thread is not current and thread.is_alive():
+                thread.join(timeout=2.0)
+
+    def _state_for_target(self, target: _WebSocketTarget) -> _WebSocketEndpointState:
+        states = self._states.setdefault(target.endpoint, [])
+        for state in states:
+            if target.wire_symbol in state.desired:
+                return state
+        for state in states:
+            if len(state.desired) < self._MAX_SYMBOLS_PER_CONNECTION:
+                return state
+        state = _WebSocketEndpointState(endpoint=target.endpoint, index=len(states))
+        states.append(state)
+        return state
+
+    def _run_endpoint(self, state: _WebSocketEndpointState) -> None:
+        while not state.stop_event.is_set():
+            try:
+                url = (
+                    "wss://ws.eodhistoricaldata.com/ws/"
+                    f"{state.endpoint}?api_token={quote(self._api_token)}"
+                )
+                with connect(
+                    url,
+                    ping_interval=20,
+                    ping_timeout=20,
+                    close_timeout=5,
+                    open_timeout=10,
+                ) as connection:
+                    self._send_subscriptions(state, connection)
+                    while not state.stop_event.is_set():
+                        self._send_subscriptions(state, connection)
+                        try:
+                            raw_message = connection.recv(
+                                timeout=self._RECV_TIMEOUT_SECONDS
+                            )
+                        except TimeoutError:
+                            continue
+                        self._handle_message(state, raw_message)
+            except ConnectionClosed:
+                self._clear_subscriptions(state)
+            except Exception:
+                if not state.stop_event.is_set():
+                    logger.exception(
+                        "EODHD websocket stream failed for %s[%d]; reconnecting",
+                        state.endpoint,
+                        state.index,
+                    )
+                self._clear_subscriptions(state)
+            if not state.stop_event.is_set():
+                state.stop_event.wait(self._RECONNECT_BACKOFF_SECONDS)
+
+    def _send_subscriptions(
+        self, state: _WebSocketEndpointState, connection: ClientConnection
+    ) -> None:
+        with self._lock:
+            symbols = sorted(set(state.desired) - state.subscribed)
+        if not symbols:
+            return
+        connection.send(
+            json.dumps({"action": "subscribe", "symbols": ",".join(symbols)})
+        )
+        with self._lock:
+            state.subscribed.update(symbols)
+
+    def _clear_subscriptions(self, state: _WebSocketEndpointState) -> None:
+        with self._lock:
+            state.subscribed.clear()
+
+    def _handle_message(
+        self, state: _WebSocketEndpointState, raw_message: str | bytes
+    ) -> None:
+        if isinstance(raw_message, bytes):
+            text = raw_message.decode("utf-8")
+        else:
+            text = raw_message
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            logger.debug("Ignoring non-JSON EODHD websocket message: %r", text)
+            return
+        if not isinstance(parsed, dict):
+            return
+        message = {str(key): value for key, value in parsed.items()}
+        wire_symbol = _text_or_none(
+            _field_from_mapping(message, ("s", "symbol", "code"))
+        )
+        if wire_symbol is None:
+            return
+        price = self._price_from_message(state.endpoint, message)
+        if price is None or price <= 0:
+            return
+        timestamp = _float_or_none(
+            _field_from_mapping(message, ("t", "timestamp", "time"))
+        )
+        update_time = self._update_time_from_timestamp(timestamp)
+        with self._lock:
+            code = state.desired.get(wire_symbol)
+            if code is None:
+                code = state.desired.get(wire_symbol.upper())
+            if code is None:
+                return
+            self._snapshots[code] = {
+                "code": code,
+                "last_price": price,
+                "update_time": update_time.isoformat(),
+            }
+            state.snapshot_event.set()
+
+    @staticmethod
+    def _price_from_message(endpoint: str, message: dict[str, object]) -> float | None:
+        if endpoint == "forex":
+            bid = _float_or_none(_field_from_mapping(message, ("b", "bid")))
+            ask = _float_or_none(_field_from_mapping(message, ("a", "ask")))
+            if bid is not None and ask is not None and bid > 0 and ask > 0:
+                return (bid + ask) / 2
+            return bid or ask
+        return _float_or_none(_field_from_mapping(message, ("p", "price", "last")))
+
+    @staticmethod
+    def _update_time_from_timestamp(timestamp: float | None) -> datetime:
+        if timestamp is None:
+            return datetime.now(timezone.utc)
+        if timestamp > 9999999999:
+            timestamp = timestamp / 1000
+        return datetime.fromtimestamp(timestamp, timezone.utc)
 
 
 @dataclass(slots=True)
@@ -92,6 +320,7 @@ class EODHDService:
         self._code_name_index: dict[str, str] | None = None
         self._latest_daily_frame: pd.DataFrame | None = None
         self._client = None  # eodhd.APIClient, created lazily
+        self._websocket_quotes = _EODHDWebSocketQuoteStream(api_token)
         self.market_data_root.mkdir(parents=True, exist_ok=True)
         for exchange in self.exchanges:
             self._ensure_exchange_dirs(exchange)
@@ -131,6 +360,9 @@ class EODHDService:
 
             self._client = APIClient(self.api_token)
         return self._client
+
+    def close(self) -> None:
+        self._websocket_quotes.close()
 
     def _ensure_exchange_dirs(self, exchange: str) -> None:
         self._exchange_dir(exchange).mkdir(parents=True, exist_ok=True)
@@ -300,38 +532,62 @@ class EODHDService:
     def get_snapshots(self, codes: list[str]) -> dict[str, dict[str, object]]:
         if not codes:
             return {}
-        client = self._api_client()
-        first = codes[0]
-        rest = ",".join(codes[1:]) if len(codes) > 1 else None
-        payload = client.get_live_stock_prices(ticker=first, s=rest)
-        rows = self._payload_rows(payload)
+        targets: list[_WebSocketTarget] = []
+        supported_codes: list[str] = []
+        for code in codes:
+            target = self._websocket_target_for_code(code)
+            if target is None:
+                continue
+            targets.append(target)
+            supported_codes.append(code)
+        if not targets:
+            return {}
+        self._websocket_quotes.subscribe(targets)
+        snapshots = self._websocket_quotes.wait_for_snapshots(supported_codes)
         out: dict[str, dict[str, object]] = {}
-        for row in rows:
-            symbol = _text_or_none(self._field(row, ("code", "symbol", "ticker")))
-            if symbol is None:
-                symbol = first if len(codes) == 1 else None
-            if symbol is None:
+        for code in codes:
+            row = snapshots.get(code)
+            if row is None:
                 continue
-            if "." not in symbol:
-                match = self._match_symbol(symbol, codes)
-                if match is None:
-                    continue
-                symbol = match
-            price = self._price_from_row(row)
-            if price is None or price <= 0:
-                continue
-            timestamp = _int_or_none(self._field(row, ("timestamp", "date", "time")))
-            update_time = None
-            if timestamp is not None:
-                update_time = datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
-            name = self.get_code_name(symbol)
-            out[symbol] = {
-                "code": symbol,
-                "name": name,
-                "last_price": price,
-                "update_time": update_time,
+            out[code] = {
+                "code": code,
+                "name": self.get_code_name(code),
+                "last_price": row["last_price"],
+                "update_time": row["update_time"],
             }
         return out
+
+    def is_websocket_live_quote_supported(self, code: str) -> bool:
+        return self._websocket_target_for_code(code) is not None
+
+    @staticmethod
+    def _websocket_target_for_code(code: str) -> _WebSocketTarget | None:
+        if "." not in code:
+            return None
+        symbol, exchange = code.rsplit(".", 1)
+        symbol = symbol.strip()
+        exchange = exchange.strip().upper()
+        if not symbol or not exchange:
+            return None
+        if exchange == "US":
+            return _WebSocketTarget(
+                endpoint="us",
+                wire_symbol=symbol.upper(),
+                code=code,
+            )
+        if exchange == "FOREX":
+            return _WebSocketTarget(
+                endpoint="forex",
+                wire_symbol=symbol.replace("/", "").replace("-", "").upper(),
+                code=code,
+            )
+        if exchange in ("CC", "CRYPTO"):
+            return _WebSocketTarget(
+                endpoint="crypto",
+                wire_symbol=symbol.upper(),
+                code=code,
+            )
+        return None
 
     @staticmethod
     def _payload_rows(payload: object) -> list[dict[str, object]]:
@@ -346,20 +602,6 @@ class EODHDService:
         if isinstance(payload, dict):
             return [dict(payload)]
         return []
-
-    @staticmethod
-    def _match_symbol(code: str, candidates: list[str]) -> str | None:
-        for candidate in candidates:
-            if candidate == code or candidate.rsplit(".", 1)[0] == code:
-                return candidate
-        return None
-
-    def _price_from_row(self, row: dict[str, object]) -> float | None:
-        for name in ("close", "price", "last", "adjusted_close"):
-            value = _float_or_none(self._field(row, (name,)))
-            if value is not None and value > 0:
-                return value
-        return None
 
     def fetch_corporate_actions(
         self, ex_date: date, codes: Iterable[str]

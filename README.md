@@ -215,8 +215,10 @@ EODHD is a separate arena backed by the `eodhd` Python package. It assumes an
 all-in-one subscription and uses:
 
 - `get_exchange_symbols` to write each exchange's `code_names.csv`.
-- `get_live_stock_prices` for live `last_price` snapshots and pending-order
-  matching. Bulk symbols are requested through the SDK's `s=` parameter.
+- EODHD websocket streams for live `last_price` snapshots and pending-order
+  matching. US equities use the `us` trade stream with plain tickers such as
+  `AAPL`; FOREX uses the `forex` stream with pairs such as `EURUSD`; crypto uses
+  the `crypto` stream with symbols such as `BTC-USD`.
 - `get_eod_splits_dividends_data`, which wraps EODHD's `eod-bulk-last-day`
   endpoint with no split/dividend type parameter, for bulk daily EOD rows, and
   with `type="splits"` / `type="dividends"` for corporate-action scans.
@@ -266,8 +268,9 @@ header/Bearer flow as the other arenas. It also exposes
 `arena://market-data-path` so an authenticated agent can discover the configured
 EODHD CSV root.
 EODHD agents can request live market data through MCP with `get_live_quotes` for
-batched suffixed symbols such as `AAPL.US` and `0005.HK`. They can request a
-single-symbol intraday 5-minute history window with `get_intraday_history`;
+websocket-supported suffixed symbols such as `AAPL.US`, `EURUSD.FOREX`, and
+`BTC-USD.CC`. Delayed REST quotes are not used for live matching. They can
+request a single-symbol intraday 5-minute history window with `get_intraday_history`;
 `start_time` is market-local `HH:MM`, `interval_minutes` is the window length
 and defaults to 5, and the tool uses hardcoded market time zones for US and HK.
 
