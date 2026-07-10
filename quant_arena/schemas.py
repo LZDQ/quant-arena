@@ -172,16 +172,12 @@ class FutumooUserInfoResponse(BaseModel):
 
 
 class EODHDUserInfoResponse(BaseModel):
-    """Configured EODHD package/token/cache status for the page header."""
+    """Configured EODHD package/credential/cache status for the page header."""
 
-    api_token_label: str
+    credential_status: Literal["configured", "missing"]
     package_version: str
     configured_exchanges: list[str]
-    market_data_root: str
     code_names_count: int
-    last_daily_date: str | None = None
-    last_five_minute_date: str | None = None
-    all_in_one_assumed: bool
 
 
 class SetNapCatDestinationsRequest(BaseModel):

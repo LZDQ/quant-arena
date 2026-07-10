@@ -6,7 +6,7 @@ import logging
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from quant_arena.config import load_app_config
+from quant_arena.config import EODHDMarketScheduleConfig, load_app_config
 from quant_arena.eodhd import EODHDService
 from quant_arena.server import DEFAULT_CONFIG_PATH
 
@@ -50,6 +50,32 @@ def _resolve_dates(args: argparse.Namespace) -> tuple[date, date]:
     return today, today
 
 
+def _resolve_market_schedules(
+    configured: list[EODHDMarketScheduleConfig],
+    exchanges: list[str] | None,
+) -> list[EODHDMarketScheduleConfig]:
+    if exchanges is None:
+        return configured
+    schedules: list[EODHDMarketScheduleConfig] = []
+    seen: set[str] = set()
+    for exchange in exchanges:
+        value = exchange.strip().upper()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        schedules.append(
+            EODHDMarketScheduleConfig(
+                exchange=value,
+                daily_finalize_utc="00:00",
+                five_min_finalize_utc="00:00",
+                target_date_offset_days=0,
+            )
+        )
+    if not schedules:
+        raise SystemExit("At least one --exchange value must be non-empty")
+    return schedules
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(description="Persist EODHD daily / 5min bars for a date range.")
@@ -83,9 +109,10 @@ def main() -> None:
     market = EODHDService(
         api_token=args.api_token or config.eodhd.api_token,
         market_data_root=market_data_root,
-        exchanges=args.exchanges or config.eodhd.exchanges,
-        daily_finalize_utc=config.eodhd.daily_finalize_utc,
-        five_min_finalize_utc=config.eodhd.five_min_finalize_utc,
+        market_schedules=_resolve_market_schedules(
+            config.eodhd.market_schedules,
+            args.exchanges,
+        ),
     )
     market.persist_history(
         start_date,
@@ -95,6 +122,7 @@ def main() -> None:
         persist_every=args.persist_every,
         show_progress=True,
         verbose=args.verbose,
+        exchanges=args.exchanges,
     )
 
 

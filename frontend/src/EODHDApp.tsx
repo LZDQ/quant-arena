@@ -96,14 +96,6 @@ function listText(items: string[]): string {
   return items.length === 0 ? "--" : items.join(", ");
 }
 
-function pathLabel(path: string): string {
-  const parts = path.split("/").filter(Boolean);
-  if (parts.length <= 3) {
-    return path;
-  }
-  return `.../${parts.slice(-3).join("/")}`;
-}
-
 function EODHDUserInfoPanel({
   info,
   loading,
@@ -141,30 +133,23 @@ function EODHDUserInfoPanel({
     );
   }
 
-  const plan = info.all_in_one_assumed ? "All-in-one" : "Configured";
+  const credentialLabel =
+    info.credential_status === "configured" ? "Credential configured" : "Credential missing";
 
   return (
     <div className="futumoo-user-panel">
       <div className="futumoo-user-main">
         <div className="futumoo-user-identity">
           <span className="futumoo-user-kicker">EODHD</span>
-          <strong>{info.api_token_label}</strong>
+          <strong>{credentialLabel}</strong>
           <span>Package {info.package_version}</span>
         </div>
       </div>
       <div className="futumoo-user-grid">
-        <span>PLAN</span>
-        <strong>{plan}</strong>
         <span>EXCH</span>
         <strong>{listText(info.configured_exchanges)}</strong>
         <span>SYMS</span>
         <strong>{countText(info.code_names_count)}</strong>
-        <span>DAY</span>
-        <strong>{info.last_daily_date ?? "--"}</strong>
-        <span>5MIN</span>
-        <strong>{info.last_five_minute_date ?? "--"}</strong>
-        <span>ROOT</span>
-        <strong title={info.market_data_root}>{pathLabel(info.market_data_root)}</strong>
       </div>
       <div className="futumoo-user-status">
         <span>CSV cache</span>

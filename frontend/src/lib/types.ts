@@ -180,14 +180,10 @@ export type FutumooUserInfo = {
 };
 
 export type EODHDUserInfo = {
-  api_token_label: string;
+  credential_status: "configured" | "missing";
   package_version: string;
   configured_exchanges: string[];
-  market_data_root: string;
   code_names_count: number;
-  last_daily_date: string | null;
-  last_five_minute_date: string | null;
-  all_in_one_assumed: boolean;
 };
 
 // --- Form / draft view-models -------------------------------------------

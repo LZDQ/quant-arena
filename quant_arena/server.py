@@ -159,9 +159,7 @@ def _load_app_state(config_path: Path) -> AppState:
         eodhd_market = EODHDService(
             api_token=config.eodhd.api_token,
             market_data_root=eodhd_market_data_root,
-            exchanges=config.eodhd.exchanges,
-            daily_finalize_utc=config.eodhd.daily_finalize_utc,
-            five_min_finalize_utc=config.eodhd.five_min_finalize_utc,
+            market_schedules=config.eodhd.market_schedules,
         )
         eodhd_arena = EODHDArenaService(
             agents_root=eodhd_agents_root,

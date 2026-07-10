@@ -225,10 +225,18 @@ A-share baostock root. The directory shape mirrors A-share for compatibility:
 CSV columns remain EODHD-flavored; they are not baostock columns.
 
 The EODHD background task refreshes symbols once per UTC day and finalizes
-yesterday's daily and 5-minute CSV files after the configured UTC times. It uses
-a Mon-Fri business-day filter before making historical requests; holidays are
-left to the EODHD API returning empty/no rows. It does not persist a separate
-end-of-day equity ledger beyond the existing agent state/equity history.
+daily and 5-minute CSV files per configured market schedule. The default
+configured EODHD exchanges are:
+
+- `US`: daily 01:30 UTC, 5-minute 02:00 UTC, target date is previous UTC date.
+- `HK`: daily 09:30 UTC, 5-minute 10:00 UTC, target date is current UTC date.
+- `SHG`: daily 08:30 UTC, 5-minute 09:00 UTC, target date is current UTC date.
+- `SHE`: daily 08:30 UTC, 5-minute 09:00 UTC, target date is current UTC date.
+
+It uses a Mon-Fri business-day filter before making historical requests;
+holidays are left to the EODHD API returning empty/no rows. It does not persist
+a separate end-of-day equity ledger beyond the existing agent state/equity
+history.
 
 For manual bulk persistence, run `scripts/parse_eodhd_bars.py` with `--date` or
 `--start-date/--end-date`. It uses `config.eodhd` by default and supports
@@ -238,6 +246,11 @@ The MCP endpoint is `/eodhd/mcp`, with the same agent-token authentication
 header/Bearer flow as the other arenas. It also exposes
 `arena://market-data-path` so an authenticated agent can discover the configured
 EODHD CSV root.
+EODHD agents can request live market data through MCP with `get_live_quotes` for
+batched suffixed symbols such as `AAPL.US` and `0005.HK`. They can request a
+single-symbol intraday 5-minute history window with `get_intraday_history`;
+`start_time` is market-local `HH:MM`, `interval_minutes` is the window length
+and defaults to 5, and the tool uses hardcoded market time zones for US and HK.
 
 Non-production limitations to remember:
 
@@ -247,8 +260,11 @@ Non-production limitations to remember:
   enforce broker-region sessions, board lots, or PDT rules.
 - Historical persistence can be large with all-in-one access, especially 5-minute
   bars across many exchanges.
-- The page header shows configured token/package/cache status. The EODHD SDK
-  does not expose a Futu-style logged-in user profile endpoint.
+- The page header shows non-secret credential/package/symbol-cache status. It
+  does not send the configured EODHD API key, or a masked form of it, to the
+  frontend. The EODHD SDK exposes data endpoints such as exchanges, symbols,
+  live prices, and historical bars; it does not expose a Futu-style logged-in
+  user profile endpoint.
 
 ## Soulboard Integration
 

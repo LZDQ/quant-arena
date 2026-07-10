@@ -44,7 +44,7 @@ class AShareConfig(BaseModel):
     """A-share simulator settings."""
 
     enabled: bool = Field(
-        default=True,
+        default=False,
         description="Whether the A-share arena is enabled. When false, its routes, MCP mount, and background tasks are skipped.",
     )
     market_data_root: str = Field(
@@ -250,6 +250,28 @@ class EODHDFeeConfig(BaseModel):
     )
 
 
+class EODHDMarketScheduleConfig(BaseModel):
+    """One EODHD exchange's background bulk-persistence schedule."""
+
+    exchange: str = Field(
+        description="EODHD exchange code, for example US, HK, SHG, or SHE.",
+    )
+    daily_finalize_utc: str = Field(
+        description="UTC HH:MM time after which this exchange's bulk daily bars are persisted.",
+    )
+    five_min_finalize_utc: str = Field(
+        description="UTC HH:MM time after which this exchange's 5-minute bars are persisted.",
+    )
+    target_date_offset_days: int = Field(
+        default=0,
+        description="Offset from the current UTC date to the market date being finalized. US uses -1 because it finalizes after UTC midnight.",
+    )
+    enabled: bool = Field(
+        default=True,
+        description="Whether this exchange schedule participates in background persistence.",
+    )
+
+
 class EODHDConfig(BaseModel):
     """EODHD all-in-one market-data and paper-trading arena settings."""
 
@@ -265,9 +287,34 @@ class EODHDConfig(BaseModel):
         default=str(Path.home() / ".quant-arena" / "eodhd" / "market-data"),
         description="Public root directory for EODHD market data files. Must not be the A-share baostock directory.",
     )
-    exchanges: list[str] = Field(
-        default_factory=lambda: ["US"],
-        description="EODHD exchange codes to persist, for example US, NASDAQ, NYSE, LSE, XETRA.",
+    market_schedules: list[EODHDMarketScheduleConfig] = Field(
+        default_factory=lambda: [
+            EODHDMarketScheduleConfig(
+                exchange="US",
+                daily_finalize_utc="01:30",
+                five_min_finalize_utc="02:00",
+                target_date_offset_days=-1,
+            ),
+            EODHDMarketScheduleConfig(
+                exchange="HK",
+                daily_finalize_utc="09:30",
+                five_min_finalize_utc="10:00",
+                target_date_offset_days=0,
+            ),
+            EODHDMarketScheduleConfig(
+                exchange="SHG",
+                daily_finalize_utc="08:30",
+                five_min_finalize_utc="09:00",
+                target_date_offset_days=0,
+            ),
+            EODHDMarketScheduleConfig(
+                exchange="SHE",
+                daily_finalize_utc="08:30",
+                five_min_finalize_utc="09:00",
+                target_date_offset_days=0,
+            ),
+        ],
+        description="Per-EODHD-exchange background bulk persistence schedules.",
     )
     allowed_currencies: list[str] = Field(
         default_factory=lambda: ["USD", "HKD", "CNY"],
@@ -280,14 +327,6 @@ class EODHDConfig(BaseModel):
     polling_interval_seconds: int = Field(
         default=60,
         description="Seconds between EODHD live-price match cycles and market-data finalization checks.",
-    )
-    daily_finalize_utc: str = Field(
-        default="01:30",
-        description="UTC HH:MM time after which yesterday's bulk EODHD daily bars are persisted.",
-    )
-    five_min_finalize_utc: str = Field(
-        default="02:00",
-        description="UTC HH:MM time after which yesterday's EODHD 5-minute bars are persisted.",
     )
     fees: EODHDFeeConfig = Field(
         default_factory=EODHDFeeConfig,
