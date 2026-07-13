@@ -380,10 +380,6 @@ class EODHDConfig(BaseModel):
         default="USD",
         description="Currency used when creating an EODHD agent without an explicit currency.",
     )
-    polling_interval_seconds: int = Field(
-        default=60,
-        description="Seconds between EODHD live-price match cycles and market-data finalization checks.",
-    )
     fees: EODHDFeeConfig = Field(
         default_factory=EODHDFeeConfig,
         description="Fee schedule applied to EODHD fills.",

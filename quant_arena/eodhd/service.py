@@ -3,7 +3,7 @@
 import asyncio
 import json
 import shutil
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from importlib import resources
@@ -103,9 +103,15 @@ class _EODHDWebSocketQuoteStream:
     _RECV_TIMEOUT_SECONDS = 1.0
     _FIRST_QUOTE_TIMEOUT_SECONDS = 3.0
 
-    def __init__(self, api_token: str, subscribe_limit: int):
+    def __init__(
+        self,
+        api_token: str,
+        subscribe_limit: int,
+        snapshot_handler: Callable[[str, dict[str, object]], None],
+    ):
         self._api_token = api_token
         self._subscribe_limit = subscribe_limit
+        self._snapshot_handler = snapshot_handler
         self._lock = threading.RLock()
         self._states: dict[str, _WebSocketEndpointState] = {}
         self._snapshots: dict[str, dict[str, object]] = {}
@@ -277,12 +283,14 @@ class _EODHDWebSocketQuoteStream:
                 code = state.desired.get(wire_symbol.upper())
             if code is None:
                 return
-            self._snapshots[code] = {
+            snapshot: dict[str, object] = {
                 "code": code,
                 "last_price": price,
                 "update_time": update_time.isoformat(),
             }
+            self._snapshots[code] = snapshot
             state.snapshot_event.set()
+        self._snapshot_handler(code, dict(snapshot))
 
     @staticmethod
     def _price_from_message(endpoint: str, message: dict[str, object]) -> float | None:
@@ -336,9 +344,11 @@ class EODHDService:
         self._code_name_index: dict[str, str] | None = None
         self._latest_daily_frame: pd.DataFrame | None = None
         self._client = None  # eodhd.APIClient, created lazily
+        self._live_quote_handler: Callable[[str, dict[str, object]], None] | None = None
         self._websocket_quotes = _EODHDWebSocketQuoteStream(
             api_token,
             websocket_subscribe_limit,
+            self._publish_live_quote,
         )
         self.market_data_root.mkdir(parents=True, exist_ok=True)
         for exchange in self.exchanges:
@@ -385,6 +395,21 @@ class EODHDService:
 
     def close(self) -> None:
         self._websocket_quotes.close()
+
+    def set_live_quote_handler(
+        self,
+        handler: Callable[[str, dict[str, object]], None] | None,
+    ) -> None:
+        self._live_quote_handler = handler
+
+    def _publish_live_quote(self, code: str, snapshot: dict[str, object]) -> None:
+        handler = self._live_quote_handler
+        if handler is None:
+            return
+        try:
+            handler(code, snapshot)
+        except Exception:
+            logger.exception("EODHD live quote handler failed for %s", code)
 
     def is_exchange_enabled(self, exchange: str) -> bool:
         return exchange.strip().upper() in self._enabled_exchanges
@@ -558,9 +583,9 @@ class EODHDService:
                 return row[name]
         return None
 
-    def get_snapshots(self, codes: list[str]) -> dict[str, dict[str, object]]:
+    def subscribe_live_quotes(self, codes: list[str]) -> list[str]:
         if not codes:
-            return {}
+            return []
         targets: list[_WebSocketTarget] = []
         supported_codes: list[str] = []
         for code in codes:
@@ -571,9 +596,14 @@ class EODHDService:
                 continue
             targets.append(target)
             supported_codes.append(code)
-        if not targets:
+        if targets:
+            self._websocket_quotes.subscribe(targets)
+        return supported_codes
+
+    def get_snapshots(self, codes: list[str]) -> dict[str, dict[str, object]]:
+        supported_codes = self.subscribe_live_quotes(codes)
+        if not supported_codes:
             return {}
-        self._websocket_quotes.subscribe(targets)
         snapshots = self._websocket_quotes.wait_for_snapshots(supported_codes)
         out: dict[str, dict[str, object]] = {}
         for code in codes:
@@ -1398,13 +1428,14 @@ class EODHDService:
         )
         merged.to_csv(path, index=False)
 
-    async def run(self, polling_interval_seconds: int) -> None:
+    async def run(self) -> None:
         last_refreshed_date: date | None = None
         last_finalized_daily: set[tuple[str, date]] = set()
         last_finalized_5min: set[tuple[str, date]] = set()
         while True:
             now = datetime.now(timezone.utc)
             today = now.date()
+            retry_finalization = False
             if last_refreshed_date != today:
                 last_refreshed_date = today
                 try:
@@ -1444,6 +1475,7 @@ class EODHDService:
                             rows,
                         )
                     except Exception:
+                        retry_finalization = True
                         logger.exception(
                             "Exception finalizing EODHD daily bars for %s %s",
                             exchange,
@@ -1478,12 +1510,38 @@ class EODHDService:
                             rows,
                         )
                     except Exception:
+                        retry_finalization = True
                         logger.exception(
                             "Exception finalizing EODHD 5min bars for %s %s",
                             exchange,
                             target,
                         )
-            await asyncio.sleep(polling_interval_seconds)
+            wake_times = [
+                datetime.combine(
+                    today + timedelta(days=1),
+                    time.min,
+                    tzinfo=timezone.utc,
+                )
+            ]
+            for exchange_config in self.exchange_configs.values():
+                for schedule in (
+                    exchange_config.daily_bars,
+                    exchange_config.five_min_bars,
+                ):
+                    if not schedule.enabled:
+                        continue
+                    scheduled_at = datetime.combine(
+                        today,
+                        schedule.finalize_time_utc,
+                        tzinfo=timezone.utc,
+                    )
+                    if scheduled_at <= now:
+                        scheduled_at += timedelta(days=1)
+                    wake_times.append(scheduled_at)
+            if retry_finalization:
+                wake_times.append(datetime.now(timezone.utc) + timedelta(minutes=1))
+            sleep_seconds = (min(wake_times) - datetime.now(timezone.utc)).total_seconds()
+            await asyncio.sleep(max(1.0, sleep_seconds))
 
     @staticmethod
     def _read_csv(path: Path) -> pd.DataFrame:

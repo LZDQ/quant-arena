@@ -255,25 +255,13 @@ def create_app() -> FastAPI:
                         )
                     )
                 )
-            if (
-                state.eodhd_market is not None
-                and state.eodhd_arena is not None
-                and state.config.eodhd.polling_interval_seconds > 0
-            ):
+            if state.eodhd_market is not None and state.eodhd_arena is not None:
                 if state.eodhd_market.exchanges:
                     state.background_tasks.append(
-                        asyncio.create_task(
-                            state.eodhd_market.run(
-                                state.config.eodhd.polling_interval_seconds
-                            )
-                        )
+                        asyncio.create_task(state.eodhd_market.run())
                     )
                 state.background_tasks.append(
-                    asyncio.create_task(
-                        state.eodhd_arena.run(
-                            state.config.eodhd.polling_interval_seconds
-                        )
-                    )
+                    asyncio.create_task(state.eodhd_arena.run())
                 )
             try:
                 yield

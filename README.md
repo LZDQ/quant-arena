@@ -272,6 +272,18 @@ EODHD websocket endpoint. It defaults to `50`, matching EODHD's standard plan
 limit. Requesting another symbol at capacity unsubscribes the least recently
 queried symbol before subscribing the new one.
 
+EODHD order matching is driven directly by websocket ticks. Submitting an order
+subscribes its symbol, and every later tick for that symbol evaluates the pending
+order immediately; there is no EODHD polling interval setting. This design only
+works reliably while all distinct pending-order and held-position symbols fit
+within `websocket_subscribe_limit` for their endpoint. Ad hoc live-quote queries
+share the same pool, so actual pending-order capacity may be lower. With the
+default setting, the arena cannot guarantee matching for more than 50 distinct
+pending-order symbols on one endpoint. LRU eviction can leave an older pending
+order without price events, so it cannot fill until another operation subscribes
+that symbol again. Increase the limit to cover every distinct symbol the arena
+must track.
+
 An exchange-level `enabled: false` freezes that exchange completely: new buy
 and sell orders are rejected, live quotes and portfolio price refreshes stop,
 pending orders do not match, and corporate actions are not applied. Persisted

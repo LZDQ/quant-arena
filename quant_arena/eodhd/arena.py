@@ -2,12 +2,12 @@
 
 This arena is intentionally independent from Futumoo. EODHD supplies global
 market data in `{symbol}.{exchange}` form; the arena keeps one currency per
-agent, validates cash/inventory, and matches pending limit orders against
-latest `last_price` snapshots.
+agent, validates cash/inventory, and matches pending limit orders directly from
+websocket `last_price` events.
 """
 
 import asyncio
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from logging import getLogger
 from math import floor
 from pathlib import Path
@@ -58,6 +58,7 @@ class EODHDArenaService(ArenaBase[EODHDAgentState]):
         self._latest_prices: dict[str, float] = {}
         self._code_names: dict[str, str] = {}
         self._snapshot_as_of: datetime | None = None
+        self.market.set_live_quote_handler(self._handle_live_quote)
 
     def _now(self) -> datetime:
         return datetime.now(timezone.utc)
@@ -122,7 +123,8 @@ class EODHDArenaService(ArenaBase[EODHDAgentState]):
             state.orders.append(order)
             self._save_agent_state(state)
             self._latest_prices[code] = self._snapshot_price(snapshot_row)
-        self.notifier.notify_order_submitted(self.get_agent(agent_id), order)
+            self.market.subscribe_live_quotes([code])
+            self.notifier.notify_order_submitted(self.get_agent(agent_id), order)
         self._rankings_cache = None
         return order
 
@@ -177,9 +179,9 @@ class EODHDArenaService(ArenaBase[EODHDAgentState]):
                 f"{pending_sell} already encumbered by other pending sells."
             )
 
-    # ----- matching loop -----
+    # ----- websocket matching -----
 
-    def match_pending_orders(self) -> None:
+    def _subscribe_tracked_symbols(self) -> None:
         codes: set[str] = set()
         for agent_id, _ in self.list_agents():
             state = self._state(agent_id)
@@ -187,41 +189,25 @@ class EODHDArenaService(ArenaBase[EODHDAgentState]):
                 if order.status == "pending":
                     codes.add(order.code)
             codes.update(state.positions.keys())
-        if not codes:
-            return
-        try:
-            snapshots = self.market.get_snapshots(sorted(codes))
-        except Exception:
-            logger.exception("EODHD snapshot fetch failed")
-            return
-        if not snapshots:
-            return
+        self.market.subscribe_live_quotes(sorted(codes))
 
-        self._absorb_snapshot_names(snapshots)
-        max_update: datetime | None = None
+    def _handle_live_quote(self, code: str, row: SnapshotRow) -> None:
         observed_at = self._now()
-        for code, row in snapshots.items():
-            price = self._snapshot_price(row)
-            self._latest_prices[code] = price
-            update_at = self._parse_update_time(row.get("update_time")) or observed_at
-            if max_update is None or update_at > max_update:
-                max_update = update_at
-        self._snapshot_as_of = max_update
+        last_price = self._snapshot_price(row)
+        update_at = self._parse_update_time(row.get("update_time")) or observed_at
 
         with self._order_lock:
+            self._latest_prices[code] = last_price
+            if self._snapshot_as_of is None or update_at > self._snapshot_as_of:
+                self._snapshot_as_of = update_at
             for agent_id, _ in self.list_agents():
                 state = self._state(agent_id)
                 changed = False
                 for order in state.orders:
-                    if order.status != "pending":
+                    if order.status != "pending" or order.code != code:
                         continue
-                    row = snapshots.get(order.code)
-                    if row is None:
-                        continue
-                    update_at = self._parse_update_time(row.get("update_time")) or observed_at
                     if update_at <= order.activate_after.astimezone(timezone.utc):
                         continue
-                    last_price = self._snapshot_price(row)
                     if order.side == "buy" and last_price > order.limit_price:
                         continue
                     if order.side == "sell" and last_price < order.limit_price:
@@ -621,47 +607,21 @@ class EODHDArenaService(ArenaBase[EODHDAgentState]):
             as_of=self._snapshot_as_of,
         )
 
-    def refresh_portfolio_prices(self) -> None:
-        held: set[str] = set()
-        for agent_id, _ in self.list_agents():
-            state = self._state(agent_id)
-            held.update(state.positions.keys())
-        if held:
-            try:
-                snapshots = self.market.get_snapshots(sorted(held))
-            except Exception:
-                logger.exception("EODHD portfolio snapshot refresh failed")
-                snapshots = {}
-            self._absorb_snapshot_names(snapshots)
-            observed_at = self._now()
-            max_update: datetime | None = None
-            for code, row in snapshots.items():
-                self._latest_prices[code] = self._snapshot_price(row)
-                update_at = self._parse_update_time(row.get("update_time")) or observed_at
-                if max_update is None or update_at > max_update:
-                    max_update = update_at
-            if max_update is not None:
-                self._snapshot_as_of = max_update
-        with self._order_lock:
-            for agent_id, _ in self.list_agents():
-                self._update_today_equity_point(self._state(agent_id))
-
-    async def run(self, polling_interval_seconds: int) -> None:
+    async def run(self) -> None:
+        self._subscribe_tracked_symbols()
         last_corporate_action_date: date | None = None
         while True:
-            today = self._now().date()
+            now = self._now()
+            today = now.date()
             if last_corporate_action_date != today:
+                last_corporate_action_date = today
                 try:
                     await asyncio.to_thread(self.apply_corporate_actions, today)
-                    last_corporate_action_date = today
                 except Exception:
                     logger.exception("EODHD corporate-action scan failed")
-            try:
-                await asyncio.to_thread(self.match_pending_orders)
-            except Exception:
-                logger.exception("EODHD match cycle failed")
-            try:
-                await asyncio.to_thread(self.refresh_portfolio_prices)
-            except Exception:
-                logger.exception("EODHD portfolio price refresh failed")
-            await asyncio.sleep(polling_interval_seconds)
+            next_midnight = datetime.combine(
+                today + timedelta(days=1),
+                time.min,
+                tzinfo=timezone.utc,
+            )
+            await asyncio.sleep(max(1.0, (next_midnight - self._now()).total_seconds()))
