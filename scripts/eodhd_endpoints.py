@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Runnable demos for every EODHD endpoint used by quant-arena."""
 
 import json
@@ -16,6 +15,33 @@ from quant_arena.config import load_app_config
 CONFIG_PATH = Path.home() / ".quant-arena" / "config.json"
 REST_BASE = "https://eodhd.com/api"
 WS_BASE = "wss://ws.eodhistoricaldata.com/ws"
+
+
+def exchange_trading_calendar(
+    client: APIClient, api_token: str, exchange: str, day: str
+) -> None:
+    print("\nExchange trading hours and holidays")
+    print("  SDK: get_details_trading_hours_stock_market_holidays(...)")
+    result = client.get_details_trading_hours_stock_market_holidays(
+        code=exchange,
+        from_date=day,
+        to_date=day,
+    )
+    print("  SDK result:", result)
+    working_days = result["TradingHours"]["WorkingDays"].split(",")
+    closed_dates = {
+        holiday["Date"]
+        for holiday in result["ExchangeHolidays"].values()
+        if holiday["Type"].lower().replace("-", "") != "earlyclose"
+    }
+    print("  Is trading day:", date.fromisoformat(day).strftime("%a") in working_days and day not in closed_dates)
+
+    url = f"{REST_BASE}/exchange-details/{exchange}?" + urlencode(
+        {"api_token": api_token, "fmt": "json", "from": day, "to": day}
+    )
+    print(f"  URL: {REST_BASE}/exchange-details/{exchange}?api_token=<API_TOKEN>&fmt=json&from={day}&to={day}")
+    with urlopen(url) as response:
+        print("  URL result:", json.loads(response.read().decode("utf-8")))
 
 
 def exchange_symbol_list(client: APIClient, api_token: str, exchange: str) -> None:
@@ -123,6 +149,7 @@ def main() -> None:
     day = date(2026, 7, 10)  # hardcoded trading day
     client = APIClient(api_token)
 
+    exchange_trading_calendar(client, api_token, "US", day.isoformat())
     exchange_symbol_list(client, api_token, "US")
     bulk_daily_eod(client, api_token, "US", day.isoformat())
     bulk_dividends(client, api_token, "US", day.isoformat())

@@ -42,7 +42,9 @@ symbol,code,exchange,name,type,currency,isin,country
 
 Daily rows come from EODHD bulk EOD data for one exchange and one date. The
 parser downloads these by date because EODHD exposes daily bars as a bulk
-exchange snapshot. Columns:
+exchange snapshot. Before requesting bars, it uses EODHD exchange trading hours
+and holidays to skip full holidays and non-working weekdays. Early-close dates
+remain trading days. Columns:
 
 ```text
 date,symbol,code,exchange,open,high,low,close,adjusted_close,volume

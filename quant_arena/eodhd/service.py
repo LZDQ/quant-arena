@@ -955,17 +955,20 @@ class EODHDService:
         if end_date < start_date:
             raise ValueError("end_date must be on or after start_date")
         target_exchanges = self._normalize_exchange_filter(exchanges)
-        dates = self._business_dates(start_date, end_date)
+        dates_by_exchange = {
+            exchange: self.get_trading_dates(exchange, start_date, end_date)
+            for exchange in target_exchanges
+        }
+        exchange_date_count = sum(len(dates) for dates in dates_by_exchange.values())
         total_rows = 0
         logger.info(
-            "Persisting EODHD daily bulk bars for %d exchanges and %d dates",
+            "Persisting EODHD daily bulk bars for %d exchanges and %d exchange-dates",
             len(target_exchanges),
-            len(dates),
+            exchange_date_count,
         )
         for exchange in target_exchanges:
             self._ensure_exchange_dirs(exchange)
-        for day in dates:
-            for exchange in target_exchanges:
+            for day in dates_by_exchange[exchange]:
                 path = self._daily_path(exchange, day)
                 if not overwrite and path.exists():
                     if verbose:
@@ -1053,6 +1056,49 @@ class EODHDService:
         if not normalized:
             raise ValueError("At least one EODHD exchange must be selected")
         return normalized
+
+    def get_trading_dates(
+        self,
+        exchange: str,
+        start_date: date,
+        end_date: date,
+    ) -> list[date]:
+        exchange = exchange.strip().upper()
+        payload = self._api_client().get_details_trading_hours_stock_market_holidays(
+            code=exchange,
+            from_date=start_date.isoformat(),
+            to_date=end_date.isoformat(),
+        )
+        weekday_numbers = {
+            "mon": 0,
+            "tue": 1,
+            "wed": 2,
+            "thu": 3,
+            "fri": 4,
+            "sat": 5,
+            "sun": 6,
+        }
+        working_days = {
+            weekday_numbers[value.strip().lower()[:3]]
+            for value in payload["TradingHours"]["WorkingDays"].split(",")
+        }
+        closed_dates = {
+            date.fromisoformat(holiday["Date"])
+            for holiday in payload["ExchangeHolidays"].values()
+            if holiday["Type"].lower().replace("-", "").replace(" ", "")
+            != "earlyclose"
+        }
+
+        trading_dates: list[date] = []
+        cursor = start_date
+        while cursor <= end_date:
+            if cursor.weekday() in working_days and cursor not in closed_dates:
+                trading_dates.append(cursor)
+            cursor += timedelta(days=1)
+        return trading_dates
+
+    def is_trading_day(self, exchange: str, day: date) -> bool:
+        return day in self.get_trading_dates(exchange, day, day)
 
     @staticmethod
     def _business_dates(start_date: date, end_date: date) -> list[date]:

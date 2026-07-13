@@ -215,6 +215,8 @@ EODHD is a separate arena backed by the `eodhd` Python package. It assumes an
 all-in-one subscription and uses:
 
 - `get_exchange_symbols` to write each exchange's `code_names.csv`.
+- `get_details_trading_hours_stock_market_holidays` to obtain each exchange's
+  working weekdays, full holidays, and early-close dates before daily persistence.
 - EODHD websocket streams for live `last_price` snapshots and pending-order
   matching. US equities use the `us` trade stream with plain tickers such as
   `AAPL`; FOREX uses the `forex` stream with pairs such as `EURUSD`; crypto uses
@@ -281,10 +283,11 @@ The default schedule meanings are:
 
 - `US`: daily 01:30 UTC, 5-minute 02:00 UTC, target date is previous UTC date.
 
-It uses a Mon-Fri business-day filter before making historical requests;
-holidays are left to the EODHD API returning empty/no rows. It does not persist
-a separate end-of-day equity ledger beyond the existing agent state/equity
-history.
+Daily persistence queries EODHD's exchange calendar for each exchange and date
+range. It skips full holidays and non-working weekdays while retaining early-close
+trading days. Five-minute persistence still uses a Mon-Fri filter and leaves
+holidays to the intraday endpoint returning no rows. It does not persist a separate
+end-of-day equity ledger beyond the existing agent state/equity history.
 
 The EODHD arena scans split/dividend events once per UTC date before the normal
 match cycle. It groups currently held suffixed symbols by exchange, fetches the
