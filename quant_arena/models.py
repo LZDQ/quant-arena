@@ -17,49 +17,49 @@ class OrderRecord(BaseModel):
     order_id: str = Field(default_factory=lambda: uuid4().hex)
     agent_id: str
     code: str = Field(
-        description="股票代码，不含前缀，如 600726"
+        description="Arena-local instrument identifier, such as 600726, US.AAPL, or AAPL.US."
     )
     name: str | None = Field(
         default=None,
-        description="股票名称，下单时根据 code 在缓存表里查到的展示名，查不到为 null"
+        description="Instrument display name resolved by the arena when the order is submitted."
     )
     side: OrderSide = Field(
-        description="买卖方向，buy 是买入，sell 是卖出"
+        description="Order direction: buy acquires the instrument and sell disposes of it."
     )
     quantity: int = Field(
         gt=0,
-        description="委托数量，买入时需要是 100 的倍数"
+        description="Positive order quantity; lot-size restrictions are defined by the selected arena."
     )
     limit_price: float = Field(
         gt=0,
-        description="限价单价格，只有市场价格达到这个条件才会成交"
+        description="Limit price in the agent's arena-local currency."
     )
     comment: str = Field(
         min_length=1,
         max_length=200,
-        description="下单原因备注"
+        description="Agent-supplied reason for submitting the order."
     )
     status: OrderStatus = Field(
         default="pending",
-        description="订单状态，pending 是待成交，filled 是已成交，canceled 是已撤销"
+        description="Order lifecycle state: pending, filled, or canceled."
     )
     submitted_at: datetime = Field(
-        description="下单时间"
+        description="Arena-local timestamp when the order was accepted."
     )
     activate_after: datetime = Field(
-        description="订单最早可被撮合检查的时间，用来避免刚提交就被同一时刻的数据立刻成交"
+        description="Earliest market-data timestamp eligible to match this order."
     )
     filled_at: datetime | None = Field(
         default=None,
-        description="订单实际成交时间"
+        description="Execution timestamp when the order fills."
     )
     canceled_at: datetime | None = Field(
         default=None,
-        description="订单撤销时间"
+        description="Cancellation timestamp when the order is canceled."
     )
     rejection_reason: str | None = Field(
         default=None,
-        description="如果因为交易规则或资金仓位限制导致不能成交，这里记录原因"
+        description="Reason an accepted order was later canceled or could not be completed."
     )
 
 
@@ -67,23 +67,23 @@ class SubmitOrder(BaseModel):
     """Domain request to submit an order."""
 
     code: str = Field(
-        description="股票代码"
+        description="Arena-local instrument identifier."
     )
     side: OrderSide = Field(
-        description="买卖方向，buy 是买入，sell 是卖出"
+        description="Order direction: buy or sell."
     )
     quantity: int = Field(
         gt=0,
-        description="委托数量"
+        description="Positive order quantity; the arena applies its own lot-size rules."
     )
     limit_price: float = Field(
         gt=0,
-        description="限价单价格，只有市场价格达到这个条件才会成交"
+        description="Limit price in the agent's arena-local currency."
     )
     comment: str = Field(
         min_length=1,
         max_length=200,
-        description="下单原因备注"
+        description="Agent-supplied reason for submitting the order."
     )
 
 
@@ -94,29 +94,29 @@ class FillRecord(BaseModel):
     order_id: str
     agent_id: str
     code: str = Field(
-        description="成交对应的股票代码"
+        description="Arena-local identifier of the executed instrument."
     )
     side: OrderSide = Field(
-        description="成交方向，buy 是买入，sell 是卖出"
+        description="Executed direction: buy or sell."
     )
     quantity: int = Field(
         gt=0,
-        description="实际成交数量"
+        description="Executed instrument quantity."
     )
     executed_at: datetime = Field(
-        description="成交时间"
+        description="Arena-local execution timestamp."
     )
     executed_price: float = Field(
         gt=0,
-        description="实际成交价格"
+        description="Execution price in the agent's arena-local currency."
     )
     commission: float = Field(
         ge=0,
-        description="这笔成交收取的手续费"
+        description="Commission charged by the arena's fee policy."
     )
     stamp_tax: float = Field(
         ge=0,
-        description="这笔成交收取的印花税，通常只在卖出时有"
+        description="Transaction tax or equivalent arena-specific levy charged on the fill."
     )
 
 
@@ -156,7 +156,10 @@ class SpecialEvent(BaseModel):
         description="事件类型"
     )
     event_date: date = Field(description="事件发生的交易日（如除权除息日），用于按日期筛选")
-    code: str | None = Field(default=None, description="相关股票代码，若与个股无关则为空")
+    code: str | None = Field(
+        default=None,
+        description="Related arena-local instrument identifier, or null for account-level events.",
+    )
     summary: str = Field(description="渲染好的多行文字说明，前端与 agent 都直接展示这个")
     occurred_at: datetime = Field(description="事件被记录/应用到账户的时间")
 
