@@ -1,4 +1,4 @@
-"""Shared Shanghai-local clock utilities."""
+"""Shanghai-local clock utilities for the A-share arena."""
 
 from datetime import datetime
 from zoneinfo import ZoneInfo

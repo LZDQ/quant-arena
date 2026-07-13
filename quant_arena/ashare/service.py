@@ -28,8 +28,8 @@ import pandas as pd
 import requests
 from tqdm import tqdm
 
-from quant_arena.clock import now_shanghai
-from quant_arena.models import CorporateAction
+from quant_arena.ashare.clock import now_shanghai
+from quant_arena.ashare.models import CorporateAction
 
 logger = getLogger(__name__)
 

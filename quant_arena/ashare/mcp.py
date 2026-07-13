@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from quant_arena.ashare.arena import ArenaService
-from quant_arena.clock import SHANGHAI_TZ
+from quant_arena.ashare.clock import SHANGHAI_TZ
 from quant_arena.errors import BadRequestError
 from quant_arena.models import (
     AgentMetadata,

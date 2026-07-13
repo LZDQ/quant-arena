@@ -6,7 +6,7 @@ import logging
 from datetime import date
 from pathlib import Path
 
-from quant_arena.clock import now_shanghai
+from quant_arena.ashare.clock import now_shanghai
 from quant_arena.config import load_app_config
 from quant_arena.ashare import AShareService
 from quant_arena.server import DEFAULT_CONFIG_PATH

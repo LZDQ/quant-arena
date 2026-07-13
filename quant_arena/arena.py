@@ -1,23 +1,20 @@
-"""EODHD-local arena scaffolding.
-
-This is intentionally copied into the EODHD arena instead of shared with
-other arenas. It owns EODHD agent registry, persisted state, daily reports,
-rankings, cancel flow, and manual position clear.
-"""
+"""Shared typed scaffolding for filesystem-backed trading arenas."""
 
 import json
 import os
 import shutil
 import tempfile
 import threading
+from abc import ABC, abstractmethod
 from datetime import date, datetime
 from logging import getLogger
 from pathlib import Path
+from typing import Generic, TypeVar
 
 from quant_arena.config import AgentConfig
 from quant_arena.errors import BadRequestError, ConflictError, NotFoundError
-from quant_arena.eodhd.models import EODHDAgentState
 from quant_arena.models import (
+    ArenaAgentState,
     DailyReport,
     DailyReportSummary,
     EquityPoint,
@@ -31,6 +28,8 @@ from quant_arena.models import (
 from quant_arena.notifier import NotifierService
 
 logger = getLogger(__name__)
+
+StateT = TypeVar("StateT", bound=ArenaAgentState)
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -62,8 +61,8 @@ def _atomic_write_json(path: Path, payload: object) -> None:
         raise
 
 
-class EODHDArenaBase:
-    """EODHD-local arena scaffolding. See module docstring for the contract."""
+class ArenaBase(ABC, Generic[StateT]):
+    """Shared account lifecycle and persistence for one concrete arena."""
 
     _DAILY_REPORT_MAX_BYTES = 256 * 1024
 
@@ -72,33 +71,46 @@ class EODHDArenaBase:
         *,
         agents_root: Path,
         notifier: NotifierService,
+        state_type: type[StateT],
     ):
         self.agents_root = agents_root
         self.notifier = notifier
+        self._state_type = state_type
         self._rankings_cache: list[RankingSnapshot] | None = None
         self._today_equity_points: dict[str, EquityPoint] = {}
         self.agents_root.mkdir(parents=True, exist_ok=True)
         self._agents: dict[str, AgentConfig] = {}
-        self._states: dict[str, EODHDAgentState] = {}
+        self._states: dict[str, StateT] = {}
         self._load_agents()
         self._order_lock = threading.RLock()
 
     # ----- subclass hooks -----
 
+    @abstractmethod
     def _now(self) -> datetime:
         """Return the timezone-aware current time used for clocks/dates."""
         raise NotImplementedError
 
-    def _build_portfolio(self, state: EODHDAgentState) -> PortfolioSnapshot:
+    @abstractmethod
+    def _build_portfolio(self, state: StateT) -> PortfolioSnapshot:
         """Build the live portfolio snapshot for `state`."""
         raise NotImplementedError
 
-    def _special_events(self, state: EODHDAgentState) -> list[SpecialEvent]:
+    def _special_events(self, state: StateT) -> list[SpecialEvent]:
         """Subclass hook: non-trade account events (corporate actions, …) for `state`.
 
         Default is no events; arenas that model such events override this.
         """
         return []
+
+    def _prepare_agent(self, agent: AgentConfig) -> AgentConfig:
+        """Apply arena-local normalization before an agent enters the registry."""
+        return agent
+
+    @abstractmethod
+    def _clear_positions(self, state: StateT) -> None:
+        """Clear the concrete arena's position book."""
+        raise NotImplementedError
 
     # ----- agent registry -----
 
@@ -114,9 +126,12 @@ class EODHDArenaBase:
     def add_agent(self, agent_id: str, agent: AgentConfig) -> AgentConfig:
         if agent_id in self._agents:
             raise ConflictError(f"Agent already exists: {agent_id}")
+        agent = self._prepare_agent(agent)
         self._agents[agent_id] = agent
         self._save_agent_config(agent_id, agent)
-        state = EODHDAgentState(agent_id=agent_id, cash=agent.initial_cash)
+        state = self._state_type.model_validate(
+            {"agent_id": agent_id, "cash": agent.initial_cash}
+        )
         self._save_agent_state(state)
         self._rankings_cache = None
         return agent
@@ -210,8 +225,8 @@ class EODHDArenaBase:
             portfolio = self._build_portfolio(state)
             market_value = portfolio.market_value
             unrealized_pnl = portfolio.unrealized_pnl
-            # Only codes with live holdings — never empty-list entries that a
-            # buy-then-fully-sell can leave behind in `state.positions`.
+            # Only codes with live holdings, never empty entries left behind
+            # after a position has been fully sold.
             cleared_codes = sorted(
                 position.code for position in portfolio.positions if position.quantity > 0
             )
@@ -228,7 +243,7 @@ class EODHDArenaBase:
             if keep_unrealized_pnl:
                 new_realized += unrealized_pnl
 
-            state.positions.clear()
+            self._clear_positions(state)
             state.cash = round(new_cash, 4)
             state.realized_pnl = round(new_realized, 4)
 
@@ -289,7 +304,7 @@ class EODHDArenaBase:
             return portfolio
 
     def _compute_day_return_pct(
-        self, state: EODHDAgentState, portfolio: PortfolioSnapshot
+        self, state: StateT, portfolio: PortfolioSnapshot
     ) -> float | None:
         """Percent change vs the last `EquityPoint` whose `trade_date` is strictly
         before today. Returns None when no such point exists (day-1, fresh
@@ -403,7 +418,7 @@ class EODHDArenaBase:
                     unrealized_pnl=round(point.unrealized_pnl, 2),
                 )
             )
-        # Rank by % return so different EODHD currencies sit on a comparable scale.
+        # Rank by percentage return so differently sized accounts remain comparable.
         ranked = sorted(entries, key=lambda entry: (-entry.return_pct, entry.agent_id))
         if target_date is None:
             self._rankings_cache = ranked
@@ -411,7 +426,7 @@ class EODHDArenaBase:
 
     def _resolve_equity_point(
         self,
-        state: EODHDAgentState,
+        state: StateT,
         target_date: date | None,
         portfolio: PortfolioSnapshot,
     ) -> EquityPoint:
@@ -429,7 +444,7 @@ class EODHDArenaBase:
             unrealized_pnl=portfolio.unrealized_pnl,
         )
 
-    def _build_today_equity_point(self, state: EODHDAgentState) -> EquityPoint:
+    def _build_today_equity_point(self, state: StateT) -> EquityPoint:
         portfolio = self._build_portfolio(state)
         return EquityPoint(
             trade_date=self._now().date(),
@@ -440,11 +455,11 @@ class EODHDArenaBase:
             unrealized_pnl=portfolio.unrealized_pnl,
         )
 
-    def _update_today_equity_point(self, state: EODHDAgentState) -> None:
+    def _update_today_equity_point(self, state: StateT) -> None:
         """In-memory only — caller is responsible for persistence."""
         self._today_equity_points[state.agent_id] = self._build_today_equity_point(state)
 
-    def _freeze_today_equity(self, state: EODHDAgentState) -> None:
+    def _freeze_today_equity(self, state: StateT) -> None:
         """Replace or append today's equity point in `state.equity_history`."""
         today = self._now().date()
         point = self._build_today_equity_point(state)
@@ -574,7 +589,7 @@ class EODHDArenaBase:
             return False
         return True
 
-    def _state(self, agent_id: str) -> EODHDAgentState:
+    def _state(self, agent_id: str) -> StateT:
         state = self._states.get(agent_id)
         if state is not None:
             return state
@@ -582,9 +597,11 @@ class EODHDArenaBase:
         path = self._state_path(agent_id)
         if path.exists():
             with path.open("r", encoding="utf-8") as handle:
-                state = EODHDAgentState.model_validate(json.load(handle))
+                state = self._state_type.model_validate(json.load(handle))
         else:
-            state = EODHDAgentState(agent_id=agent_id, cash=agent.initial_cash)
+            state = self._state_type.model_validate(
+                {"agent_id": agent_id, "cash": agent.initial_cash}
+            )
             self._save_agent_state(state)
         self._states[agent_id] = state
         return state
@@ -595,19 +612,23 @@ class EODHDArenaBase:
             if not config_path.exists():
                 continue
             with config_path.open("r", encoding="utf-8") as handle:
-                self._agents[agent_dir.name] = AgentConfig.model_validate(json.load(handle))
+                agent = AgentConfig.model_validate(json.load(handle))
+                self._agents[agent_dir.name] = self._prepare_agent(agent)
             state_path = agent_dir / "state.json"
             if state_path.exists():
                 with state_path.open("r", encoding="utf-8") as handle:
-                    self._states[agent_dir.name] = EODHDAgentState.model_validate(
+                    self._states[agent_dir.name] = self._state_type.model_validate(
                         json.load(handle)
                     )
 
     def _save_agent_config(self, agent_id: str, agent: AgentConfig) -> None:
         self._agent_dir(agent_id).mkdir(parents=True, exist_ok=True)
-        _atomic_write_json(self._config_path(agent_id), agent.model_dump(mode="json"))
+        _atomic_write_json(
+            self._config_path(agent_id),
+            agent.model_dump(mode="json", exclude_none=True),
+        )
 
-    def _save_agent_state(self, state: EODHDAgentState) -> None:
+    def _save_agent_state(self, state: StateT) -> None:
         self._states[state.agent_id] = state
         self._agent_dir(state.agent_id).mkdir(parents=True, exist_ok=True)
         _atomic_write_json(self._state_path(state.agent_id), state.model_dump(mode="json"))

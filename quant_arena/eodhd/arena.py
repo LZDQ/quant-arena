@@ -12,9 +12,9 @@ from logging import getLogger
 from math import floor
 from pathlib import Path
 
+from quant_arena.arena import ArenaBase
 from quant_arena.config import AgentConfig, EODHDConfig
 from quant_arena.errors import BadRequestError
-from quant_arena.eodhd.base import EODHDArenaBase
 from quant_arena.eodhd.models import (
     EODHDAgentState,
     EODHDCorporateActionRecord,
@@ -38,7 +38,7 @@ logger = getLogger(__name__)
 SnapshotRow = dict[str, object]
 
 
-class EODHDArenaService(EODHDArenaBase):
+class EODHDArenaService(ArenaBase[EODHDAgentState]):
     """Global-symbol paper arena backed by EODHD live snapshots."""
 
     def __init__(
@@ -48,7 +48,11 @@ class EODHDArenaService(EODHDArenaBase):
         config: EODHDConfig,
         notifier: NotifierService,
     ):
-        super().__init__(agents_root=agents_root, notifier=notifier)
+        super().__init__(
+            agents_root=agents_root,
+            notifier=notifier,
+            state_type=EODHDAgentState,
+        )
         self.market = market
         self.config = config
         self._latest_prices: dict[str, float] = {}
@@ -57,6 +61,9 @@ class EODHDArenaService(EODHDArenaBase):
 
     def _now(self) -> datetime:
         return datetime.now(timezone.utc)
+
+    def _clear_positions(self, state: EODHDAgentState) -> None:
+        state.positions.clear()
 
     # ----- agent registry -----
 

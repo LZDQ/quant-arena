@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from quant_arena.models import EquityPoint, FillRecord, ManualPositionClearRecord, OrderRecord
+from quant_arena.models import ArenaAgentState, EquityPoint
 
 
 class EODHDPosition(BaseModel):
@@ -43,18 +43,13 @@ class EODHDCorporateActionRecord(BaseModel):
     applied_at: datetime
 
 
-class EODHDAgentState(BaseModel):
+class EODHDAgentState(ArenaAgentState):
     """Persisted runtime state for one EODHD paper-trading agent.
 
     The agent's currency is a property of `AgentConfig`; every monetary field
     below is in that single configured currency.
     """
 
-    agent_id: str
-    cash: float
-    realized_pnl: float = 0.0
-    orders: list[OrderRecord] = Field(default_factory=list)
-    fills: list[FillRecord] = Field(default_factory=list)
     positions: dict[str, EODHDPosition] = Field(default_factory=dict)
     equity_history: list[EquityPoint] = Field(
         default_factory=list,
@@ -63,8 +58,4 @@ class EODHDAgentState(BaseModel):
     corporate_actions: list[EODHDCorporateActionRecord] = Field(
         default_factory=list,
         description="Applied EODHD split/dividend events.",
-    )
-    manual_position_clears: list[ManualPositionClearRecord] = Field(
-        default_factory=list,
-        description="历次手动清仓重置事件",
     )

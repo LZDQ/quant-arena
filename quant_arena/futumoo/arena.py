@@ -19,9 +19,9 @@ from datetime import datetime, timezone
 from logging import getLogger
 from pathlib import Path
 
+from quant_arena.arena import ArenaBase
 from quant_arena.config import AgentConfig, FutumooConfig
 from quant_arena.errors import BadRequestError
-from quant_arena.futumoo.base import FutumooArenaBase
 from quant_arena.futumoo.models import FutumooAgentState
 from quant_arena.futumoo.region import CNRegionArena, HKRegionArena, RegionArena, USRegionArena
 from quant_arena.futumoo.service import FutumooService
@@ -38,7 +38,7 @@ from quant_arena.notifier import NotifierService
 logger = getLogger(__name__)
 
 
-class FutumooArenaService(FutumooArenaBase):
+class FutumooArenaService(ArenaBase[FutumooAgentState]):
     """HK / US / CN paper-trading orchestrator with one currency per agent."""
 
     def __init__(
@@ -51,6 +51,7 @@ class FutumooArenaService(FutumooArenaBase):
         super().__init__(
             agents_root=agents_root,
             notifier=notifier,
+            state_type=FutumooAgentState,
         )
         self.market = market
         self.config = config
@@ -79,6 +80,9 @@ class FutumooArenaService(FutumooArenaBase):
 
     def _now(self) -> datetime:
         return datetime.now(timezone.utc)
+
+    def _clear_positions(self, state: FutumooAgentState) -> None:
+        state.positions.clear()
 
     # ----- agent registry -----
 

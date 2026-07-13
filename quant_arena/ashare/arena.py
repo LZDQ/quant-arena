@@ -16,21 +16,23 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from quant_arena.ashare.base import AShareArenaBase
+from quant_arena.arena import ArenaBase
+from quant_arena.ashare.clock import SHANGHAI_TZ, now_shanghai
+from quant_arena.ashare.models import (
+    AShareAgentState,
+    CorporateAction,
+    CorporateActionRecord,
+    PositionLot,
+)
 from quant_arena.ashare.service import AShareService
-from quant_arena.clock import SHANGHAI_TZ, now_shanghai
-from quant_arena.config import AShareFeeConfig
+from quant_arena.config import AgentConfig, AShareFeeConfig
 from quant_arena.errors import BadRequestError, ConflictError, NotFoundError
 from quant_arena.notifier import NotifierService
 from quant_arena.models import (
-    AgentState,
-    CorporateAction,
-    CorporateActionRecord,
     EquityPoint,
     FillRecord,
     OrderRecord,
     PortfolioSnapshot,
-    PositionLot,
     PositionSnapshot,
     SpecialEvent,
     SubmitOrder,
@@ -47,7 +49,7 @@ class IntradayCodeState:
     latest_count: int | None = None
 
 
-class ArenaService(AShareArenaBase):
+class ArenaService(ArenaBase[AShareAgentState]):
     """A-share trading simulator: agent state, order matching, ranking."""
 
     def __init__(
@@ -61,6 +63,7 @@ class ArenaService(AShareArenaBase):
         super().__init__(
             agents_root=agents_root,
             notifier=notifier,
+            state_type=AShareAgentState,
         )
         self.market = market
         self.fees = fees
@@ -73,6 +76,13 @@ class ArenaService(AShareArenaBase):
 
     def _now(self) -> datetime:
         return now_shanghai()
+
+    def _clear_positions(self, state: AShareAgentState) -> None:
+        state.positions.clear()
+
+    def _prepare_agent(self, agent: AgentConfig) -> AgentConfig:
+        agent.currency = None
+        return agent
 
     # ----- order entry -----
 
@@ -203,7 +213,7 @@ class ArenaService(AShareArenaBase):
         intraday_by_code = self._refresh_intraday_cache(all_tracked_codes)
 
         with self._order_lock:
-            pending_by_code: dict[str, list[tuple[str, AgentState, OrderRecord]]] = {}
+            pending_by_code: dict[str, list[tuple[str, AShareAgentState, OrderRecord]]] = {}
             dirty_states: set[str] = set()
             for agent_id, _ in agent_pairs:
                 if not per_agent_codes[agent_id]:
@@ -263,7 +273,7 @@ class ArenaService(AShareArenaBase):
 
     def _match_one_order(
         self,
-        state: AgentState,
+        state: AShareAgentState,
         order: OrderRecord,
         code_frame: pd.DataFrame | None,
     ) -> bool:
@@ -337,7 +347,7 @@ class ArenaService(AShareArenaBase):
 
     # ----- corporate actions (cash dividend / bonus / capitalization) -----
 
-    def _special_events(self, state: AgentState) -> list[SpecialEvent]:
+    def _special_events(self, state: AShareAgentState) -> list[SpecialEvent]:
         events: list[SpecialEvent] = []
         for record in state.corporate_actions:
             events.append(
@@ -424,7 +434,7 @@ class ArenaService(AShareArenaBase):
 
     def _apply_one_corporate_action(
         self,
-        state: AgentState,
+        state: AShareAgentState,
         action: CorporateAction,
         prev_close: float | None,
         timestamp: datetime,
@@ -551,7 +561,7 @@ class ArenaService(AShareArenaBase):
 
     def _can_fill(
         self,
-        state: AgentState,
+        state: AShareAgentState,
         order: OrderRecord,
         market_price: float,
         trade_date: date,
@@ -565,7 +575,7 @@ class ArenaService(AShareArenaBase):
 
     def _fill_order(
         self,
-        state: AgentState,
+        state: AShareAgentState,
         order: OrderRecord,
         market_price: float,
         executed_at: datetime,
@@ -606,7 +616,7 @@ class ArenaService(AShareArenaBase):
         state.fills.append(fill)
         self.notifier.notify_order_filled(self.get_agent(order.agent_id), order, fill)
 
-    def _build_portfolio(self, state: AgentState) -> PortfolioSnapshot:
+    def _build_portfolio(self, state: AShareAgentState) -> PortfolioSnapshot:
         today = self._now().date()
         positions: list[PositionSnapshot] = []
         market_value = 0.0
@@ -744,7 +754,7 @@ class ArenaService(AShareArenaBase):
         code_state.latest_count = None
 
     @staticmethod
-    def _prune_position(state: AgentState, code: str) -> None:
+    def _prune_position(state: AShareAgentState, code: str) -> None:
         """Drop fully-closed lots for `code`, removing the key entirely when no
         live lots remain so the book never carries empty-list holdings."""
         live = [lot for lot in state.positions.get(code, []) if lot.quantity > 0]
@@ -753,12 +763,14 @@ class ArenaService(AShareArenaBase):
         else:
             state.positions.pop(code, None)
 
-    def _sellable_quantity(self, state: AgentState, code: str, trade_date: date) -> int:
+    def _sellable_quantity(
+        self, state: AShareAgentState, code: str, trade_date: date
+    ) -> int:
         lots = state.positions.get(code, [])
         return sum(lot.quantity for lot in lots if lot.quantity > 0 and lot.acquired_date < trade_date)
 
     def _consume_sell_lots(
-        self, state: AgentState, code: str, quantity: int, trade_date: date
+        self, state: AShareAgentState, code: str, quantity: int, trade_date: date
     ) -> float:
         eligible = [
             lot for lot in state.positions.get(code, [])
