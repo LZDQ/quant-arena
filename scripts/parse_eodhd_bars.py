@@ -6,7 +6,10 @@ import logging
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from quant_arena.config import EODHDMarketScheduleConfig, load_app_config
+from quant_arena.config import (
+    EODHDExchangeConfig,
+    load_app_config,
+)
 from quant_arena.eodhd import EODHDService
 from quant_arena.server import DEFAULT_CONFIG_PATH
 
@@ -50,30 +53,21 @@ def _resolve_dates(args: argparse.Namespace) -> tuple[date, date]:
     return today, today
 
 
-def _resolve_market_schedules(
-    configured: list[EODHDMarketScheduleConfig],
+def _resolve_exchanges(
+    configured: dict[str, EODHDExchangeConfig],
     exchanges: list[str] | None,
-) -> list[EODHDMarketScheduleConfig]:
+) -> dict[str, EODHDExchangeConfig]:
     if exchanges is None:
         return configured
-    schedules: list[EODHDMarketScheduleConfig] = []
-    seen: set[str] = set()
+    resolved: dict[str, EODHDExchangeConfig] = {}
     for exchange in exchanges:
         value = exchange.strip().upper()
-        if not value or value in seen:
+        if not value or value in resolved:
             continue
-        seen.add(value)
-        schedules.append(
-            EODHDMarketScheduleConfig(
-                exchange=value,
-                daily_finalize_utc="00:00",
-                five_min_finalize_utc="00:00",
-                target_date_offset_days=0,
-            )
-        )
-    if not schedules:
+        resolved[value] = EODHDExchangeConfig(enabled=True)
+    if not resolved:
         raise SystemExit("At least one --exchange value must be non-empty")
-    return schedules
+    return resolved
 
 
 def main() -> None:
@@ -131,8 +125,8 @@ def main() -> None:
     market = EODHDService(
         api_token=args.api_token or config.eodhd.api_token,
         market_data_root=market_data_root,
-        market_schedules=_resolve_market_schedules(
-            config.eodhd.market_schedules,
+        exchanges=_resolve_exchanges(
+            config.eodhd.exchanges,
             args.exchanges,
         ),
     )

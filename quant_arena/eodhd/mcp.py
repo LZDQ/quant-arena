@@ -33,9 +33,6 @@ _AGENT_TOKEN_HEADER = "quant-arena-token"
 _MAX_LIVE_QUOTE_CODES = 100
 _MARKET_TIMEZONES = {
     "US": "America/New_York",
-    "HK": "Asia/Hong_Kong",
-    "SHG": "Asia/Shanghai",
-    "SHE": "Asia/Shanghai",
 }
 
 
@@ -50,7 +47,7 @@ class EODHDLiveQuote(BaseModel):
     country: str | None = None
     last_price: float | None = None
     update_time: datetime | None = None
-    status: Literal["ok", "not_found"] = "not_found"
+    status: Literal["ok", "not_found", "disabled"] = "not_found"
 
 
 class EODHDIntradayBar(BaseModel):
@@ -324,8 +321,8 @@ def create_eodhd_mcp_server(
             "`AAPL.US`, `EURUSD.FOREX`, or `BTC-USD.CC`. The EODHD API key stays "
             "server-side. Quotes come from EODHD websocket streams, not the "
             "delayed REST snapshot API. "
-            "Returns one row per requested symbol with `status='not_found'` "
-            "when EODHD does not return a usable live price."
+            "Returns `status='disabled'` when the symbol's exchange is disabled "
+            "and `status='not_found'` when EODHD does not return a usable live price."
         )
     )
     async def get_live_quotes(codes: list[str]) -> list[EODHDLiveQuote]:
@@ -340,6 +337,15 @@ def create_eodhd_mcp_server(
         for code in normalized_codes:
             metadata = arena.market.get_code_metadata(code)
             exchange = metadata.get("exchange") or _exchange_from_code(code)
+            if not arena.market.is_symbol_exchange_enabled(code):
+                quotes.append(
+                    EODHDLiveQuote(
+                        code=code,
+                        exchange=exchange,
+                        status="disabled",
+                    )
+                )
+                continue
             row = snapshots.get(code)
             if row is None:
                 quotes.append(
@@ -373,8 +379,7 @@ def create_eodhd_mcp_server(
             "Get EODHD 5-minute intraday history for one symbol over a "
             "market-local time window. `start_time` must use HH:MM format, "
             "for example `09:50`. `interval_minutes` is the local window length "
-            "and defaults to 5. US symbols use America/New_York; HK symbols use "
-            "Asia/Hong_Kong."
+            "and defaults to 5. US symbols use America/New_York."
         )
     )
     async def get_intraday_history(

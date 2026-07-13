@@ -11,78 +11,12 @@ import { useDailyReports } from "./hooks/useDailyReports";
 import { useLeaderboardCurves } from "./hooks/useLeaderboardCurves";
 import { usePersistentToggle } from "./hooks/usePersistentToggle";
 import { createArenaApi, urlPrefix } from "./lib/api";
-import { todayStamp } from "./lib/format";
-import type { ArenaCurrency, Currency, EODHDUserInfo } from "./lib/types";
+import { createArenaFormatting, todayStamp } from "./lib/format";
+import type { EODHDUserInfo } from "./lib/types";
 
 const BASE_URL = urlPrefix();
-
-const currencyFormatters: Record<Currency, Intl.NumberFormat> = {
-  HKD: new Intl.NumberFormat("en-HK", {
-    style: "currency",
-    currency: "HKD",
-    maximumFractionDigits: 2,
-  }),
-  USD: new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 2,
-  }),
-  CNY: new Intl.NumberFormat("zh-CN", {
-    style: "currency",
-    currency: "CNY",
-    maximumFractionDigits: 2,
-  }),
-};
-
-const currencyGlyph: Record<Currency, string> = {
-  HKD: "HK$",
-  USD: "$",
-  CNY: "¥",
-};
-
-function formatAmount(value: number | null | undefined, currency: ArenaCurrency): string {
-  if (value == null) {
-    return "--";
-  }
-  if (!currency) {
-    return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
-  }
-  return currencyFormatters[currency].format(value);
-}
-
-const utcDatetimeFormatter = new Intl.DateTimeFormat("en-US", {
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  timeZone: "UTC",
-});
-
-const utcTimeFormatter = new Intl.DateTimeFormat("en-US", {
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-  timeZone: "UTC",
-});
-
-function formatDateTime(value: string | null | undefined): string {
-  if (!value) {
-    return "--";
-  }
-  return utcDatetimeFormatter.format(new Date(value));
-}
-
-function formatTime(value: string | null | undefined): string {
-  if (!value) {
-    return "--";
-  }
-  return utcTimeFormatter.format(new Date(value));
-}
-
-function formatYAxisLabel(value: number, currency: ArenaCurrency): string {
-  const glyph = currency ? currencyGlyph[currency] : "";
-  return `${glyph}${Math.round(value).toLocaleString("en-US")}`;
-}
+const { formatAmount, formatDateTime, formatTime, formatYAxisLabel } =
+  createArenaFormatting({ timeZone: "UTC" });
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Failed to load EODHD status";
@@ -283,8 +217,6 @@ export function EODHDApp() {
             onCreate={arena.createAgent}
             currencyOptions={[
               { value: "USD", label: "USD · US Dollar" },
-              { value: "HKD", label: "HKD · Hong Kong Dollar" },
-              { value: "CNY", label: "CNY · Chinese Yuan" },
             ]}
           />
         </aside>

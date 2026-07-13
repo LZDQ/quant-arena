@@ -16,8 +16,7 @@ README.md
     └── YYYY-MM-DD.csv
 ```
 
-For example, Hong Kong data lives under `HK/`, US data lives under `US/`,
-Shanghai data lives under `SHG/`, and Shenzhen data lives under `SHE/`.
+For example, US data lives under `US/`.
 
 ## Exchange Codes
 

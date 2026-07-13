@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -250,26 +250,56 @@ class EODHDFeeConfig(BaseModel):
     )
 
 
-class EODHDMarketScheduleConfig(BaseModel):
-    """One EODHD exchange's background bulk-persistence schedule."""
+class EODHDBarScheduleConfig(BaseModel):
+    """Background persistence settings for one EODHD bar kind."""
 
-    exchange: str = Field(
-        description="EODHD exchange code, for example US, HK, SHG, or SHE.",
+    enabled: bool = Field(
+        default=False,
+        description="Whether this bar kind is persisted automatically.",
     )
-    daily_finalize_utc: str = Field(
-        description="UTC HH:MM time after which this exchange's bulk daily bars are persisted.",
+    finalize_utc: str = Field(
+        default="00:00",
+        description="UTC HH:MM time after which this bar kind is persisted.",
     )
-    five_min_finalize_utc: str = Field(
-        description="UTC HH:MM time after which this exchange's 5-minute bars are persisted.",
+
+
+class EODHDExchangeConfig(BaseModel):
+    """Availability and background persistence settings for one EODHD exchange."""
+
+    daily_bars: EODHDBarScheduleConfig = Field(
+        default_factory=EODHDBarScheduleConfig,
+    )
+    five_min_bars: EODHDBarScheduleConfig = Field(
+        default_factory=EODHDBarScheduleConfig,
     )
     target_date_offset_days: int = Field(
         default=0,
         description="Offset from the current UTC date to the market date being finalized. US uses -1 because it finalizes after UTC midnight.",
     )
     enabled: bool = Field(
-        default=True,
-        description="Whether this exchange schedule participates in background persistence.",
+        default=False,
+        description="Whether this exchange is available for live tracking, trading, metadata, corporate actions, and background persistence.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_bar_schedules(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        daily_finalize_utc = payload.pop("daily_finalize_utc", None)
+        five_min_finalize_utc = payload.pop("five_min_finalize_utc", None)
+        if "daily_bars" not in payload and isinstance(daily_finalize_utc, str):
+            payload["daily_bars"] = {
+                "enabled": True,
+                "finalize_utc": daily_finalize_utc,
+            }
+        if "five_min_bars" not in payload and isinstance(five_min_finalize_utc, str):
+            payload["five_min_bars"] = {
+                "enabled": True,
+                "finalize_utc": five_min_finalize_utc,
+            }
+        return payload
 
 
 class EODHDConfig(BaseModel):
@@ -287,37 +317,58 @@ class EODHDConfig(BaseModel):
         default=str(Path.home() / ".quant-arena" / "eodhd" / "market-data"),
         description="Public root directory for EODHD market data files. Must not be the A-share baostock directory.",
     )
-    market_schedules: list[EODHDMarketScheduleConfig] = Field(
-        default_factory=lambda: [
-            EODHDMarketScheduleConfig(
-                exchange="US",
-                daily_finalize_utc="01:30",
-                five_min_finalize_utc="02:00",
+    exchanges: dict[str, EODHDExchangeConfig] = Field(
+        default_factory=lambda: {
+            "US": EODHDExchangeConfig(
+                daily_bars=EODHDBarScheduleConfig(
+                    enabled=True,
+                    finalize_utc="01:30",
+                ),
+                five_min_bars=EODHDBarScheduleConfig(
+                    enabled=True,
+                    finalize_utc="02:00",
+                ),
                 target_date_offset_days=-1,
+                enabled=False,
             ),
-            EODHDMarketScheduleConfig(
-                exchange="HK",
-                daily_finalize_utc="09:30",
-                five_min_finalize_utc="10:00",
-                target_date_offset_days=0,
-            ),
-            EODHDMarketScheduleConfig(
-                exchange="SHG",
-                daily_finalize_utc="08:30",
-                five_min_finalize_utc="09:00",
-                target_date_offset_days=0,
-            ),
-            EODHDMarketScheduleConfig(
-                exchange="SHE",
-                daily_finalize_utc="08:30",
-                five_min_finalize_utc="09:00",
-                target_date_offset_days=0,
-            ),
-        ],
-        description="Per-EODHD-exchange background bulk persistence schedules.",
+        },
+        description="Per-EODHD-exchange availability and bar-persistence settings. The default US template is disabled until explicitly enabled.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_exchanges(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        configured_exchanges = payload.get("exchanges")
+        legacy_schedules = payload.pop("market_schedules", None)
+        if configured_exchanges is None and isinstance(legacy_schedules, list):
+            migrated: dict[str, object] = {}
+            for schedule in legacy_schedules:
+                if not isinstance(schedule, dict):
+                    continue
+                exchange_config = dict(schedule)
+                exchange = exchange_config.pop("exchange", None)
+                if not isinstance(exchange, str):
+                    continue
+                normalized_exchange = exchange.strip().upper()
+                if normalized_exchange:
+                    migrated[normalized_exchange] = exchange_config
+            configured_exchanges = migrated
+        if isinstance(configured_exchanges, dict):
+            normalized: dict[str, object] = {}
+            for exchange, exchange_config in configured_exchanges.items():
+                if not isinstance(exchange, str):
+                    continue
+                normalized_exchange = exchange.strip().upper()
+                if normalized_exchange:
+                    normalized[normalized_exchange] = exchange_config
+            payload["exchanges"] = normalized
+        return payload
+
     allowed_currencies: list[str] = Field(
-        default_factory=lambda: ["USD", "HKD", "CNY"],
+        default_factory=lambda: ["USD"],
         description="Currencies agents may choose in the EODHD paper arena.",
     )
     default_currency: str = Field(

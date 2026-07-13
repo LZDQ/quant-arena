@@ -18,7 +18,7 @@ import pandas as pd
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import ClientConnection, connect
 
-from quant_arena.config import EODHDMarketScheduleConfig
+from quant_arena.config import EODHDExchangeConfig
 from quant_arena.errors import ServiceError
 
 logger = getLogger(__name__)
@@ -67,10 +67,15 @@ def _field_from_mapping(row: dict[str, object], names: tuple[str, ...]) -> objec
 
 
 @dataclass(frozen=True, slots=True)
-class _RuntimeMarketSchedule:
-    exchange: str
-    daily_finalize_time_utc: time
-    five_min_finalize_time_utc: time
+class _RuntimeBarSchedule:
+    enabled: bool
+    finalize_time_utc: time
+
+
+@dataclass(frozen=True, slots=True)
+class _RuntimeExchangeConfig:
+    daily_bars: _RuntimeBarSchedule
+    five_min_bars: _RuntimeBarSchedule
     target_date_offset_days: int
 
 
@@ -309,12 +314,13 @@ class EODHDService:
         *,
         api_token: str,
         market_data_root: Path,
-        market_schedules: list[EODHDMarketScheduleConfig],
+        exchanges: dict[str, EODHDExchangeConfig],
     ):
         self.api_token = api_token
         self.market_data_root = market_data_root
-        self.market_schedules = self._normalize_market_schedules(market_schedules)
-        self.exchanges = [schedule.exchange for schedule in self.market_schedules]
+        self.exchange_configs = self._normalize_exchanges(exchanges)
+        self.exchanges = list(self.exchange_configs)
+        self._enabled_exchanges = set(self.exchanges)
         self._code_names_by_exchange: dict[str, pd.DataFrame] = {}
         self._code_names: pd.DataFrame | None = None
         self._code_name_index: dict[str, str] | None = None
@@ -330,28 +336,31 @@ class EODHDService:
         )
 
     @staticmethod
-    def _normalize_market_schedules(
-        schedules: list[EODHDMarketScheduleConfig],
-    ) -> list[_RuntimeMarketSchedule]:
-        normalized: list[_RuntimeMarketSchedule] = []
-        seen: set[str] = set()
-        for schedule in schedules:
-            if not schedule.enabled:
+    def _normalize_exchanges(
+        exchanges: dict[str, EODHDExchangeConfig],
+    ) -> dict[str, _RuntimeExchangeConfig]:
+        normalized: dict[str, _RuntimeExchangeConfig] = {}
+        for exchange_name, exchange_config in exchanges.items():
+            if not exchange_config.enabled:
                 continue
-            exchange = schedule.exchange.strip().upper()
-            if not exchange or exchange in seen:
+            exchange = exchange_name.strip().upper()
+            if not exchange:
                 continue
-            seen.add(exchange)
-            normalized.append(
-                _RuntimeMarketSchedule(
-                    exchange=exchange,
-                    daily_finalize_time_utc=_utc_time_from_text(schedule.daily_finalize_utc),
-                    five_min_finalize_time_utc=_utc_time_from_text(schedule.five_min_finalize_utc),
-                    target_date_offset_days=schedule.target_date_offset_days,
-                )
+            normalized[exchange] = _RuntimeExchangeConfig(
+                daily_bars=_RuntimeBarSchedule(
+                    enabled=exchange_config.daily_bars.enabled,
+                    finalize_time_utc=_utc_time_from_text(
+                        exchange_config.daily_bars.finalize_utc
+                    ),
+                ),
+                five_min_bars=_RuntimeBarSchedule(
+                    enabled=exchange_config.five_min_bars.enabled,
+                    finalize_time_utc=_utc_time_from_text(
+                        exchange_config.five_min_bars.finalize_utc
+                    ),
+                ),
+                target_date_offset_days=exchange_config.target_date_offset_days,
             )
-        if not normalized:
-            raise ValueError("At least one EODHD market schedule must be enabled")
         return normalized
 
     def _api_client(self):
@@ -363,6 +372,13 @@ class EODHDService:
 
     def close(self) -> None:
         self._websocket_quotes.close()
+
+    def is_exchange_enabled(self, exchange: str) -> bool:
+        return exchange.strip().upper() in self._enabled_exchanges
+
+    def is_symbol_exchange_enabled(self, code: str) -> bool:
+        _, exchange = self._split_symbol(code)
+        return self.is_exchange_enabled(exchange)
 
     def _ensure_exchange_dirs(self, exchange: str) -> None:
         self._exchange_dir(exchange).mkdir(parents=True, exist_ok=True)
@@ -535,6 +551,8 @@ class EODHDService:
         targets: list[_WebSocketTarget] = []
         supported_codes: list[str] = []
         for code in codes:
+            if not self.is_symbol_exchange_enabled(code):
+                continue
             target = self._websocket_target_for_code(code)
             if target is None:
                 continue
@@ -558,7 +576,10 @@ class EODHDService:
         return out
 
     def is_websocket_live_quote_supported(self, code: str) -> bool:
-        return self._websocket_target_for_code(code) is not None
+        return (
+            self.is_symbol_exchange_enabled(code)
+            and self._websocket_target_for_code(code) is not None
+        )
 
     @staticmethod
     def _websocket_target_for_code(code: str) -> _WebSocketTarget | None:
@@ -617,6 +638,8 @@ class EODHDService:
         """
         requested_by_exchange: dict[str, dict[str, str]] = {}
         for raw_code in codes:
+            if not self.is_symbol_exchange_enabled(raw_code):
+                continue
             requested = self._normalize_requested_symbol(raw_code)
             if requested is None:
                 logger.warning(
@@ -1329,72 +1352,76 @@ class EODHDService:
                     await asyncio.to_thread(self.refresh_code_names)
                 except Exception:
                     logger.exception("Failed to refresh EODHD code_names.csv")
-            for schedule in self.market_schedules:
-                target = today + timedelta(days=schedule.target_date_offset_days)
-                key = (schedule.exchange, target)
+            for exchange, exchange_config in self.exchange_configs.items():
+                target = today + timedelta(
+                    days=exchange_config.target_date_offset_days
+                )
+                key = (exchange, target)
                 if (
-                    now.time() >= schedule.daily_finalize_time_utc
+                    exchange_config.daily_bars.enabled
+                    and now.time() >= exchange_config.daily_bars.finalize_time_utc
                     and key not in last_finalized_daily
                 ):
                     try:
                         logger.info(
                             "Starting EODHD daily finalization for %s %s",
-                            schedule.exchange,
+                            exchange,
                             target,
                         )
                         rows = await asyncio.to_thread(
                             self.persist_daily_history,
                             target,
                             target,
-                            overwrite=True,
+                            overwrite=False,
                             show_progress=False,
                             verbose=False,
-                            exchanges=[schedule.exchange],
+                            exchanges=[exchange],
                         )
                         last_finalized_daily.add(key)
                         logger.info(
                             "Finalized EODHD daily bars for %s %s (rows=%d)",
-                            schedule.exchange,
+                            exchange,
                             target,
                             rows,
                         )
                     except Exception:
                         logger.exception(
                             "Exception finalizing EODHD daily bars for %s %s",
-                            schedule.exchange,
+                            exchange,
                             target,
                         )
                 if (
-                    now.time() >= schedule.five_min_finalize_time_utc
+                    exchange_config.five_min_bars.enabled
+                    and now.time() >= exchange_config.five_min_bars.finalize_time_utc
                     and key not in last_finalized_5min
                 ):
                     try:
                         logger.info(
                             "Starting EODHD 5min finalization for %s %s",
-                            schedule.exchange,
+                            exchange,
                             target,
                         )
                         rows = await asyncio.to_thread(
                             self.persist_intraday_history,
                             target,
                             target,
-                            overwrite=True,
+                            overwrite=False,
                             persist_every=100,
                             show_progress=False,
                             verbose=False,
-                            exchanges=[schedule.exchange],
+                            exchanges=[exchange],
                         )
                         last_finalized_5min.add(key)
                         logger.info(
                             "Finalized EODHD 5min bars for %s %s (rows=%d)",
-                            schedule.exchange,
+                            exchange,
                             target,
                             rows,
                         )
                     except Exception:
                         logger.exception(
                             "Exception finalizing EODHD 5min bars for %s %s",
-                            schedule.exchange,
+                            exchange,
                             target,
                         )
             await asyncio.sleep(polling_interval_seconds)

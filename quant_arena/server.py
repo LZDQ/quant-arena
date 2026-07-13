@@ -159,7 +159,7 @@ def _load_app_state(config_path: Path) -> AppState:
         eodhd_market = EODHDService(
             api_token=config.eodhd.api_token,
             market_data_root=eodhd_market_data_root,
-            market_schedules=config.eodhd.market_schedules,
+            exchanges=config.eodhd.exchanges,
         )
         eodhd_arena = EODHDArenaService(
             agents_root=eodhd_agents_root,
@@ -167,6 +167,19 @@ def _load_app_state(config_path: Path) -> AppState:
             config=config.eodhd,
             notifier=notifier,
         )
+        if not eodhd_market.exchanges:
+            logger.warning(
+                "EODHD is enabled, but no exchanges are enabled.\n"
+                "Edit %s and enable the US exchange, for example:\n"
+                '"exchanges": {\n'
+                "  \"US\": {\"enabled\": true, "
+                "\"target_date_offset_days\": -1, "
+                "\"daily_bars\": {\"enabled\": true, \"finalize_utc\": \"01:30\"}, "
+                "\"five_min_bars\": {\"enabled\": true, \"finalize_utc\": \"02:00\"}}\n"
+                "}\n"
+                "Restart quant-arena after saving the configuration.",
+                config_path,
+            )
     return AppState(
         config_path=config_path,
         config=config,
@@ -246,13 +259,14 @@ def create_app() -> FastAPI:
                 and state.eodhd_arena is not None
                 and state.config.eodhd.polling_interval_seconds > 0
             ):
-                state.background_tasks.append(
-                    asyncio.create_task(
-                        state.eodhd_market.run(
-                            state.config.eodhd.polling_interval_seconds
+                if state.eodhd_market.exchanges:
+                    state.background_tasks.append(
+                        asyncio.create_task(
+                            state.eodhd_market.run(
+                                state.config.eodhd.polling_interval_seconds
+                            )
                         )
                     )
-                )
                 state.background_tasks.append(
                     asyncio.create_task(
                         state.eodhd_arena.run(

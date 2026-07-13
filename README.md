@@ -226,20 +226,54 @@ all-in-one subscription and uses:
 
 Market data is persisted under `config.eodhd.market_data_root`, never under the
 A-share baostock root. The EODHD root contains `README.md` plus one directory
-per exchange, for example `HK/code_names.csv`, `HK/daily/YYYY-MM-DD.csv`, and
-`HK/5min/YYYY-MM-DD.csv`. Daily files are whole-exchange bulk snapshots for one
+per exchange, for example `US/code_names.csv`, `US/daily/YYYY-MM-DD.csv`, and
+`US/5min/YYYY-MM-DD.csv`. Daily files are whole-exchange bulk snapshots for one
 date. Five-minute files are assembled by iterating symbols because EODHD
 intraday history is symbol/range based. The CSV columns remain EODHD-flavored;
 they are not baostock columns.
 
 The EODHD background task refreshes symbols once per UTC day and finalizes
-daily and 5-minute CSV files per configured market schedule. The default
-configured EODHD exchanges are:
+daily and 5-minute CSV files per configured exchange. No exchange is
+enabled by default. The generated config contains a disabled `US` exchange
+template. When EODHD starts without an enabled exchange, the server logs a
+configuration guide and does not start the exchange persistence task. The
+arena and MCP remain mounted, but no exchange accepts orders or live tracking
+until it is enabled. New EODHD agents use USD.
+
+To enable the US exchange, set its `enabled` field in
+`~/.quant-arena/config.json` and restart the server:
+
+```json
+{
+  "eodhd": {
+    "exchanges": {
+      "US": {
+        "target_date_offset_days": -1,
+        "enabled": true,
+        "daily_bars": {
+          "enabled": true,
+          "finalize_utc": "01:30"
+        },
+        "five_min_bars": {
+          "enabled": true,
+          "finalize_utc": "02:00"
+        }
+      }
+    }
+  }
+}
+```
+
+An exchange-level `enabled: false` freezes that exchange completely: new buy
+and sell orders are rejected, live quotes and portfolio price refreshes stop,
+pending orders do not match, and corporate actions are not applied. Persisted
+positions and orders remain intact. Each nested bar `enabled` flag controls
+only that bar kind's automatic persistence. Scheduled persistence skips data
+that is already present instead of overwriting it.
+
+The default schedule meanings are:
 
 - `US`: daily 01:30 UTC, 5-minute 02:00 UTC, target date is previous UTC date.
-- `HK`: daily 09:30 UTC, 5-minute 10:00 UTC, target date is current UTC date.
-- `SHG`: daily 08:30 UTC, 5-minute 09:00 UTC, target date is current UTC date.
-- `SHE`: daily 08:30 UTC, 5-minute 09:00 UTC, target date is current UTC date.
 
 It uses a Mon-Fri business-day filter before making historical requests;
 holidays are left to the EODHD API returning empty/no rows. It does not persist
@@ -272,7 +306,7 @@ websocket-supported suffixed symbols such as `AAPL.US`, `EURUSD.FOREX`, and
 `BTC-USD.CC`. Delayed REST quotes are not used for live matching. They can
 request a single-symbol intraday 5-minute history window with `get_intraday_history`;
 `start_time` is market-local `HH:MM`, `interval_minutes` is the window length
-and defaults to 5, and the tool uses hardcoded market time zones for US and HK.
+and defaults to 5, and the tool uses the US market time zone.
 
 Non-production limitations to remember:
 

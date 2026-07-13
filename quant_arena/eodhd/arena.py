@@ -86,6 +86,12 @@ class EODHDArenaService(ArenaBase[EODHDAgentState]):
         submitted_at: datetime | None = None,
     ) -> OrderRecord:
         code = self._normalize_code(request.code)
+        if not self.market.is_symbol_exchange_enabled(code):
+            exchange = code.rsplit(".", 1)[1].upper()
+            raise BadRequestError(
+                f"EODHD exchange {exchange!r} is disabled; new buy and sell "
+                "orders for that exchange are not allowed."
+            )
         now = self._coerce_utc(submitted_at) if submitted_at is not None else self._now()
         snapshot = await asyncio.to_thread(self.market.get_snapshots, [code])
         snapshot_row = snapshot.get(code)
