@@ -2,7 +2,7 @@
 """Runnable demos for every EODHD endpoint used by quant-arena."""
 
 import json
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import urlopen
@@ -120,7 +120,7 @@ def websocket_crypto_quote(api_token: str, symbol: str) -> None:
 
 def main() -> None:
     api_token = load_app_config(CONFIG_PATH).eodhd.api_token
-    day = datetime.now(timezone.utc).date() - timedelta(days=1)
+    day = date(2026, 7, 10)  # hardcoded trading day
     client = APIClient(api_token)
 
     exchange_symbol_list(client, api_token, "US")

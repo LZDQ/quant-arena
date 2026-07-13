@@ -246,6 +246,7 @@ To enable the US exchange, set its `enabled` field in
 ```json
 {
   "eodhd": {
+    "websocket_subscribe_limit": 50,
     "exchanges": {
       "US": {
         "target_date_offset_days": -1,
@@ -263,6 +264,11 @@ To enable the US exchange, set its `enabled` field in
   }
 }
 ```
+
+`websocket_subscribe_limit` caps concurrent subscriptions separately for each
+EODHD websocket endpoint. It defaults to `50`, matching EODHD's standard plan
+limit. Requesting another symbol at capacity unsubscribes the least recently
+queried symbol before subscribing the new one.
 
 An exchange-level `enabled: false` freezes that exchange completely: new buy
 and sell orders are rejected, live quotes and portfolio price refreshes stop,

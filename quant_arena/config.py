@@ -313,6 +313,11 @@ class EODHDConfig(BaseModel):
         default="demo",
         description="EODHD API token. The demo token is useful only for smoke checks.",
     )
+    websocket_subscribe_limit: int = Field(
+        default=50,
+        gt=0,
+        description="Maximum concurrent symbols subscribed on each EODHD websocket endpoint. Least-recently-used symbols are unsubscribed when the limit is reached.",
+    )
     market_data_root: str = Field(
         default=str(Path.home() / ".quant-arena" / "eodhd" / "market-data"),
         description="Public root directory for EODHD market data files. Must not be the A-share baostock directory.",

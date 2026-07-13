@@ -89,38 +89,49 @@ class _WebSocketTarget:
 @dataclass(slots=True)
 class _WebSocketEndpointState:
     endpoint: str
-    index: int
+    # Dict insertion order tracks least to most recently requested.
     desired: dict[str, str] = field(default_factory=dict)
     subscribed: set[str] = field(default_factory=set)
+    pending_unsubscribe: set[str] = field(default_factory=set)
     stop_event: threading.Event = field(default_factory=threading.Event)
     snapshot_event: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
 
 
 class _EODHDWebSocketQuoteStream:
-    _MAX_SYMBOLS_PER_CONNECTION = 50
     _RECONNECT_BACKOFF_SECONDS = 5.0
     _RECV_TIMEOUT_SECONDS = 1.0
     _FIRST_QUOTE_TIMEOUT_SECONDS = 3.0
 
-    def __init__(self, api_token: str):
+    def __init__(self, api_token: str, subscribe_limit: int):
         self._api_token = api_token
+        self._subscribe_limit = subscribe_limit
         self._lock = threading.RLock()
-        self._states: dict[str, list[_WebSocketEndpointState]] = {}
+        self._states: dict[str, _WebSocketEndpointState] = {}
         self._snapshots: dict[str, dict[str, object]] = {}
 
     def subscribe(self, targets: list[_WebSocketTarget]) -> None:
         with self._lock:
             for target in targets:
                 state = self._state_for_target(target)
+                if target.wire_symbol in state.desired:
+                    del state.desired[target.wire_symbol]
+                elif len(state.desired) >= self._subscribe_limit:
+                    evicted_symbol = next(iter(state.desired))
+                    evicted_code = state.desired.pop(evicted_symbol)
+                    if evicted_symbol in state.subscribed:
+                        state.pending_unsubscribe.add(evicted_symbol)
+                    self._snapshots.pop(evicted_code, None)
+                state.pending_unsubscribe.discard(target.wire_symbol)
                 state.desired[target.wire_symbol] = target.code
                 if state.thread is None or not state.thread.is_alive():
                     state.subscribed.clear()
+                    state.pending_unsubscribe.clear()
                     state.stop_event.clear()
                     state.thread = threading.Thread(
                         target=self._run_endpoint,
                         args=(state,),
-                        name=f"eodhd-websocket-{state.endpoint}-{state.index}",
+                        name=f"eodhd-websocket-{state.endpoint}",
                         daemon=True,
                     )
                     state.thread.start()
@@ -139,8 +150,7 @@ class _EODHDWebSocketQuoteStream:
                 missing = {code for code in codes if code not in out}
                 events = [
                     state.snapshot_event
-                    for states in self._states.values()
-                    for state in states
+                    for state in self._states.values()
                 ]
             if not missing:
                 return out
@@ -156,11 +166,7 @@ class _EODHDWebSocketQuoteStream:
 
     def close(self) -> None:
         with self._lock:
-            states = [
-                state
-                for endpoint_states in self._states.values()
-                for state in endpoint_states
-            ]
+            states = list(self._states.values())
             for state in states:
                 state.stop_event.set()
         current = threading.current_thread()
@@ -170,15 +176,11 @@ class _EODHDWebSocketQuoteStream:
                 thread.join(timeout=2.0)
 
     def _state_for_target(self, target: _WebSocketTarget) -> _WebSocketEndpointState:
-        states = self._states.setdefault(target.endpoint, [])
-        for state in states:
-            if target.wire_symbol in state.desired:
-                return state
-        for state in states:
-            if len(state.desired) < self._MAX_SYMBOLS_PER_CONNECTION:
-                return state
-        state = _WebSocketEndpointState(endpoint=target.endpoint, index=len(states))
-        states.append(state)
+        state = self._states.get(target.endpoint)
+        if state is not None:
+            return state
+        state = _WebSocketEndpointState(endpoint=target.endpoint)
+        self._states[target.endpoint] = state
         return state
 
     def _run_endpoint(self, state: _WebSocketEndpointState) -> None:
@@ -195,9 +197,9 @@ class _EODHDWebSocketQuoteStream:
                     close_timeout=5,
                     open_timeout=10,
                 ) as connection:
-                    self._send_subscriptions(state, connection)
+                    self._sync_subscriptions(state, connection)
                     while not state.stop_event.is_set():
-                        self._send_subscriptions(state, connection)
+                        self._sync_subscriptions(state, connection)
                         try:
                             raw_message = connection.recv(
                                 timeout=self._RECV_TIMEOUT_SECONDS
@@ -210,30 +212,37 @@ class _EODHDWebSocketQuoteStream:
             except Exception:
                 if not state.stop_event.is_set():
                     logger.exception(
-                        "EODHD websocket stream failed for %s[%d]; reconnecting",
+                        "EODHD websocket stream failed for %s; reconnecting",
                         state.endpoint,
-                        state.index,
                     )
                 self._clear_subscriptions(state)
             if not state.stop_event.is_set():
                 state.stop_event.wait(self._RECONNECT_BACKOFF_SECONDS)
 
-    def _send_subscriptions(
+    def _sync_subscriptions(
         self, state: _WebSocketEndpointState, connection: ClientConnection
     ) -> None:
         with self._lock:
+            symbols = sorted(state.pending_unsubscribe)
+            if symbols:
+                connection.send(
+                    json.dumps(
+                        {"action": "unsubscribe", "symbols": ",".join(symbols)}
+                    )
+                )
+                state.subscribed.difference_update(symbols)
+                state.pending_unsubscribe.difference_update(symbols)
             symbols = sorted(set(state.desired) - state.subscribed)
-        if not symbols:
-            return
-        connection.send(
-            json.dumps({"action": "subscribe", "symbols": ",".join(symbols)})
-        )
-        with self._lock:
-            state.subscribed.update(symbols)
+            if symbols:
+                connection.send(
+                    json.dumps({"action": "subscribe", "symbols": ",".join(symbols)})
+                )
+                state.subscribed.update(symbols)
 
     def _clear_subscriptions(self, state: _WebSocketEndpointState) -> None:
         with self._lock:
             state.subscribed.clear()
+            state.pending_unsubscribe.clear()
 
     def _handle_message(
         self, state: _WebSocketEndpointState, raw_message: str | bytes
@@ -315,6 +324,7 @@ class EODHDService:
         api_token: str,
         market_data_root: Path,
         exchanges: dict[str, EODHDExchangeConfig],
+        websocket_subscribe_limit: int = 50,
     ):
         self.api_token = api_token
         self.market_data_root = market_data_root
@@ -326,7 +336,10 @@ class EODHDService:
         self._code_name_index: dict[str, str] | None = None
         self._latest_daily_frame: pd.DataFrame | None = None
         self._client = None  # eodhd.APIClient, created lazily
-        self._websocket_quotes = _EODHDWebSocketQuoteStream(api_token)
+        self._websocket_quotes = _EODHDWebSocketQuoteStream(
+            api_token,
+            websocket_subscribe_limit,
+        )
         self.market_data_root.mkdir(parents=True, exist_ok=True)
         for exchange in self.exchanges:
             self._ensure_exchange_dirs(exchange)

@@ -160,6 +160,7 @@ def _load_app_state(config_path: Path) -> AppState:
             api_token=config.eodhd.api_token,
             market_data_root=eodhd_market_data_root,
             exchanges=config.eodhd.exchanges,
+            websocket_subscribe_limit=config.eodhd.websocket_subscribe_limit,
         )
         eodhd_arena = EODHDArenaService(
             agents_root=eodhd_agents_root,

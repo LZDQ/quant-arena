@@ -129,6 +129,7 @@ def main() -> None:
             config.eodhd.exchanges,
             args.exchanges,
         ),
+        websocket_subscribe_limit=config.eodhd.websocket_subscribe_limit,
     )
     if args.bars == "daily":
         rows = market.persist_daily_history(
