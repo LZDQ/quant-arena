@@ -50,7 +50,7 @@ from quant_arena.futumoo.models import (
     FutumooPosition,
 )
 from quant_arena.futumoo.service import FutumooService
-from quant_arena.models import FillRecord, OrderRecord, SubmitOrder
+from quant_arena.models import OrderFill, OrderRecord, SubmitOrder
 
 logger = getLogger(__name__)
 
@@ -216,7 +216,7 @@ class RegionArena(ABC):
         order: OrderRecord,
         market_price: float,
         executed_at: datetime,
-    ) -> FillRecord:
+    ) -> OrderFill:
         notional = order.quantity * market_price
         commission, stamp_tax = self.fees_for(notional, side=order.side)
         if order.side == "buy":
@@ -248,27 +248,21 @@ class RegionArena(ABC):
                     quantity=new_qty, avg_cost=position.avg_cost
                 )
         order.status = "filled"
-        order.filled_at = executed_at
-        fill = FillRecord(
-            order_id=order.order_id,
-            agent_id=order.agent_id,
-            code=order.code,
-            side=order.side,
-            quantity=order.quantity,
+        fill = OrderFill(
             executed_at=executed_at,
             executed_price=market_price,
             commission=commission,
-            stamp_tax=stamp_tax,
+            tax=stamp_tax,
         )
-        state.fills.append(fill)
-        self._on_fill_recorded(state, fill, executed_at)
+        order.fill = fill
+        self._on_fill_recorded(state, order, fill)
         return fill
 
     def _on_fill_recorded(
         self,
         state: FutumooAgentState,
-        fill: FillRecord,
-        executed_at: datetime,
+        order: OrderRecord,
+        fill: OrderFill,
     ) -> None:
         """Hook for region-specific bookkeeping (e.g. day-trade ledger)."""
 
@@ -425,12 +419,13 @@ class USRegionArena(RegionArena):
     ) -> bool:
         same_day_buys = False
         same_day_sells = False
-        for fill in state.fills:
-            if fill.code != request.code:
+        for order in state.orders:
+            fill = order.fill
+            if fill is None or order.code != request.code:
                 continue
             if fill.executed_at.astimezone(self.tz).date() != today_local:
                 continue
-            if fill.side == "buy":
+            if order.side == "buy":
                 same_day_buys = True
             else:
                 same_day_sells = True
@@ -453,27 +448,28 @@ class USRegionArena(RegionArena):
     def _on_fill_recorded(
         self,
         state: FutumooAgentState,
-        fill: FillRecord,
-        executed_at: datetime,
+        order: OrderRecord,
+        fill: OrderFill,
     ) -> None:
-        local_date = executed_at.astimezone(self.tz).date()
-        opposite = "sell" if fill.side == "buy" else "buy"
+        local_date = fill.executed_at.astimezone(self.tz).date()
+        opposite = "sell" if order.side == "buy" else "buy"
         has_opposite = any(
-            f.code == fill.code
-            and f.side == opposite
-            and f.fill_id != fill.fill_id
-            and f.executed_at.astimezone(self.tz).date() == local_date
-            for f in state.fills
+            candidate.code == order.code
+            and candidate.side == opposite
+            and candidate.order_id != order.order_id
+            and candidate.fill is not None
+            and candidate.fill.executed_at.astimezone(self.tz).date() == local_date
+            for candidate in state.orders
         )
         if not has_opposite:
             return
         already_counted = any(
-            entry.trade_date == local_date and entry.code == fill.code
+            entry.trade_date == local_date and entry.code == order.code
             for entry in state.day_trades
         )
         if already_counted:
             return
-        state.day_trades.append(DayTradeRecord(trade_date=local_date, code=fill.code))
+        state.day_trades.append(DayTradeRecord(trade_date=local_date, code=order.code))
 
 
 class CNRegionArena(RegionArena):

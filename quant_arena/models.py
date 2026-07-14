@@ -11,6 +11,26 @@ OrderSide = Literal["buy", "sell"]
 OrderStatus = Literal["pending", "filled", "canceled"]
 
 
+class OrderFill(BaseModel):
+    """Execution details that are not already present on the parent order."""
+
+    executed_at: datetime = Field(
+        description="Arena-local execution timestamp."
+    )
+    executed_price: float = Field(
+        gt=0,
+        description="Execution price in the agent's arena-local currency."
+    )
+    commission: float = Field(
+        ge=0,
+        description="Commission charged by the arena's fee policy."
+    )
+    tax: float = Field(
+        ge=0,
+        description="Transaction tax or equivalent arena-specific levy charged on the fill."
+    )
+
+
 class OrderRecord(BaseModel):
     """One submitted order."""
 
@@ -46,12 +66,9 @@ class OrderRecord(BaseModel):
     submitted_at: datetime = Field(
         description="Arena-local timestamp when the order was accepted."
     )
-    activate_after: datetime = Field(
-        description="Earliest market-data timestamp eligible to match this order."
-    )
-    filled_at: datetime | None = Field(
+    fill: OrderFill | None = Field(
         default=None,
-        description="Execution timestamp when the order fills."
+        description="Execution details when the order fills."
     )
     canceled_at: datetime | None = Field(
         default=None,
@@ -84,39 +101,6 @@ class SubmitOrder(BaseModel):
         min_length=1,
         max_length=200,
         description="Agent-supplied reason for submitting the order."
-    )
-
-
-class FillRecord(BaseModel):
-    """One executed fill."""
-
-    fill_id: str = Field(default_factory=lambda: uuid4().hex)
-    order_id: str
-    agent_id: str
-    code: str = Field(
-        description="Arena-local identifier of the executed instrument."
-    )
-    side: OrderSide = Field(
-        description="Executed direction: buy or sell."
-    )
-    quantity: int = Field(
-        gt=0,
-        description="Executed instrument quantity."
-    )
-    executed_at: datetime = Field(
-        description="Arena-local execution timestamp."
-    )
-    executed_price: float = Field(
-        gt=0,
-        description="Execution price in the agent's arena-local currency."
-    )
-    commission: float = Field(
-        ge=0,
-        description="Commission charged by the arena's fee policy."
-    )
-    stamp_tax: float = Field(
-        ge=0,
-        description="Transaction tax or equivalent arena-specific levy charged on the fill."
     )
 
 
@@ -194,7 +178,6 @@ class ArenaAgentState(BaseModel):
     cash: float
     realized_pnl: float = 0.0
     orders: list[OrderRecord] = Field(default_factory=list)
-    fills: list[FillRecord] = Field(default_factory=list)
     equity_history: list[EquityPoint] = Field(default_factory=list)
     manual_position_clears: list[ManualPositionClearRecord] = Field(
         default_factory=list,
@@ -233,10 +216,9 @@ class PortfolioSnapshot(BaseModel):
 
 
 class OperationLog(BaseModel):
-    """Domain list of orders and fills."""
+    """Domain list of orders with inline execution details."""
 
     orders: list[OrderRecord]
-    fills: list[FillRecord]
 
 
 class RankingSnapshot(BaseModel):

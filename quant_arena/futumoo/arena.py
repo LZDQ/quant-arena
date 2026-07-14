@@ -146,7 +146,6 @@ class FutumooArenaService(ArenaBase[FutumooAgentState]):
                 limit_price=request.limit_price,
                 comment=request.comment,
                 submitted_at=now,
-                activate_after=now,
             )
             state.orders.append(order)
             self._save_agent_state(state)
@@ -219,10 +218,10 @@ class FutumooArenaService(ArenaBase[FutumooAgentState]):
                         or order.code != code
                     ):
                         continue
-                    activate_after_local = order.activate_after.astimezone(region.tz)
+                    submitted_at_local = order.submitted_at.astimezone(region.tz)
                     if (
                         order.order_id != initial_order_id
-                        and update_at <= activate_after_local
+                        and update_at <= submitted_at_local
                     ):
                         continue
                     if order.side == "buy" and last_price > order.limit_price:
@@ -232,9 +231,9 @@ class FutumooArenaService(ArenaBase[FutumooAgentState]):
                     if not self._can_still_fill(region, state, order, last_price):
                         continue
                     executed_at = update_at_utc
-                    activated_at = order.activate_after.astimezone(timezone.utc)
-                    if executed_at < activated_at:
-                        executed_at = activated_at
+                    submitted_at_utc = order.submitted_at.astimezone(timezone.utc)
+                    if executed_at < submitted_at_utc:
+                        executed_at = submitted_at_utc
                     fill = region.fill_pending(
                         state,
                         order,

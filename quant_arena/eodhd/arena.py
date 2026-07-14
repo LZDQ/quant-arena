@@ -22,8 +22,8 @@ from quant_arena.eodhd.models import (
 )
 from quant_arena.eodhd.service import EODHDCorporateAction, EODHDService
 from quant_arena.models import (
-    FillRecord,
     ManualPositionClearRecord,
+    OrderFill,
     OrderRecord,
     PortfolioSnapshot,
     PositionSnapshot,
@@ -118,7 +118,6 @@ class EODHDArenaService(ArenaBase[EODHDAgentState]):
                 limit_price=request.limit_price,
                 comment=request.comment,
                 submitted_at=now,
-                activate_after=now,
             )
             state.orders.append(order)
             self._save_agent_state(state)
@@ -206,7 +205,7 @@ class EODHDArenaService(ArenaBase[EODHDAgentState]):
                 for order in state.orders:
                     if order.status != "pending" or order.code != code:
                         continue
-                    if update_at <= order.activate_after.astimezone(timezone.utc):
+                    if update_at <= order.submitted_at.astimezone(timezone.utc):
                         continue
                     if order.side == "buy" and last_price > order.limit_price:
                         continue
@@ -243,7 +242,7 @@ class EODHDArenaService(ArenaBase[EODHDAgentState]):
         order: OrderRecord,
         market_price: float,
         executed_at: datetime,
-    ) -> FillRecord:
+    ) -> OrderFill:
         notional = order.quantity * market_price
         commission, stamp_tax = self._fees_for(notional)
         if order.side == "buy":
@@ -277,19 +276,13 @@ class EODHDArenaService(ArenaBase[EODHDAgentState]):
                     avg_cost=position.avg_cost,
                 )
         order.status = "filled"
-        order.filled_at = executed_at
-        fill = FillRecord(
-            order_id=order.order_id,
-            agent_id=order.agent_id,
-            code=order.code,
-            side=order.side,
-            quantity=order.quantity,
+        fill = OrderFill(
             executed_at=executed_at,
             executed_price=market_price,
             commission=commission,
-            stamp_tax=stamp_tax,
+            tax=stamp_tax,
         )
-        state.fills.append(fill)
+        order.fill = fill
         return fill
 
     def _fees_for(self, notional: float) -> tuple[float, float]:

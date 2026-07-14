@@ -6,7 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from quant_arena.config import NapCatTargetConfig
-from quant_arena.models import DailyReportSummary, EquityPoint, FillRecord, OrderRecord
+from quant_arena.models import DailyReportSummary, EquityPoint, OrderRecord
 
 
 class PositionView(BaseModel):
@@ -40,10 +40,9 @@ class PortfolioResponse(BaseModel):
 
 
 class OperationListResponse(BaseModel):
-    """Combined operations payload."""
+    """Orders with inline execution details."""
 
     orders: list[OrderRecord]
-    fills: list[FillRecord]
 
 
 class PathsResponse(BaseModel):

@@ -30,7 +30,7 @@ from quant_arena.errors import BadRequestError, ConflictError
 from quant_arena.notifier import NotifierService
 from quant_arena.models import (
     EquityPoint,
-    FillRecord,
+    OrderFill,
     OrderRecord,
     PortfolioSnapshot,
     PositionSnapshot,
@@ -195,7 +195,6 @@ class ArenaService(ArenaBase[AShareAgentState]):
                 limit_price=request.limit_price,
                 comment=request.comment,
                 submitted_at=now,
-                activate_after=now,
             )
             state.orders.append(order)
             self._save_agent_state(state)
@@ -299,11 +298,11 @@ class ArenaService(ArenaBase[AShareAgentState]):
 
         prices: np.ndarray = code_frame["price"].to_numpy(dtype=np.float64, copy=False)
         times: np.ndarray = code_frame["trade_time"].to_numpy(copy=False)
-        activate_np = np.datetime64(
-            order.activate_after.astimezone(SHANGHAI_TZ).replace(tzinfo=None),
+        submitted_np = np.datetime64(
+            order.submitted_at.astimezone(SHANGHAI_TZ).replace(tzinfo=None),
             "ns",
         )
-        start_idx = int(np.searchsorted(times, activate_np, side="right"))
+        start_idx = int(np.searchsorted(times, submitted_np, side="right"))
         if start_idx >= prices.shape[0]:
             return False
         window_prices = prices[start_idx:]
@@ -600,16 +599,11 @@ class ArenaService(ArenaBase[AShareAgentState]):
         notional = market_price * order.quantity
         commission = self._commission(notional)
         stamp_tax = self._stamp_tax(notional, order.side)
-        fill = FillRecord(
-            order_id=order.order_id,
-            agent_id=order.agent_id,
-            code=order.code,
-            side=order.side,
-            quantity=order.quantity,
+        fill = OrderFill(
             executed_at=executed_at,
             executed_price=market_price,
             commission=commission,
-            stamp_tax=stamp_tax,
+            tax=stamp_tax,
         )
         if order.side == "buy":
             state.cash -= notional + commission
@@ -628,8 +622,7 @@ class ArenaService(ArenaBase[AShareAgentState]):
                 (market_price * order.quantity) - consumed_cost - commission - stamp_tax
             )
         order.status = "filled"
-        order.filled_at = executed_at
-        state.fills.append(fill)
+        order.fill = fill
         self.notifier.notify_order_filled(self.get_agent(order.agent_id), order, fill)
 
     def _build_portfolio(self, state: AShareAgentState) -> PortfolioSnapshot:

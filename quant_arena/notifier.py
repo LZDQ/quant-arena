@@ -1,7 +1,7 @@
 """Notification fan-out across QQ channels."""
 
 from quant_arena.config import AgentConfig
-from quant_arena.models import FillRecord, OrderRecord
+from quant_arena.models import OrderFill, OrderRecord
 from quant_arena.napcat import NapCatNotifier
 
 
@@ -23,7 +23,7 @@ class NotifierService:
     def notify_order_canceled(self, agent: AgentConfig, order: OrderRecord) -> None:
         self.napcat.notify_order_canceled(agent.display_name, agent.napcat_notify_targets, order)
 
-    def notify_order_filled(self, agent: AgentConfig, order: OrderRecord, fill: FillRecord) -> None:
+    def notify_order_filled(self, agent: AgentConfig, order: OrderRecord, fill: OrderFill) -> None:
         self.napcat.notify_order_filled(agent.display_name, agent.napcat_notify_targets, order, fill)
 
     def notify_daily_report(self, agent: AgentConfig, agent_id: str, file_name: str, pdf_bytes: bytes) -> None:

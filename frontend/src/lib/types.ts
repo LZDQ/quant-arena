@@ -47,21 +47,16 @@ export type OrderRecord = {
   comment: string;
   status: string;
   submitted_at: string;
-  filled_at: string | null;
+  fill: OrderFill | null;
   canceled_at: string | null;
   rejection_reason: string | null;
 };
 
-export type FillRecord = {
-  fill_id: string;
-  order_id: string;
-  code: string;
-  side: "buy" | "sell";
-  quantity: number;
+export type OrderFill = {
   executed_at: string;
   executed_price: number;
   commission: number;
-  stamp_tax: number;
+  tax: number;
 };
 
 export type PortfolioResponse = {
@@ -80,7 +75,6 @@ export type PortfolioResponse = {
 
 export type OperationListResponse = {
   orders: OrderRecord[];
-  fills: FillRecord[];
 };
 
 export type EquityPoint = {

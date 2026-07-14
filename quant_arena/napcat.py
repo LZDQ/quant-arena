@@ -15,7 +15,7 @@ from websockets.exceptions import ConnectionClosed
 from pydantic import BaseModel, Field
 
 from quant_arena.config import NapCatConfig, NapCatPrivateTargetConfig
-from quant_arena.models import FillRecord, OrderRecord
+from quant_arena.models import OrderFill, OrderRecord
 
 logger = getLogger(__name__)
 
@@ -186,7 +186,7 @@ class NapCatNotifier:
         agent_display_name: str,
         target_keys: list[str],
         order: OrderRecord,
-        fill: FillRecord,
+        fill: OrderFill,
     ) -> None:
         if not self.config.notify_on_fill:
             logger.debug("NapCat fill notifications are disabled for order %s", order.order_id)
@@ -658,10 +658,10 @@ class NapCatNotifier:
         )
 
     @staticmethod
-    def _format_order_filled(agent_display_name: str, order: OrderRecord, fill: FillRecord) -> str:
+    def _format_order_filled(agent_display_name: str, order: OrderRecord, fill: OrderFill) -> str:
         return (
             f"{agent_display_name} 成交："
             f"{'买入' if order.side == 'buy' else '卖出'} {order.code} "
-            f"数量 {fill.quantity} "
+            f"数量 {order.quantity} "
             f"成交价 {fill.executed_price:.2f}"
         )

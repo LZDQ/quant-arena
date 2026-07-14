@@ -84,9 +84,6 @@ export function SnapshotPanel({
 
   const orderedOrders = snapshot ? [...snapshot.operations.orders].reverse() : [];
   const orderedSpecialEvents = [...specialEvents].reverse();
-  const fillByOrderId = new Map(
-    (snapshot?.operations.fills ?? []).map((fill) => [fill.order_id, fill]),
-  );
   const totalOrdersPages = Math.max(1, Math.ceil(orderedOrders.length / ORDERS_PAGE_SIZE));
   const currentOrdersPage = Math.min(ordersPage, totalOrdersPages);
   const visibleOrders = orderedOrders.slice(
@@ -302,8 +299,8 @@ export function SnapshotPanel({
               </thead>
               <tbody>
                 {visibleOrders.map((order) => {
-                  const fill = fillByOrderId.get(order.order_id);
-                  const isFilled = order.filled_at != null;
+                  const fill = order.fill;
+                  const isFilled = fill != null;
                   const isCanceled = order.canceled_at != null;
                   return (
                     <tr key={order.order_id}>
@@ -322,7 +319,7 @@ export function SnapshotPanel({
                       <td>
                         <div className={`status-cell ${isFilled ? "filled" : ""}`}>
                           {isFilled
-                            ? `Filled · ${formatDateTime(order.filled_at)}`
+                            ? `Filled · ${formatDateTime(fill.executed_at)}`
                             : isCanceled
                               ? `Canceled · ${formatDateTime(order.canceled_at)}`
                               : order.status.toUpperCase()}

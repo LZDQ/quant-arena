@@ -360,16 +360,9 @@ class ArenaBase(ABC, Generic[StateT]):
                 if (not agent.amnesia or order.submitted_at.date() == today)
                 and self._in_range(order.submitted_at, start, end)
             ]
-            fills = [
-                fill
-                for fill in state.fills
-                if (not agent.amnesia or fill.executed_at.date() == today)
-                and self._in_range(fill.executed_at, start, end)
-            ]
             if limit is not None:
                 orders = orders[-limit:]
-                fills = fills[-limit:]
-            return OperationLog(orders=orders, fills=fills)
+            return OperationLog(orders=orders)
 
     def get_equity_curve(
         self,

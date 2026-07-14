@@ -265,7 +265,7 @@ def create_ashare_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
         start: str | None = None,
         end: str | None = None,
     ) -> OperationLog:
-        """List orders and fills."""
+        """List orders with inline execution details."""
 
         current = _current_agent_id()
         agent = get_arena().get_agent(current)
