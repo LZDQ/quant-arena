@@ -109,6 +109,12 @@ def _bool_from_sdk(value: object) -> bool:
     return text in {"1", "true", "yes", "y"}
 
 
+def _optional_bool_from_sdk(value: object) -> bool | None:
+    if _text_or_none(value) is None:
+        return None
+    return _bool_from_sdk(value)
+
+
 class FutumooService:
     """One process-wide Futu `OpenQuoteContext`, lazily connected.
 
@@ -509,7 +515,18 @@ class FutumooService:
     def get_user_info(self) -> dict[str, object]:
         """Return the logged-in Futu OpenD user plus quote/trade login state."""
         ctx = self._ensure_quote_ctx()
-        ret, user_data = ctx.get_user_info(info_field=[1, 2, 4, 8, 16])
+        from futu import UserInfoField
+
+        ret, user_data = ctx.get_user_info(
+            info_field=[
+                UserInfoField.BASIC,
+                UserInfoField.API,
+                UserInfoField.QOTRIGHT,
+                UserInfoField.DISCLAIMER,
+                UserInfoField.UPDATE,
+                UserInfoField.WEBKEY,
+            ]
+        )
         if ret != 0:
             raise ServiceError(f"futu get_user_info failed: {user_data}")
         if not isinstance(user_data, dict):
@@ -528,8 +545,46 @@ class FutumooService:
             "user_attr": _text_or_none(user_data.get("user_attr")),
             "api_level": _text_or_none(user_data.get("api_level")),
             "hk_qot_right": _text_or_none(user_data.get("hk_qot_right")),
+            "hk_option_qot_right": _text_or_none(
+                user_data.get("hk_option_qot_right")
+            ),
+            "hk_future_qot_right": _text_or_none(
+                user_data.get("hk_future_qot_right")
+            ),
             "us_qot_right": _text_or_none(user_data.get("us_qot_right")),
+            "us_option_qot_right": _text_or_none(
+                user_data.get("us_option_qot_right")
+            ),
+            "us_future_qot_right": _text_or_none(
+                user_data.get("us_future_qot_right")
+            ),
             "cn_qot_right": _text_or_none(user_data.get("cn_qot_right")),
+            "sg_future_qot_right": _text_or_none(
+                user_data.get("sg_future_qot_right")
+            ),
+            "jp_future_qot_right": _text_or_none(
+                user_data.get("jp_future_qot_right")
+            ),
+            "us_future_qot_right_cme": _text_or_none(
+                user_data.get("us_future_qot_right_cme")
+            ),
+            "us_future_qot_right_cbot": _text_or_none(
+                user_data.get("us_future_qot_right_cbot")
+            ),
+            "us_future_qot_right_nymex": _text_or_none(
+                user_data.get("us_future_qot_right_nymex")
+            ),
+            "us_future_qot_right_comex": _text_or_none(
+                user_data.get("us_future_qot_right_comex")
+            ),
+            "us_future_qot_right_cboe": _text_or_none(
+                user_data.get("us_future_qot_right_cboe")
+            ),
+            "is_need_agree_disclaimer": _optional_bool_from_sdk(
+                user_data.get("is_need_agree_disclaimer")
+            ),
+            "update_type": _text_or_none(user_data.get("update_type")),
+            "web_key": _text_or_none(user_data.get("web_key")),
             "sub_quota": _int_or_none(user_data.get("sub_quota")),
             "history_kl_quota": _int_or_none(user_data.get("history_kl_quota")),
             "qot_logined": _bool_from_sdk(state_data.get("qot_logined")),

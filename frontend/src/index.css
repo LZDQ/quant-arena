@@ -219,6 +219,9 @@ a {
   text-transform: none;
   overflow-wrap: anywhere;
 }
+.futumoo-user-info-panel {
+  width: min(720px, 52vw);
+}
 .futumoo-user-panel.is-muted {
   color: var(--ink-soft);
   border-color: var(--rule-soft);
@@ -267,23 +270,60 @@ a {
   text-transform: uppercase;
   color: var(--ink-mute);
 }
-.futumoo-user-grid {
-  display: grid;
-  grid-template-columns: repeat(6, auto);
-  gap: 6px 8px;
-  align-items: baseline;
+.futumoo-user-section {
   margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--rule-soft);
+}
+.futumoo-user-section-title {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--ink-mute);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.futumoo-user-metrics {
+  display: grid;
+  gap: 8px 0;
+  font-family: var(--mono);
+  font-size: 9.5px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
-.futumoo-user-grid span {
-  color: var(--ink-mute);
+.futumoo-user-account-metrics {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
-.futumoo-user-grid strong {
+.futumoo-user-rights-metrics {
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+.futumoo-user-runtime-metrics {
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+}
+.futumoo-user-metric {
+  min-width: 0;
+  padding: 0 8px;
+  border-left: 1px solid var(--rule-soft);
+}
+.futumoo-user-metric:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+.futumoo-user-metric span {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--ink-mute);
+  font-size: 8px;
+}
+.futumoo-user-metric strong {
+  display: block;
+  overflow: hidden;
   color: var(--ink);
   font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .futumoo-user-status {
   display: flex;
@@ -297,6 +337,12 @@ a {
   font-size: 9.5px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
+}
+.futumoo-user-status span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .futumoo-subscription-panel {
@@ -1463,6 +1509,11 @@ table td.comment-cell {
   .futumoo-user-panel {
     width: 100%;
   }
+  .futumoo-user-account-metrics,
+  .futumoo-user-rights-metrics,
+  .futumoo-user-runtime-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
   .board-grid { grid-template-columns: 1fr; }
   .board-rail {
     border-right: 0;
@@ -1531,6 +1582,11 @@ table td.comment-cell {
   margin-top: 16px;
 }
 @media (max-width: 900px) {
+  .futumoo-user-account-metrics,
+  .futumoo-user-rights-metrics,
+  .futumoo-user-runtime-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .notif-grid {
     grid-template-columns: 1fr;
   }

@@ -101,6 +101,28 @@ function quotaText(value: number | null): string {
   return value == null ? "--" : value.toLocaleString("en-US");
 }
 
+function infoText(value: string | number | null): string {
+  if (value == null || value === "") {
+    return "N/A";
+  }
+  return typeof value === "number" ? value.toLocaleString("en-US") : value;
+}
+
+function FutumooInfoMetric({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="futumoo-user-metric">
+      <span>{label}</span>
+      <strong title={value}>{value}</strong>
+    </div>
+  );
+}
+
 function FutumooUserInfoPanel({
   info,
   loading,
@@ -112,7 +134,7 @@ function FutumooUserInfoPanel({
 }) {
   if (loading) {
     return (
-      <div className="futumoo-user-panel is-muted">
+      <div className="futumoo-user-panel futumoo-user-info-panel is-muted">
         <span className="futumoo-user-kicker">Futu User</span>
         <strong>Connecting to OpenD</strong>
         <span>Loading login state</span>
@@ -121,7 +143,7 @@ function FutumooUserInfoPanel({
   }
   if (error) {
     return (
-      <div className="futumoo-user-panel is-error">
+      <div className="futumoo-user-panel futumoo-user-info-panel is-error">
         <span className="futumoo-user-kicker">Futu User</span>
         <strong>Unavailable</strong>
         <span>{error}</span>
@@ -130,7 +152,7 @@ function FutumooUserInfoPanel({
   }
   if (!info) {
     return (
-      <div className="futumoo-user-panel is-muted">
+      <div className="futumoo-user-panel futumoo-user-info-panel is-muted">
         <span className="futumoo-user-kicker">Futu User</span>
         <strong>No OpenD user</strong>
         <span>Quote context returned no profile</span>
@@ -142,9 +164,15 @@ function FutumooUserInfoPanel({
   const userId = info.user_id ?? info.login_user_id ?? "--";
   const programStatus = info.program_status_type ?? "UNKNOWN";
   const openDVersion = info.server_ver ? `OpenD ${info.server_ver}` : "OpenD";
+  const disclaimer =
+    info.is_need_agree_disclaimer == null
+      ? "N/A"
+      : info.is_need_agree_disclaimer
+        ? "REQUIRED"
+        : "CLEAR";
 
   return (
-    <div className="futumoo-user-panel">
+    <div className="futumoo-user-panel futumoo-user-info-panel">
       <div className="futumoo-user-main">
         {info.avatar_url && (
           <img className="futumoo-user-avatar" src={info.avatar_url} alt="" referrerPolicy="no-referrer" />
@@ -155,28 +183,57 @@ function FutumooUserInfoPanel({
           <span>ID {userId}</span>
         </div>
       </div>
-      <div className="futumoo-user-grid">
-        <span>QOT</span>
-        <strong>{statusText(info.qot_logined)}</strong>
-        <span>TRD</span>
-        <strong>{statusText(info.trd_logined)}</strong>
-        <span>HK</span>
-        <strong>{info.hk_qot_right ?? "--"}</strong>
-        <span>US</span>
-        <strong>{info.us_qot_right ?? "--"}</strong>
-        <span>CN</span>
-        <strong>{info.cn_qot_right ?? "--"}</strong>
-        <span>SH</span>
-        <strong>{info.market_sh ?? "--"}</strong>
-        <span>SZ</span>
-        <strong>{info.market_sz ?? "--"}</strong>
-        <span>SUB</span>
-        <strong>{quotaText(info.sub_quota)}</strong>
-        <span>KL</span>
-        <strong>{quotaText(info.history_kl_quota)}</strong>
+
+      <div className="futumoo-user-section">
+        <span className="futumoo-user-section-title">Account &amp; API</span>
+        <div className="futumoo-user-metrics futumoo-user-account-metrics">
+          <FutumooInfoMetric label="ATTRIBUTION" value={infoText(info.user_attr)} />
+          <FutumooInfoMetric label="API LEVEL" value={infoText(info.api_level)} />
+          <FutumooInfoMetric label="UPDATE" value={infoText(info.update_type)} />
+          <FutumooInfoMetric label="DISCLAIMER" value={disclaimer} />
+          <FutumooInfoMetric label="WEB KEY" value={infoText(info.web_key)} />
+        </div>
+      </div>
+
+      <div className="futumoo-user-section">
+        <span className="futumoo-user-section-title">Quote Rights</span>
+        <div className="futumoo-user-metrics futumoo-user-rights-metrics">
+          <FutumooInfoMetric label="HK" value={infoText(info.hk_qot_right)} />
+          <FutumooInfoMetric label="HK OPTION" value={infoText(info.hk_option_qot_right)} />
+          <FutumooInfoMetric label="HK FUTURE" value={infoText(info.hk_future_qot_right)} />
+          <FutumooInfoMetric label="US" value={infoText(info.us_qot_right)} />
+          <FutumooInfoMetric label="US OPTION" value={infoText(info.us_option_qot_right)} />
+          <FutumooInfoMetric label="US FUTURE" value={infoText(info.us_future_qot_right)} />
+          <FutumooInfoMetric label="CN" value={infoText(info.cn_qot_right)} />
+          <FutumooInfoMetric label="SG FUTURE" value={infoText(info.sg_future_qot_right)} />
+          <FutumooInfoMetric label="JP FUTURE" value={infoText(info.jp_future_qot_right)} />
+          <FutumooInfoMetric label="CME" value={infoText(info.us_future_qot_right_cme)} />
+          <FutumooInfoMetric label="CBOT" value={infoText(info.us_future_qot_right_cbot)} />
+          <FutumooInfoMetric label="NYMEX" value={infoText(info.us_future_qot_right_nymex)} />
+          <FutumooInfoMetric label="COMEX" value={infoText(info.us_future_qot_right_comex)} />
+          <FutumooInfoMetric label="CBOE" value={infoText(info.us_future_qot_right_cboe)} />
+        </div>
+      </div>
+
+      <div className="futumoo-user-section">
+        <span className="futumoo-user-section-title">OpenD Runtime</span>
+        <div className="futumoo-user-metrics futumoo-user-runtime-metrics">
+          <FutumooInfoMetric label="QOT" value={statusText(info.qot_logined)} />
+          <FutumooInfoMetric label="TRD" value={statusText(info.trd_logined)} />
+          <FutumooInfoMetric label="LOGIN ID" value={infoText(info.login_user_id)} />
+          <FutumooInfoMetric label="HK MKT" value={infoText(info.market_hk)} />
+          <FutumooInfoMetric label="US MKT" value={infoText(info.market_us)} />
+          <FutumooInfoMetric label="SH MKT" value={infoText(info.market_sh)} />
+          <FutumooInfoMetric label="SZ MKT" value={infoText(info.market_sz)} />
+          <FutumooInfoMetric label="SUB" value={quotaText(info.sub_quota)} />
+          <FutumooInfoMetric label="KL" value={quotaText(info.history_kl_quota)} />
+        </div>
       </div>
       <div className="futumoo-user-status">
-        <span>{programStatus}</span>
+        <span title={info.program_status_desc ?? undefined}>
+          {programStatus}
+          {info.program_status_desc ? ` · ${info.program_status_desc}` : ""}
+        </span>
         <span>{openDVersion}</span>
       </div>
     </div>

@@ -272,6 +272,12 @@ until the oldest subscription is eligible when the pool fills that quickly.
 most recently accessed symbols with their names. The Futu page shows the same
 status and refreshes it every five seconds.
 
+The Futu page also shows the complete OpenD user-info summary returned for the
+basic, API, quote-right, disclaimer, update, and web-key fields, together with
+the global connection and market states. This includes the OpenD `web_key` when
+one is returned, so deployments should restrict access to the browser-facing
+`GET /api/futumoo/user-info` endpoint accordingly.
+
 The existing `futumoo.polling_interval_seconds` setting now controls only
 session-state maintenance such as detecting session close and expiring pending
 orders; market prices and fills are no longer polled on that interval.

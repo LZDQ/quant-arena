@@ -158,8 +158,22 @@ class FutumooUserInfoResponse(BaseModel):
     user_attr: str | None = None
     api_level: str | None = None
     hk_qot_right: str | None = None
+    hk_option_qot_right: str | None = None
+    hk_future_qot_right: str | None = None
     us_qot_right: str | None = None
+    us_option_qot_right: str | None = None
+    us_future_qot_right: str | None = None
     cn_qot_right: str | None = None
+    sg_future_qot_right: str | None = None
+    jp_future_qot_right: str | None = None
+    us_future_qot_right_cme: str | None = None
+    us_future_qot_right_cbot: str | None = None
+    us_future_qot_right_nymex: str | None = None
+    us_future_qot_right_comex: str | None = None
+    us_future_qot_right_cboe: str | None = None
+    is_need_agree_disclaimer: bool | None = None
+    update_type: str | None = None
+    web_key: str | None = None
     sub_quota: int | None = None
     history_kl_quota: int | None = None
     qot_logined: bool
