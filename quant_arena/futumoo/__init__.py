@@ -1,7 +1,7 @@
 """Futumoo HK + US + CN paper-trading branch.
 
 Trading is fully offline — orders are queued as pending and matched
-against `last_price` snapshots polled from Futu OpenD. Each agent
+against real-time `last_price` pushes from Futu OpenD. Each agent
 chooses one currency (HKD, USD, or CNY), and the HK, US, and CN books are governed by
 separate `RegionArena` strategies
 that own their session windows, trading-day calendars, lot-size

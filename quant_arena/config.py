@@ -222,8 +222,8 @@ class FutumooCNFeeConfig(BaseModel):
 class FutumooConfig(ArenaBaseConfig):
     """Futumoo HK/US/CN paper-trading arena settings.
 
-    Orders are matched against `last_price` snapshots polled from Futu OpenD,
-    not filled instantly. Each agent chooses one currency (`HKD`, `USD`, or
+    Orders are matched against real-time `last_price` pushes from Futu OpenD.
+    Each agent chooses one currency (`HKD`, `USD`, or
     `CNY`), which selects the HK, US, or mainland China region. Symbols must
     carry the region prefix `HK.`, `US.`, `SH.`, or `SZ.`.
     """
@@ -238,7 +238,10 @@ class FutumooConfig(ArenaBaseConfig):
     )
     polling_interval_seconds: int = Field(
         default=30,
-        description="Seconds between snapshot refresh / pending-order match cycles.",
+        description=(
+            "Seconds between session-state maintenance checks. Quote updates "
+            "and order matching are event-driven."
+        ),
     )
     pdt_max_day_trades: int = Field(
         default=3,

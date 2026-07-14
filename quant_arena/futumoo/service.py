@@ -1,11 +1,13 @@
 """Thin Futu OpenD client used by the HK/US/CN paper-trading arena.
 
-Wraps `OpenQuoteContext` for two operations:
+Wraps `OpenQuoteContext` for three operations:
 
 * `get_snapshots(codes)` — returns a per-code dict that includes
   `last_price`, `lot_size`, `update_time` (region-local: HKT for HK,
-  ET for US, China time for CN), `prev_close_price`, and `suspension`. Used both for
-  pending-order matching and for live portfolio mark-to-market.
+  ET for US, China time for CN), `prev_close_price`, and `suspension`.
+  Snapshots validate new orders and supply symbol metadata.
+* `subscribe_live_quotes(codes)` — keeps an LRU set of real-time QUOTE
+  subscriptions and forwards `StockQuoteHandlerBase` pushes to the arena.
 * `request_trading_days(market, start, end)` — returns the set of
   trading dates Futu reports for the given market, used by the Futumoo
   region arenas as their session calendars.
@@ -24,6 +26,8 @@ unreachable.
 import socket
 import threading
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime
 from logging import getLogger
 
@@ -48,6 +52,12 @@ _SNAPSHOT_FIELDS: tuple[str, ...] = (
     "suspension",
     "update_time",
 )
+
+
+@dataclass(slots=True)
+class _QuoteSubscription:
+    name: str | None
+    subscribed_at: float
 
 
 def _text_or_none(value: object) -> str | None:
@@ -89,15 +99,24 @@ class FutumooService:
 
     _CONNECT_PROBE_TIMEOUT_SECONDS: float = 2.0
     _CONNECT_FAILURE_BACKOFF_SECONDS: float = 30.0
+    _SUBSCRIPTION_LIMIT: int = 100
+    _MIN_SUBSCRIPTION_SECONDS: float = 60.0
 
     def __init__(self, host: str, port: int):
         self.host = host
         self.port = port
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._subscription_lock = threading.RLock()
         self._quote_ctx = None  # futu.OpenQuoteContext, lazy
         # Monotonic timestamp of the last failed connect attempt, used to
         # gate retries via `_CONNECT_FAILURE_BACKOFF_SECONDS`.
         self._last_connect_failure_at: float | None = None
+        # Dict insertion order tracks least to most recently accessed.
+        self._subscriptions: dict[str, _QuoteSubscription] = {}
+        self._quote_names: dict[str, str] = {}
+        self._live_quote_handler: (
+            Callable[[str, dict[str, object]], None] | None
+        ) = None
 
     def _probe_port(self) -> bool:
         """Quick TCP probe: open and close a socket within the timeout.
@@ -139,11 +158,19 @@ class FutumooService:
                     f"TCP connections (probe timed out after "
                     f"{self._CONNECT_PROBE_TIMEOUT_SECONDS:.0f}s)."
                 )
+            quote_ctx = None
             try:
                 from futu import OpenQuoteContext
 
-                self._quote_ctx = OpenQuoteContext(host=self.host, port=self.port)
+                quote_ctx = OpenQuoteContext(host=self.host, port=self.port)
+                self._install_quote_handler(quote_ctx)
+                self._quote_ctx = quote_ctx
             except Exception as exc:
+                if quote_ctx is not None:
+                    try:
+                        quote_ctx.close()
+                    except Exception:
+                        logger.exception("Error closing failed Futu quote context")
                 self._last_connect_failure_at = now
                 raise ServiceError(
                     f"Failed to open Futu quote context at {self.host}:{self.port}: {exc}"
@@ -154,7 +181,83 @@ class FutumooService:
             )
         return self._quote_ctx
 
-    def get_snapshots(self, codes: list[str]) -> dict[str, dict]:
+    def _install_quote_handler(self, quote_ctx) -> None:
+        from futu import RET_OK, StockQuoteHandlerBase
+
+        service = self
+
+        class QuoteHandler(StockQuoteHandlerBase):
+            def on_recv_rsp(self, rsp_pb):
+                ret_code, data = super().on_recv_rsp(rsp_pb)
+                if ret_code == RET_OK and isinstance(data, DataFrame):
+                    service._publish_quote_frame(data)
+                elif ret_code != RET_OK:
+                    logger.warning("Futu quote push failed: %s", data)
+                return ret_code, data
+
+        if quote_ctx.set_handler(QuoteHandler()) != RET_OK:
+            raise ServiceError("Failed to install Futu real-time quote handler")
+
+    def set_live_quote_handler(
+        self,
+        handler: Callable[[str, dict[str, object]], None] | None,
+    ) -> None:
+        self._live_quote_handler = handler
+
+    def _publish_quote_frame(self, frame: DataFrame) -> None:
+        for _, row in frame.iterrows():
+            entry = self._quote_entry_from_row(row)
+            if entry is None:
+                continue
+            code = str(entry["code"])
+            with self._subscription_lock:
+                subscription = self._subscriptions.get(code)
+                if subscription is None:
+                    continue
+                name = _text_or_none(entry.get("name"))
+                if name is not None:
+                    subscription.name = name
+                    self._quote_names[code] = name
+                handler = self._live_quote_handler
+            if handler is None:
+                continue
+            try:
+                handler(code, entry)
+            except Exception:
+                logger.exception("Futu live quote handler failed for %s", code)
+
+    @staticmethod
+    def _quote_entry_from_row(row) -> dict[str, object] | None:
+        if "code" not in row.index or "last_price" not in row.index:
+            return None
+        code = str(row["code"])
+        try:
+            last_price = float(row["last_price"])
+        except (TypeError, ValueError):
+            return None
+        if last_price <= 0:
+            return None
+        entry: dict[str, object] = {
+            "code": code,
+            "last_price": last_price,
+        }
+        if "name" in row.index:
+            entry["name"] = row["name"]
+        data_date = (
+            _text_or_none(row["data_date"])
+            if "data_date" in row.index
+            else None
+        )
+        data_time = (
+            _text_or_none(row["data_time"])
+            if "data_time" in row.index
+            else None
+        )
+        if data_date is not None and data_time is not None:
+            entry["update_time"] = f"{data_date} {data_time}"
+        return entry
+
+    def get_snapshots(self, codes: list[str]) -> dict[str, dict[str, object]]:
         """Return `{code: row}` for each requested symbol.
 
         `row` is a plain dict with the subset of columns we use elsewhere
@@ -168,7 +271,7 @@ class FutumooService:
         ret, data = ctx.get_market_snapshot(list(codes))
         if ret != 0:
             raise ServiceError(f"futu get_market_snapshot failed: {data}")
-        out: dict[str, dict] = {}
+        out: dict[str, dict[str, object]] = {}
         for _, row in data.iterrows():
             code = str(row["code"])
             try:
@@ -177,18 +280,111 @@ class FutumooService:
                 continue
             if last_price <= 0:
                 continue
-            entry: dict = {"code": code, "last_price": last_price}
+            entry: dict[str, object] = {"code": code, "last_price": last_price}
             for field in _SNAPSHOT_FIELDS:
                 if field in ("code", "last_price"):
                     continue
                 if field in row.index:
                     entry[field] = row[field]
             out[code] = entry
+        self._remember_quote_names(out)
         return out
+
+    def _remember_quote_names(self, snapshots: dict[str, dict[str, object]]) -> None:
+        with self._subscription_lock:
+            for code, row in snapshots.items():
+                name = _text_or_none(row.get("name"))
+                if name is None:
+                    continue
+                self._quote_names[code] = name
+                subscription = self._subscriptions.get(code)
+                if subscription is not None:
+                    subscription.name = name
+
+    def subscribe_live_quotes(self, codes: list[str]) -> list[str]:
+        """Subscribe to real-time QUOTE pushes, touching each symbol in the LRU."""
+
+        if not codes:
+            return []
+        quote_ctx = self._ensure_quote_ctx()
+        from futu import RET_OK, SubType
+
+        subscribed: list[str] = []
+        for raw_code in codes:
+            code = raw_code.strip()
+            if not code or code in subscribed:
+                continue
+            with self._subscription_lock:
+                current = self._subscriptions.pop(code, None)
+                if current is not None:
+                    self._subscriptions[code] = current
+                    subscribed.append(code)
+                    continue
+                if len(self._subscriptions) >= self._SUBSCRIPTION_LIMIT:
+                    self._evict_lru_subscription(quote_ctx, SubType.QUOTE, RET_OK)
+                subscription = _QuoteSubscription(
+                    name=self._quote_names.get(code),
+                    subscribed_at=time.monotonic(),
+                )
+                # Register locally first so an immediate first push cannot race
+                # ahead of the callback's membership check.
+                self._subscriptions[code] = subscription
+                try:
+                    ret_code, message = quote_ctx.subscribe(
+                        [code],
+                        [SubType.QUOTE],
+                        is_first_push=True,
+                        subscribe_push=True,
+                    )
+                except Exception:
+                    self._subscriptions.pop(code, None)
+                    raise
+                if ret_code != RET_OK:
+                    self._subscriptions.pop(code, None)
+                    raise ServiceError(
+                        f"Futu quote subscription failed for {code}: {message}"
+                    )
+                subscribed.append(code)
+        return subscribed
+
+    def _evict_lru_subscription(
+        self,
+        quote_ctx,
+        quote_subtype: str,
+        ret_ok: int,
+    ) -> None:
+        code, subscription = next(iter(self._subscriptions.items()))
+        age = time.monotonic() - subscription.subscribed_at
+        if age < self._MIN_SUBSCRIPTION_SECONDS:
+            retry_after = self._MIN_SUBSCRIPTION_SECONDS - age
+            raise ServiceError(
+                "Futu's 100-symbol subscription limit is full and the least "
+                f"recently used symbol {code} cannot be evicted for another "
+                f"{retry_after:.1f} seconds."
+            )
+        ret_code, message = quote_ctx.unsubscribe([code], [quote_subtype])
+        if ret_code != ret_ok:
+            raise ServiceError(f"Futu quote unsubscribe failed for {code}: {message}")
+        self._subscriptions.pop(code, None)
+
+    def get_subscription_status(self) -> dict[str, object]:
+        with self._subscription_lock:
+            latest = list(reversed(self._subscriptions.items()))[:3]
+            return {
+                "subscribed_count": len(self._subscriptions),
+                "subscription_limit": self._SUBSCRIPTION_LIMIT,
+                "latest_accessed_symbols": [
+                    {"code": code, "name": subscription.name}
+                    for code, subscription in latest
+                ],
+            }
 
     def get_last_prices(self, codes: list[str]) -> dict[str, float]:
         """Convenience wrapper returning only `{code: last_price}`."""
-        return {code: float(row["last_price"]) for code, row in self.get_snapshots(codes).items()}
+        return {
+            code: float(row["last_price"])
+            for code, row in self.get_snapshots(codes).items()
+        }
 
     def request_trading_days(
         self, market: str, start: date, end: date
@@ -272,3 +468,5 @@ class FutumooService:
                 except Exception:
                     logger.exception("Error closing Futu quote context")
                 self._quote_ctx = None
+        with self._subscription_lock:
+            self._subscriptions.clear()

@@ -173,6 +173,21 @@ class FutumooUserInfoResponse(BaseModel):
     market_sz: str | None = None
 
 
+class FutumooSubscribedSymbolResponse(BaseModel):
+    """One recently accessed Futu real-time quote subscription."""
+
+    code: str
+    name: str | None = None
+
+
+class FutumooSubscriptionStatusResponse(BaseModel):
+    """Local Futumoo QUOTE subscription pool status."""
+
+    subscribed_count: int = Field(ge=0)
+    subscription_limit: int = Field(gt=0)
+    latest_accessed_symbols: list[FutumooSubscribedSymbolResponse]
+
+
 class EODHDUserInfoResponse(BaseModel):
     """Configured EODHD package/credential/cache status for the page header."""
 

@@ -184,6 +184,15 @@ export type FutumooUserInfo = {
   market_sz: string | null;
 };
 
+export type FutumooSubscriptionStatus = {
+  subscribed_count: number;
+  subscription_limit: number;
+  latest_accessed_symbols: Array<{
+    code: string;
+    name: string | null;
+  }>;
+};
+
 export type EODHDUserInfo = {
   credential_status: "configured" | "missing";
   package_version: string;

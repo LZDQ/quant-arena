@@ -13,10 +13,11 @@ import type {
   DailyReport,
   DailyReportPage,
   EODHDUserInfo,
+  FutumooSubscriptionStatus,
+  FutumooUserInfo,
   ManualClearForm,
   NapCatTarget,
   NotificationDestinations,
-  FutumooUserInfo,
   RankingEntry,
   SpecialEvent,
 } from "./types";
@@ -131,6 +132,8 @@ export function createArenaApi(apiPrefix = "") {
         body: JSON.stringify({ destinations }),
       }),
     getFutumooUserInfo: () => request<FutumooUserInfo>(`/api/futumoo/user-info`),
+    getFutumooSubscriptionStatus: () =>
+      request<FutumooSubscriptionStatus>(`/api/futumoo/subscriptions`),
     getEODHDUserInfo: () => request<EODHDUserInfo>(`/api/eodhd/user-info`),
     // --- Per-arena endpoints ---------------------------------------------
     listAgents: () => request<AgentResponse[]>(arena(`/agents`)),

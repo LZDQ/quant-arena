@@ -226,13 +226,30 @@ Futu Moo is an offline paper arena backed by Futu OpenD quote data. It opens a
 lazy `OpenQuoteContext` through `futu-api` and uses:
 
 - `get_market_snapshot` for `last_price`, `lot_size`, `update_time`, `name`,
-  `prev_close_price`, bid/ask/open/high/low, and `suspension`.
+  `prev_close_price`, bid/ask/open/high/low, and `suspension` when validating a
+  new order.
+- `subscribe` with `SubType.QUOTE`, `is_first_push=True`, and
+  `subscribe_push=True` for event-driven price updates and pending-order
+  matching through `StockQuoteHandlerBase`.
 - `request_trading_days` for HK/US/CN trading calendars.
 
 It does not persist historical bars or daily Futu equity history today. The
-portfolio is marked from the latest snapshot cache, and the equity curve only
+portfolio is marked from the latest pushed quote, and the equity curve only
 has the in-memory current-day point unless future code starts freezing Futu
 daily history.
+
+Futu quote subscriptions use one process-wide, hardcoded 100-symbol LRU. A
+request for an already-subscribed symbol makes it most recently used; a new
+symbol at capacity evicts the least recently used symbol. Futu does not allow a
+subscription to be removed during its first minute, so a new symbol is rejected
+until the oldest subscription is eligible when the pool fills that quickly.
+`GET /api/futumoo/subscriptions` reports the current count, limit, and three
+most recently accessed symbols with their names. The Futu page shows the same
+status and refreshes it every five seconds.
+
+The existing `futumoo.polling_interval_seconds` setting now controls only
+session-state maintenance such as detecting session close and expiring pending
+orders; market prices and fills are no longer polled on that interval.
 
 Trading-day detection is best-effort. Each region asks OpenD for a ±10 day
 calendar window and caches the result. If OpenD is unavailable, it falls back
@@ -241,8 +258,11 @@ region's session window.
 
 Non-production limitations to remember:
 
-- Fills are snapshot `last_price` based, with no order book, partial fill,
-  queue priority, latency, auction, or slippage model.
+- Fills are real-time QUOTE-push `last_price` based, with no order book,
+  partial fill, queue priority, latency, auction, or slippage model.
+- The LRU may evict a held or pending-order symbol when more than 100 symbols
+  are accessed; that symbol will not receive further marks or fills until it is
+  subscribed again.
 - No catch-up history, no persisted Futu bar history, and no corporate actions
   or dividends.
 - HK/CN lot-size and US PDT checks are simplified paper-trading gates.

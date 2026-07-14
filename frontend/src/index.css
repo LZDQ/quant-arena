@@ -299,6 +299,43 @@ a {
   text-transform: uppercase;
 }
 
+.futumoo-subscription-panel {
+  font-family: var(--mono);
+}
+.futumoo-subscription-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.futumoo-subscription-head strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+.futumoo-subscription-list {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid var(--rule-soft);
+  font-size: 10px;
+}
+.futumoo-subscription-list > div {
+  display: grid;
+  grid-template-columns: minmax(90px, auto) 1fr;
+  gap: 10px;
+}
+.futumoo-subscription-list strong {
+  color: var(--ink);
+}
+.futumoo-subscription-list span {
+  color: var(--ink-soft);
+  text-align: right;
+}
+.futumoo-subscription-empty {
+  text-align: left !important;
+}
+
 /* ----- intro on market picker ----- */
 
 .picker-intro {

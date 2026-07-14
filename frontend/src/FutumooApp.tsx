@@ -12,7 +12,12 @@ import { useLeaderboardCurves } from "./hooks/useLeaderboardCurves";
 import { usePersistentToggle } from "./hooks/usePersistentToggle";
 import { createArenaApi, urlPrefix } from "./lib/api";
 import { todayStamp } from "./lib/format";
-import type { ArenaCurrency, Currency, FutumooUserInfo } from "./lib/types";
+import type {
+  ArenaCurrency,
+  Currency,
+  FutumooSubscriptionStatus,
+  FutumooUserInfo,
+} from "./lib/types";
 
 const BASE_URL = urlPrefix();
 
@@ -84,8 +89,8 @@ function formatYAxisLabel(value: number, currency: ArenaCurrency): string {
   return `${glyph}${Math.round(value).toLocaleString("en-US")}`;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Failed to load Futu user info";
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
 }
 
 function statusText(value: boolean): string {
@@ -178,6 +183,57 @@ function FutumooUserInfoPanel({
   );
 }
 
+function FutumooSubscriptionPanel({
+  status,
+  loading,
+  error,
+}: {
+  status: FutumooSubscriptionStatus | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  if (loading) {
+    return (
+      <div className="futumoo-user-panel is-muted">
+        <span className="futumoo-user-kicker">Live Quote LRU</span>
+        <strong>Loading subscriptions</strong>
+      </div>
+    );
+  }
+  if (error || !status) {
+    return (
+      <div className="futumoo-user-panel is-error">
+        <span className="futumoo-user-kicker">Live Quote LRU</span>
+        <strong>Unavailable</strong>
+        <span>{error ?? "No subscription status"}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="futumoo-user-panel futumoo-subscription-panel">
+      <div className="futumoo-subscription-head">
+        <span className="futumoo-user-kicker">Live Quote LRU</span>
+        <strong>
+          {status.subscribed_count} / {status.subscription_limit}
+        </strong>
+      </div>
+      <div className="futumoo-subscription-list">
+        {status.latest_accessed_symbols.length ? (
+          status.latest_accessed_symbols.map((symbol) => (
+            <div key={symbol.code}>
+              <strong>{symbol.code}</strong>
+              <span>{symbol.name ?? "Name pending"}</span>
+            </div>
+          ))
+        ) : (
+          <span className="futumoo-subscription-empty">No symbols subscribed</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function FutumooApp() {
   const api = useMemo(() => createArenaApi("/futumoo"), []);
   const arena = useArena(api);
@@ -191,6 +247,13 @@ export function FutumooApp() {
   const [userInfo, setUserInfo] = useState<FutumooUserInfo | null>(null);
   const [loadingUserInfo, setLoadingUserInfo] = useState(true);
   const [userInfoError, setUserInfoError] = useState<string | null>(null);
+  const [subscriptionStatus, setSubscriptionStatus] =
+    useState<FutumooSubscriptionStatus | null>(null);
+  const [loadingSubscriptionStatus, setLoadingSubscriptionStatus] =
+    useState(true);
+  const [subscriptionStatusError, setSubscriptionStatusError] = useState<
+    string | null
+  >(null);
   const stamp = todayStamp();
 
   useEffect(() => {
@@ -207,7 +270,7 @@ export function FutumooApp() {
       .catch((err: unknown) => {
         if (!cancelled) {
           setUserInfo(null);
-          setUserInfoError(errorMessage(err));
+          setUserInfoError(errorMessage(err, "Failed to load Futu user info"));
         }
       })
       .finally(() => {
@@ -217,6 +280,46 @@ export function FutumooApp() {
       });
     return () => {
       cancelled = true;
+    };
+  }, [api]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let initialLoad = true;
+
+    function refreshSubscriptionStatus() {
+      if (initialLoad) {
+        setLoadingSubscriptionStatus(true);
+      }
+      api
+        .getFutumooSubscriptionStatus()
+        .then((data) => {
+          if (!cancelled) {
+            setSubscriptionStatus(data);
+            setSubscriptionStatusError(null);
+          }
+        })
+        .catch((err: unknown) => {
+          if (!cancelled) {
+            setSubscriptionStatus(null);
+            setSubscriptionStatusError(
+              errorMessage(err, "Failed to load Futu subscriptions"),
+            );
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setLoadingSubscriptionStatus(false);
+          }
+          initialLoad = false;
+        });
+    }
+
+    refreshSubscriptionStatus();
+    const interval = window.setInterval(refreshSubscriptionStatus, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
     };
   }, [api]);
 
@@ -272,6 +375,11 @@ export function FutumooApp() {
             )}
           </span>
           <FutumooUserInfoPanel info={userInfo} loading={loadingUserInfo} error={userInfoError} />
+          <FutumooSubscriptionPanel
+            status={subscriptionStatus}
+            loading={loadingSubscriptionStatus}
+            error={subscriptionStatusError}
+          />
         </div>
       </header>
       <div className="rule-thick" />

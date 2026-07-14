@@ -6,12 +6,12 @@ Owns the HK/US/CN paper-trading runtime. The Futumoo-specific parts are:
   registration. The arena routes its orders to either the HK, US, or CN
   region accordingly; orders for codes that don't match the agent's
   region are rejected at submission.
-* Pending-order matching against `last_price` polled from Futu OpenD,
-  not instant fill at the limit price.
+* Event-driven pending-order matching against Futu OpenD real-time QUOTE
+  pushes, with a process-wide 100-symbol LRU subscription pool.
 * HK board-lot enforcement and US Pattern-Day-Trader enforcement at
   submission time, so invalid orders never reach the pending list.
-* No persisted daily equity history — the polling loop only refreshes
-  today's portfolio prices.
+* No persisted daily equity history — quote pushes only refresh today's
+  in-memory portfolio prices.
 """
 
 import asyncio
@@ -67,8 +67,11 @@ class FutumooArenaService(ArenaBase[FutumooAgentState]):
         self._latest_prices: dict[str, float] = {}
         self._code_names: dict[str, str] = {}
         self._snapshot_as_of: datetime | None = None
+        self.market.set_live_quote_handler(self._handle_live_quote)
 
-    def _absorb_snapshot_names(self, snapshots: dict[str, dict]) -> None:
+    def _absorb_snapshot_names(
+        self, snapshots: dict[str, dict[str, object]]
+    ) -> None:
         """Cache `name` columns from Futu snapshots for later display."""
         for code, row in snapshots.items():
             raw = row.get("name")
@@ -148,80 +151,95 @@ class FutumooArenaService(ArenaBase[FutumooAgentState]):
             state.orders.append(order)
             self._save_agent_state(state)
             self._latest_prices[request.code] = float(snapshot_row["last_price"])
-        self.notifier.notify_order_submitted(agent, order)
+            try:
+                # Keep the order lock held while registering the push so an
+                # immediate first callback cannot overtake order persistence.
+                self.market.subscribe_live_quotes([request.code])
+            except Exception:
+                state.orders.remove(order)
+                self._save_agent_state(state)
+                raise
+            self.notifier.notify_order_submitted(agent, order)
+            # Future matches are push-driven; this current validation snapshot
+            # permits the newly submitted order's immediate initial match.
+            self._handle_live_quote(
+                request.code,
+                snapshot_row,
+                initial_order_id=order.order_id,
+            )
         self._rankings_cache = None
         return order
 
-    # ----- matching loop -----
+    # ----- event-driven matching -----
 
-    def match_pending_orders(self, region: RegionArena) -> None:
-        """Snapshot once for `region` and try to fill its pending orders.
+    def _region_for_code(self, code: str) -> RegionArena | None:
+        for region in self.regions:
+            if region.owns_code(code):
+                return region
+        return None
 
-        Walks every agent whose currency maps to `region` (HKD agents for
-        HK, USD agents for US, CNY agents for CN). Skips outside-of-session ticks.
-        """
-        if not region.is_trading_day(region.now().date()):
-            return
-        if not region.in_session(region.now()):
-            return
-        codes: set[str] = set()
-        relevant_agents: list[str] = []
-        for agent_id, agent in self.list_agents():
-            if self._region_by_currency.get(agent.currency) is not region:
-                continue
-            relevant_agents.append(agent_id)
-            state = self._state(agent_id)
-            for order in state.orders:
-                if order.status == "pending" and region.owns_code(order.code):
-                    codes.add(order.code)
-            for code in state.positions.keys():
-                codes.add(code)
-        if not codes:
+    def _handle_live_quote(
+        self,
+        code: str,
+        row: dict[str, object],
+        initial_order_id: str | None = None,
+    ) -> None:
+        region = self._region_for_code(code)
+        if region is None:
             return
         try:
-            snapshots = self.market.get_snapshots(sorted(codes))
-        except Exception:
-            logger.exception("Snapshot fetch failed for region %s", region.region)
+            last_price = float(row["last_price"])
+        except (KeyError, TypeError, ValueError):
             return
-        if not snapshots:
+        if last_price <= 0:
             return
-        self._absorb_snapshot_names(snapshots)
-        max_update: datetime | None = None
-        for code, row in snapshots.items():
-            self._latest_prices[code] = float(row["last_price"])
-            update_at = self._parse_update_time(row.get("update_time"), region)
-            if update_at is not None and (max_update is None or update_at > max_update):
-                max_update = update_at
-        if max_update is not None:
-            self._snapshot_as_of = max_update.astimezone(timezone.utc)
+        update_at = self._parse_update_time(row.get("update_time"), region)
+        if update_at is None:
+            update_at = region.now()
+        update_at_utc = update_at.astimezone(timezone.utc)
+        self._absorb_snapshot_names({code: row})
+
         with self._order_lock:
-            for agent_id in relevant_agents:
-                state = self._state(agent_id)
-                if not any(
-                    order.status == "pending" and region.owns_code(order.code)
-                    for order in state.orders
-                ):
+            self._latest_prices[code] = last_price
+            if self._snapshot_as_of is None or update_at_utc > self._snapshot_as_of:
+                self._snapshot_as_of = update_at_utc
+            quote_can_fill = region.in_session(update_at) and region.is_trading_day(
+                update_at.date()
+            )
+            for agent_id, agent in self.list_agents():
+                if self._region_by_currency.get(agent.currency) is not region:
                     continue
+                state = self._state(agent_id)
+                affects_equity = code in state.positions
                 changed = False
                 for order in state.orders:
-                    if order.status != "pending" or not region.owns_code(order.code):
+                    if (
+                        not quote_can_fill
+                        or order.status != "pending"
+                        or order.code != code
+                    ):
                         continue
-                    row = snapshots.get(order.code)
-                    if row is None:
-                        continue
-                    update_at = self._parse_update_time(row.get("update_time"), region)
                     activate_after_local = order.activate_after.astimezone(region.tz)
-                    if update_at is None or update_at <= activate_after_local:
+                    if (
+                        order.order_id != initial_order_id
+                        and update_at <= activate_after_local
+                    ):
                         continue
-                    last_price = float(row["last_price"])
                     if order.side == "buy" and last_price > order.limit_price:
                         continue
                     if order.side == "sell" and last_price < order.limit_price:
                         continue
                     if not self._can_still_fill(region, state, order, last_price):
                         continue
+                    executed_at = update_at_utc
+                    activated_at = order.activate_after.astimezone(timezone.utc)
+                    if executed_at < activated_at:
+                        executed_at = activated_at
                     fill = region.fill_pending(
-                        state, order, last_price, update_at.astimezone(timezone.utc)
+                        state,
+                        order,
+                        last_price,
+                        executed_at,
                     )
                     self.notifier.notify_order_filled(
                         self.get_agent(agent_id), order, fill
@@ -229,6 +247,8 @@ class FutumooArenaService(ArenaBase[FutumooAgentState]):
                     changed = True
                 if changed:
                     self._save_agent_state(state)
+                if affects_equity or changed:
+                    self._update_today_equity_point(state)
         self._rankings_cache = None
 
     def _can_still_fill(
@@ -246,15 +266,16 @@ class FutumooArenaService(ArenaBase[FutumooAgentState]):
         return position is not None and position.quantity >= order.quantity
 
     @staticmethod
-    def _parse_update_time(raw, region: RegionArena) -> datetime | None:
+    def _parse_update_time(raw: object, region: RegionArena) -> datetime | None:
         if raw is None:
             return None
         try:
-            return datetime.fromisoformat(str(raw).replace("/", "-")).replace(
-                tzinfo=region.tz
-            )
+            parsed = datetime.fromisoformat(str(raw).replace("/", "-"))
         except ValueError:
             return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=region.tz)
+        return parsed.astimezone(region.tz)
 
     # ----- special events -----
 
@@ -333,25 +354,26 @@ class FutumooArenaService(ArenaBase[FutumooAgentState]):
             as_of=self._snapshot_as_of,
         )
 
-    # ----- daily lifecycle -----
+    # ----- subscription and session lifecycle -----
 
-    def refresh_portfolio_prices(self) -> None:
-        held: set[str] = set()
+    def _subscribe_tracked_symbols(self) -> None:
+        pending_codes: list[str] = []
+        held_codes: list[str] = []
         for agent_id, _ in self.list_agents():
             state = self._state(agent_id)
-            held.update(state.positions.keys())
-        if held:
+            pending_codes.extend(
+                order.code for order in state.orders if order.status == "pending"
+            )
+            held_codes.extend(state.positions.keys())
+        seen: set[str] = set()
+        for code in pending_codes + held_codes:
+            if code in seen:
+                continue
+            seen.add(code)
             try:
-                snapshots = self.market.get_snapshots(sorted(held))
+                self.market.subscribe_live_quotes([code])
             except Exception:
-                logger.exception("Portfolio snapshot refresh failed")
-                snapshots = {}
-            self._absorb_snapshot_names(snapshots)
-            for code, row in snapshots.items():
-                self._latest_prices[code] = float(row["last_price"])
-        with self._order_lock:
-            for agent_id, _ in self.list_agents():
-                self._update_today_equity_point(self._state(agent_id))
+                logger.exception("Failed to restore Futu quote subscription for %s", code)
 
     def expire_overnight_orders(self, region: RegionArena) -> None:
         timestamp = region.now().astimezone(timezone.utc)
@@ -377,30 +399,36 @@ class FutumooArenaService(ArenaBase[FutumooAgentState]):
                     self._save_agent_state(state)
         self._rankings_cache = None
 
-    async def run(self, polling_interval_seconds: int) -> None:
-        last_session_active: dict[str, bool] = {region.region: False for region in self.regions}
+    async def run(self, maintenance_interval_seconds: int) -> None:
+        for region in self.regions:
+            try:
+                await asyncio.to_thread(region.is_trading_day, region.now().date())
+            except Exception:
+                logger.exception(
+                    "Initial session check failed for region %s",
+                    region.region,
+                )
+        await asyncio.to_thread(self._subscribe_tracked_symbols)
+        last_session_active: dict[str, bool] = {
+            region.region: False for region in self.regions
+        }
         while True:
             for region in self.regions:
                 try:
-                    in_session_now = region.in_session(region.now()) and region.is_trading_day(
-                        region.now().date()
+                    now = region.now()
+                    in_session_now = region.in_session(now) and region.is_trading_day(
+                        now.date()
                     )
                 except Exception:
                     logger.exception("Session check failed for region %s", region.region)
                     in_session_now = False
-                if in_session_now:
-                    try:
-                        await asyncio.to_thread(self.match_pending_orders, region)
-                    except Exception:
-                        logger.exception("Match cycle failed for region %s", region.region)
-                elif last_session_active[region.region]:
+                if not in_session_now and last_session_active[region.region]:
                     try:
                         await asyncio.to_thread(self.expire_overnight_orders, region)
                     except Exception:
-                        logger.exception("Order expiration failed for region %s", region.region)
+                        logger.exception(
+                            "Order expiration failed for region %s",
+                            region.region,
+                        )
                 last_session_active[region.region] = in_session_now
-            try:
-                await asyncio.to_thread(self.refresh_portfolio_prices)
-            except Exception:
-                logger.exception("Portfolio price refresh failed")
-            await asyncio.sleep(polling_interval_seconds)
+            await asyncio.sleep(max(1, maintenance_interval_seconds))

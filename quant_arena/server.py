@@ -22,6 +22,7 @@ from quant_arena.schemas import (
     CreateAgentRequest,
     DailyReportPage,
     EODHDUserInfoResponse,
+    FutumooSubscriptionStatusResponse,
     FutumooUserInfoResponse,
     ManualClearPositionsRequest,
     NotificationDestinationsResponse,
@@ -261,10 +262,7 @@ def create_app() -> FastAPI:
                         state.arena.run(state.config.ashare.polling_interval_seconds)
                     )
                 )
-            if (
-                state.futumoo_arena is not None
-                and state.config.futumoo.polling_interval_seconds > 0
-            ):
+            if state.futumoo_arena is not None:
                 state.background_tasks.append(
                     asyncio.create_task(
                         state.futumoo_arena.run(
@@ -626,6 +624,18 @@ def create_app() -> FastAPI:
             if market is None:
                 raise RuntimeError("Futumoo market data is not enabled")
             return FutumooUserInfoResponse.model_validate(market.get_user_info())
+
+        @api.get(
+            "/api/futumoo/subscriptions",
+            response_model=FutumooSubscriptionStatusResponse,
+        )
+        def get_futumoo_subscriptions() -> FutumooSubscriptionStatusResponse:
+            market = get_state().futumoo_market
+            if market is None:
+                raise RuntimeError("Futumoo market data is not enabled")
+            return FutumooSubscriptionStatusResponse.model_validate(
+                market.get_subscription_status()
+            )
 
         @api.post("/api/futumoo/agents", response_model=AgentCreatedResponse)
         def create_futumoo_agent(request: CreateAgentRequest) -> AgentCreatedResponse:
