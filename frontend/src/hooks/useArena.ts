@@ -10,7 +10,7 @@ import type {
   RankingEntry,
   SpecialEvent,
 } from "../lib/types";
-import { useToast } from "../components/ui";
+import { useConfirm, useToast } from "../components/ui";
 
 function getAgentIdFromUrl(): string {
   return new URLSearchParams(window.location.search).get("agent-id") ?? "";
@@ -39,6 +39,7 @@ type NotifField = keyof AgentNotificationTargets;
  */
 export function useArena(api: ArenaApi) {
   const { ok, error } = useToast();
+  const confirm = useConfirm();
 
   const [agents, setAgents] = useState<AgentResponse[]>([]);
   // Starts empty; the initial agent-list load validates the URL's agent-id and
@@ -247,11 +248,21 @@ export function useArena(api: ArenaApi) {
 
   const toggleAgentAmnesia = useCallback(async () => {
     if (!snapshot) return;
+    const nextAmnesia = !snapshot.agent.amnesia;
+    const confirmed = await confirm({
+      title: `${nextAmnesia ? "Enable" : "Disable"} Amnesia for ${snapshot.agent.display_name}?`,
+      body: nextAmnesia
+        ? "The agent will only see current-day memory. Earlier operations and reports, along with portfolio cost and P&L details, will be hidden while Amnesia is on."
+        : "The agent will regain access to earlier memory, portfolio cost, and P&L details.",
+      confirmLabel: nextAmnesia ? "Enable Amnesia" : "Disable Amnesia",
+    });
+    if (!confirmed) return;
+
     setSavingAmnesia(true);
     try {
       const saved = await api.patchAgentAmnesia(
         snapshot.agent.agent_id,
-        !snapshot.agent.amnesia,
+        nextAmnesia,
       );
       setSnapshot((current) => (current ? { ...current, agent: saved } : current));
       setAgents((current) =>
@@ -264,7 +275,7 @@ export function useArena(api: ArenaApi) {
     } finally {
       setSavingAmnesia(false);
     }
-  }, [api, snapshot, ok, error, refreshSnapshot]);
+  }, [api, snapshot, confirm, ok, error, refreshSnapshot]);
 
   const agentById = useMemo(
     () => new Map(agents.map((agent) => [agent.agent_id, agent])),

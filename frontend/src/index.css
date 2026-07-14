@@ -1016,9 +1016,6 @@ a {
 /* equity */
 .equity {
   margin: 32px 0 0;
-  display: grid;
-  grid-template-columns: minmax(220px, 1fr) 2.4fr;
-  gap: 0;
   border-top: 1px solid var(--rule-soft);
   border-bottom: 1px solid var(--rule-soft);
 }
@@ -1066,15 +1063,7 @@ a {
 
 .equity-chart {
   position: relative;
-  padding: 18px 4px 18px 24px;
-}
-.equity-chart svg {
-  width: 100%;
-  aspect-ratio: 1000 / 220;
-  height: auto;
-  max-height: 260px;
-  display: block;
-  overflow: visible;
+  padding: 18px 0;
 }
 .equity-chart .gridline {
   stroke: var(--rule-fine);
