@@ -8,6 +8,10 @@ from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+DEFAULT_RETAIL_COMMISSION_BPS = 3.0
+DEFAULT_RETAIL_MIN_COMMISSION = 3.0
+
+
 class ServerSettings(BaseSettings):
     """Environment settings, read from `QUANT_ARENA_*` env vars at app creation.
 
@@ -185,12 +189,12 @@ class FutumooHKFeeConfig(BaseModel):
     """HK-side fee configuration for the Futumoo paper-trading arena."""
 
     commission_bps: float = Field(
-        default=0.0,
-        description="Broker commission in basis points applied to each filled HK order, in HKD.",
+        default=DEFAULT_RETAIL_COMMISSION_BPS,
+        description="Broker commission in basis points applied to each filled HK order, in HKD. The default models Futu's 0.03% commission.",
     )
     min_commission: float = Field(
-        default=0.0,
-        description="Minimum commission charged per filled HK order, in HKD.",
+        default=DEFAULT_RETAIL_MIN_COMMISSION,
+        description="Minimum commission charged per filled HK order, in HKD. The default models Futu's HKD 3 minimum.",
     )
     stamp_tax_bps: float = Field(
         default=10.0,
@@ -202,12 +206,12 @@ class FutumooUSFeeConfig(BaseModel):
     """US-side fee configuration for the Futumoo paper-trading arena."""
 
     commission_bps: float = Field(
-        default=0.0,
-        description="Broker commission in basis points applied to each filled US order, in USD.",
+        default=DEFAULT_RETAIL_COMMISSION_BPS,
+        description="Broker commission in basis points applied to each filled US order, in USD. The default matches the simplified EODHD commission model.",
     )
     min_commission: float = Field(
-        default=0.0,
-        description="Minimum commission charged per filled US order, in USD.",
+        default=DEFAULT_RETAIL_MIN_COMMISSION,
+        description="Minimum commission charged per filled US order, in USD. The default matches the simplified EODHD USD 3 minimum.",
     )
 
 
@@ -215,12 +219,12 @@ class FutumooCNFeeConfig(BaseModel):
     """Mainland China-side fee configuration for the Futumoo paper-trading arena."""
 
     commission_bps: float = Field(
-        default=0.0,
-        description="Broker commission in basis points applied to each filled CN order, in CNY.",
+        default=DEFAULT_RETAIL_COMMISSION_BPS,
+        description="Broker commission in basis points applied to each filled CN order, in CNY. The default models Futu's 0.03% commission.",
     )
     min_commission: float = Field(
-        default=0.0,
-        description="Minimum commission charged per filled CN order, in CNY.",
+        default=DEFAULT_RETAIL_MIN_COMMISSION,
+        description="Minimum commission charged per filled CN order, in CNY. The default models Futu's CNY 3 minimum.",
     )
     stamp_tax_bps: float = Field(
         default=5.0,
@@ -288,11 +292,11 @@ class EODHDFeeConfig(BaseModel):
     """Fee configuration for the EODHD paper-trading arena."""
 
     commission_bps: float = Field(
-        default=3.0,
+        default=DEFAULT_RETAIL_COMMISSION_BPS,
         description="Broker commission in basis points applied to each EODHD fill. The default models a 0.03% retail-broker commission.",
     )
     min_commission: float = Field(
-        default=3.0,
+        default=DEFAULT_RETAIL_MIN_COMMISSION,
         description="Minimum commission charged per EODHD fill, in the agent's configured currency.",
     )
 

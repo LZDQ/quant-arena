@@ -327,6 +327,16 @@ The existing `futumoo.polling_interval_seconds` setting now controls only
 session-state maintenance such as detecting session close and expiring pending
 orders; market prices and fills are no longer polled on that interval.
 
+Futumoo fills default to a 3-basis-point commission (0.03%) with a minimum
+charge of 3 units of the region's currency (HKD, USD, or CNY). The HK and CN
+defaults follow Futu's published percentage commission and minimum charge. The
+US default intentionally uses the same simplified commission model as EODHD;
+Futu's real US fee schedule includes per-share charges that the arena's
+notional-based fee configuration cannot represent. HK stamp duty remains 10
+basis points on buys and sells, while mainland stock stamp tax remains 5 basis
+points on sells. Configure these values through `futumoo.hk_fees`,
+`futumoo.us_fees`, and `futumoo.cn_fees`.
+
 Trading-day detection is best-effort. Each region asks OpenD for a ±10 day
 calendar window and caches the result. If OpenD is unavailable, it falls back
 to a Mon-Fri heuristic for 15 minutes. Submit and match paths also check the
