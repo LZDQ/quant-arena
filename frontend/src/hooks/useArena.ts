@@ -54,6 +54,7 @@ export function useArena(api: ArenaApi) {
   const [destinations, setDestinations] = useState<NotificationDestinations | null>(null);
   const [agentTargets, setAgentTargets] = useState<AgentNotificationTargets | null>(null);
   const [savingTargets, setSavingTargets] = useState(false);
+  const [savingAmnesia, setSavingAmnesia] = useState(false);
   const [specialEvents, setSpecialEvents] = useState<SpecialEvent[]>([]);
   const [loadingSpecialEvents, setLoadingSpecialEvents] = useState(false);
 
@@ -244,6 +245,27 @@ export function useArena(api: ArenaApi) {
     [agentTargets, saveAgentTargets],
   );
 
+  const toggleAgentAmnesia = useCallback(async () => {
+    if (!snapshot) return;
+    setSavingAmnesia(true);
+    try {
+      const saved = await api.patchAgentAmnesia(
+        snapshot.agent.agent_id,
+        !snapshot.agent.amnesia,
+      );
+      setSnapshot((current) => (current ? { ...current, agent: saved } : current));
+      setAgents((current) =>
+        current.map((agent) => (agent.agent_id === saved.agent_id ? saved : agent)),
+      );
+      await refreshSnapshot(saved.agent_id);
+      ok("Agent memory setting updated.");
+    } catch (err) {
+      error((err as Error).message);
+    } finally {
+      setSavingAmnesia(false);
+    }
+  }, [api, snapshot, ok, error, refreshSnapshot]);
+
   const agentById = useMemo(
     () => new Map(agents.map((agent) => [agent.agent_id, agent])),
     [agents],
@@ -263,6 +285,7 @@ export function useArena(api: ArenaApi) {
     destinations,
     agentTargets,
     savingTargets,
+    savingAmnesia,
     specialEvents,
     loadingSpecialEvents,
     selectAgent,
@@ -270,5 +293,6 @@ export function useArena(api: ArenaApi) {
     deleteAgent,
     manualClear,
     toggleAgentTarget,
+    toggleAgentAmnesia,
   };
 }

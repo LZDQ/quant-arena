@@ -29,6 +29,7 @@ from quant_arena.schemas import (
     OperationListResponse,
     PathsResponse,
     PortfolioResponse,
+    SetAgentAmnesiaRequest,
     SetNapCatDestinationsRequest,
     ToggleArenaRequest,
     ToggleArenaResponse,
@@ -370,6 +371,7 @@ def create_app() -> FastAPI:
             initial_cash=agent.initial_cash,
             currency=agent.currency,
             enabled=agent.enabled,
+            amnesia=agent.amnesia,
             role=agent.role,
             napcat_notify_targets=list(agent.napcat_notify_targets),
             daily_report_notify_targets=list(agent.daily_report_notify_targets),
@@ -493,6 +495,16 @@ def create_app() -> FastAPI:
         @api.delete(f"/api{prefix}/agents/{{agent_id}}", status_code=204)
         def delete_arena_agent(agent_id: str) -> None:
             get_arena().delete_agent(agent_id)
+
+        @api.patch(
+            f"/api{prefix}/agents/{{agent_id}}/amnesia",
+            response_model=AgentResponse,
+        )
+        def set_arena_agent_amnesia(
+            agent_id: str, request: SetAgentAmnesiaRequest
+        ) -> AgentResponse:
+            updated = get_arena().update_amnesia(agent_id, request.amnesia)
+            return to_agent_response(agent_id, updated)
 
         @api.get(
             f"/api{prefix}/agents/{{agent_id}}/notification-targets",

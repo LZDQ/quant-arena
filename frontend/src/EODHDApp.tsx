@@ -231,7 +231,9 @@ export function EODHDApp() {
           destinations={arena.destinations}
           agentTargets={arena.agentTargets}
           savingTargets={arena.savingTargets}
+          savingAmnesia={arena.savingAmnesia}
           onToggleTarget={arena.toggleAgentTarget}
+          onToggleAmnesia={arena.toggleAgentAmnesia}
           onManualReset={() => setManualResetOpen(true)}
           onDelete={deleteSelectedAgent}
           symbolHeader="Symbol"

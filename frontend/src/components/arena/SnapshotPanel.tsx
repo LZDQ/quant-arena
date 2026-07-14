@@ -29,7 +29,9 @@ type SnapshotPanelProps = {
   destinations: NotificationDestinations | null;
   agentTargets: AgentNotificationTargets | null;
   savingTargets: boolean;
+  savingAmnesia: boolean;
   onToggleTarget: (field: NotifField, key: string) => void;
+  onToggleAmnesia: () => void;
   onManualReset: () => void;
   onDelete: () => void;
   symbolHeader: string;
@@ -51,7 +53,9 @@ export function SnapshotPanel({
   destinations,
   agentTargets,
   savingTargets,
+  savingAmnesia,
   onToggleTarget,
+  onToggleAmnesia,
   onManualReset,
   onDelete,
   symbolHeader,
@@ -107,6 +111,15 @@ export function SnapshotPanel({
         </div>
         {snapshot && (
           <div className="snapshot-head-right">
+            <button
+              className={`amnesia-toggle${snapshot.agent.amnesia ? " is-active" : ""}`}
+              type="button"
+              aria-pressed={snapshot.agent.amnesia}
+              disabled={savingAmnesia}
+              onClick={onToggleAmnesia}
+            >
+              {savingAmnesia ? "Saving…" : `Amnesia ${snapshot.agent.amnesia ? "On" : "Off"}`}
+            </button>
             <button className="delete manual-clear-trigger" type="button" onClick={onManualReset}>
               Manual Reset
             </button>
@@ -229,7 +242,7 @@ export function SnapshotPanel({
                     <td className="num">
                       {formatAmount(position.market_value, snapshot.agent.currency)}
                     </td>
-                    <td className={`num ${percentClass(position.unrealized_pnl)}`}>
+                    <td className={`num ${percentClass(position.unrealized_pnl ?? 0)}`}>
                       {formatAmount(position.unrealized_pnl, snapshot.agent.currency)}
                     </td>
                   </tr>

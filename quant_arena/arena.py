@@ -173,6 +173,14 @@ class ArenaBase(ABC, Generic[StateT]):
         self._save_agent_config(agent_id, agent)
         return agent
 
+    def update_amnesia(self, agent_id: str, amnesia: bool) -> AgentConfig:
+        """Update and persist the agent's daily memory setting."""
+
+        agent = self.get_agent(agent_id)
+        agent.amnesia = amnesia
+        self._save_agent_config(agent_id, agent)
+        return agent
+
     # ----- order-flow helpers -----
 
     def cancel_order(self, agent_id: str, order_id: str) -> OrderRecord:
@@ -296,11 +304,17 @@ class ArenaBase(ABC, Generic[StateT]):
         )
 
     def get_portfolio(self, agent_id: str) -> PortfolioSnapshot:
-        self.get_agent(agent_id)
+        agent = self.get_agent(agent_id)
         with self._order_lock:
             state = self._state(agent_id)
             portfolio = self._build_portfolio(state)
             portfolio.day_return_pct = self._compute_day_return_pct(state, portfolio)
+            if agent.amnesia:
+                portfolio.realized_pnl = None
+                portfolio.unrealized_pnl = None
+                for position in portfolio.positions:
+                    position.avg_cost = None
+                    position.unrealized_pnl = None
             return portfolio
 
     def _compute_day_return_pct(
@@ -336,11 +350,22 @@ class ArenaBase(ABC, Generic[StateT]):
         end: datetime | None = None,
         limit: int | None = None,
     ) -> OperationLog:
-        self.get_agent(agent_id)
+        agent = self.get_agent(agent_id)
+        today = self._now().date()
         with self._order_lock:
             state = self._state(agent_id)
-            orders = [order for order in state.orders if self._in_range(order.submitted_at, start, end)]
-            fills = [fill for fill in state.fills if self._in_range(fill.executed_at, start, end)]
+            orders = [
+                order
+                for order in state.orders
+                if (not agent.amnesia or order.submitted_at.date() == today)
+                and self._in_range(order.submitted_at, start, end)
+            ]
+            fills = [
+                fill
+                for fill in state.fills
+                if (not agent.amnesia or fill.executed_at.date() == today)
+                and self._in_range(fill.executed_at, start, end)
+            ]
             if limit is not None:
                 orders = orders[-limit:]
                 fills = fills[-limit:]
@@ -514,7 +539,9 @@ class ArenaBase(ABC, Generic[StateT]):
         return self._load_daily_report(path, trade_date)
 
     def get_last_daily_report_before_today(self, agent_id: str) -> DailyReport | None:
-        self.get_agent(agent_id)
+        agent = self.get_agent(agent_id)
+        if agent.amnesia:
+            return None
         today = self._now().date()
         for trade_date, path in self._iter_daily_report_paths(agent_id):
             if trade_date < today:

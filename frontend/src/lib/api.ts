@@ -146,6 +146,11 @@ export function createArenaApi(apiPrefix = "") {
       }),
     deleteAgent: (agentId: string) =>
       request<void>(arena(`/agents/${agentId}`), { method: "DELETE" }),
+    patchAgentAmnesia: (agentId: string, amnesia: boolean) =>
+      request<AgentResponse>(arena(`/agents/${agentId}/amnesia`), {
+        method: "PATCH",
+        body: JSON.stringify({ amnesia }),
+      }),
     putNotificationTargets: (agentId: string, targets: AgentNotificationTargets) =>
       request<AgentNotificationTargets>(arena(`/agents/${agentId}/notification-targets`), {
         method: "PUT",

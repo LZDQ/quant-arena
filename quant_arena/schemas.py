@@ -16,10 +16,10 @@ class PositionView(BaseModel):
     name: str | None = None
     quantity: int
     sellable_quantity: int
-    avg_cost: float
+    avg_cost: float | None
     market_price: float | None = None
     market_value: float = 0.0
-    unrealized_pnl: float = 0.0
+    unrealized_pnl: float | None = 0.0
     intraday_as_of: datetime | None = None
 
 
@@ -31,8 +31,8 @@ class PortfolioResponse(BaseModel):
     cash: float
     market_value: float
     total_equity: float
-    realized_pnl: float
-    unrealized_pnl: float
+    realized_pnl: float | None
+    unrealized_pnl: float | None
     positions: list[PositionView]
     pending_orders: list[OrderRecord]
     as_of: datetime | None = None
@@ -69,6 +69,7 @@ class CreateAgentRequest(BaseModel):
     initial_cash: float = Field(gt=0)
     currency: str | None = None
     enabled: bool = True
+    amnesia: bool = False
     role: Literal["normal", "monitor"] = "normal"
 
 
@@ -80,6 +81,7 @@ class AgentResponse(BaseModel):
     initial_cash: float
     currency: str | None = None
     enabled: bool
+    amnesia: bool
     role: Literal["normal", "monitor"]
     napcat_notify_targets: list[str] = Field(default_factory=list)
     daily_report_notify_targets: list[str] = Field(default_factory=list)
@@ -90,6 +92,12 @@ class AgentCreatedResponse(BaseModel):
 
     agent: AgentResponse
     token_secret: str
+
+
+class SetAgentAmnesiaRequest(BaseModel):
+    """Update whether one agent can see memory from previous days."""
+
+    amnesia: bool
 
 
 class ArenaStatus(BaseModel):

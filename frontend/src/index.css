@@ -1743,6 +1743,26 @@ table td.comment-cell {
   align-items: flex-end;
   gap: 12px;
 }
+.snapshot-head .amnesia-toggle {
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--rule);
+  cursor: pointer;
+  padding: 5px 8px;
+}
+.snapshot-head .amnesia-toggle.is-active {
+  color: var(--paper);
+  background: var(--ink);
+  border-color: var(--ink);
+}
+.snapshot-head .amnesia-toggle:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
 .snapshot-notif-row {
   margin-bottom: 18px;
 }

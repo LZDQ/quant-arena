@@ -209,10 +209,10 @@ class PositionSnapshot(BaseModel):
     name: str | None = None
     quantity: int
     sellable_quantity: int
-    avg_cost: float
+    avg_cost: float | None
     market_price: float | None = None
     market_value: float = 0.0
-    unrealized_pnl: float = 0.0
+    unrealized_pnl: float | None = 0.0
     intraday_as_of: datetime | None = None
 
 
@@ -224,8 +224,8 @@ class PortfolioSnapshot(BaseModel):
     cash: float
     market_value: float
     total_equity: float
-    realized_pnl: float
-    unrealized_pnl: float
+    realized_pnl: float | None
+    unrealized_pnl: float | None
     positions: list[PositionSnapshot]
     pending_orders: list[OrderRecord]
     as_of: datetime | None = None

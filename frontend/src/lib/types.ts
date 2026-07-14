@@ -14,6 +14,7 @@ export type AgentResponse = {
   initial_cash: number;
   currency: ArenaCurrency;
   enabled: boolean;
+  amnesia: boolean;
   role: "normal" | "monitor";
   napcat_notify_targets: string[];
   daily_report_notify_targets: string[];
@@ -29,10 +30,10 @@ export type PositionView = {
   name: string | null;
   quantity: number;
   sellable_quantity: number;
-  avg_cost: number;
+  avg_cost: number | null;
   market_price: number | null;
   market_value: number;
-  unrealized_pnl: number;
+  unrealized_pnl: number | null;
   intraday_as_of: string | null;
 };
 
@@ -69,8 +70,8 @@ export type PortfolioResponse = {
   cash: number;
   market_value: number;
   total_equity: number;
-  realized_pnl: number;
-  unrealized_pnl: number;
+  realized_pnl: number | null;
+  unrealized_pnl: number | null;
   positions: PositionView[];
   pending_orders: OrderRecord[];
   as_of: string | null;

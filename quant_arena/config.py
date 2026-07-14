@@ -491,6 +491,10 @@ class AgentConfig(BaseModel):
         default=True,
         description="Whether the agent is enabled and available for use.",
     )
+    amnesia: bool = Field(
+        default=False,
+        description="Whether the agent can only see memory from the current day.",
+    )
     role: Literal["normal", "monitor"] = Field(
         default="normal",
         description="Agent role. monitor agents can inspect other agents through MCP tools.",
