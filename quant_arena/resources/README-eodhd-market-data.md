@@ -16,7 +16,7 @@ README.md
     └── YYYY-MM-DD.csv
 ```
 
-For example, US data lives under `US/`.
+For example, the default US and Hong Kong data sets live under `US/` and `HK/`.
 
 ## Exchange Codes
 

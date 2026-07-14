@@ -279,12 +279,12 @@ class EODHDFeeConfig(BaseModel):
     """Fee configuration for the EODHD paper-trading arena."""
 
     commission_bps: float = Field(
-        default=0.0,
-        description="Broker commission in basis points applied to each EODHD fill.",
+        default=3.0,
+        description="Broker commission in basis points applied to each EODHD fill. The default models a 0.03% retail-broker commission.",
     )
     min_commission: float = Field(
-        default=0.0,
-        description="Minimum commission charged per EODHD fill.",
+        default=3.0,
+        description="Minimum commission charged per EODHD fill, in the agent's configured currency.",
     )
 
 
@@ -366,10 +366,22 @@ class EODHDConfig(PersistentMarketDataArenaConfig):
                     finalize_utc="02:00",
                 ),
                 target_date_offset_days=-1,
-                enabled=False,
+                enabled=True,
+            ),
+            "HK": EODHDExchangeConfig(
+                daily_bars=EODHDBarScheduleConfig(
+                    enabled=True,
+                    finalize_utc="09:30",
+                ),
+                five_min_bars=EODHDBarScheduleConfig(
+                    enabled=True,
+                    finalize_utc="10:00",
+                ),
+                target_date_offset_days=0,
+                enabled=True,
             ),
         },
-        description="Per-EODHD-exchange availability and bar-persistence settings. The default US template is disabled until explicitly enabled.",
+        description="Per-EODHD-exchange availability and bar-persistence settings. US and HK are enabled by default.",
     )
 
     @model_validator(mode="before")

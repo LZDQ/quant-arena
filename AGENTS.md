@@ -8,3 +8,4 @@ Dev guide:
 - NEVER use type `Any`.
 - To install or remove a python package, do not directly edit `pyproject.toml` or `uv.lock`. Instead, ask the user to run `uv add` or `uv remove`.
 - When updating code that affects deployment setup, also modify `README.md`.
+- Do not write migration logic unless the user asks you to do so.

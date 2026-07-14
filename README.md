@@ -332,16 +332,16 @@ iterating symbols because EODHD intraday history is symbol/range based. The CSV
 columns remain EODHD-flavored; they are not baostock columns.
 
 The EODHD background task refreshes symbols once per UTC day and finalizes
-daily and 5-minute CSV files per configured exchange. No exchange is
-enabled by default. The generated config contains a disabled `US` exchange
-template. When EODHD starts without an enabled exchange, the server logs a
-configuration guide and does not start the exchange persistence task. The
-agent runtime and MCP remain mounted only when `data_provider_only` is false,
-but no exchange accepts orders or live tracking until an exchange is enabled.
-New EODHD agents use USD.
+daily and 5-minute CSV files per configured exchange. New configurations enable
+`US` and `HK` persistence by default. The EODHD arena itself still defaults to
+disabled and must be placed in Data only or Trading mode before those tasks run.
+When EODHD starts without an enabled exchange, the server logs a configuration
+guide and does not start the exchange persistence task. The agent runtime and
+MCP remain mounted only when `data_provider_only` is false. New EODHD agents use
+USD.
 
-To enable the US exchange, set its `enabled` field in
-`~/.quant-arena/config.json` and restart the server:
+The generated exchange schedules are equivalent to the following. Restart the
+server after changing them in `~/.quant-arena/config.json`:
 
 ```json
 {
@@ -358,6 +358,18 @@ To enable the US exchange, set its `enabled` field in
         "five_min_bars": {
           "enabled": true,
           "finalize_utc": "02:00"
+        }
+      },
+      "HK": {
+        "target_date_offset_days": 0,
+        "enabled": true,
+        "daily_bars": {
+          "enabled": true,
+          "finalize_utc": "09:30"
+        },
+        "five_min_bars": {
+          "enabled": true,
+          "finalize_utc": "10:00"
         }
       }
     }
@@ -392,6 +404,13 @@ that is already present instead of overwriting it.
 The default schedule meanings are:
 
 - `US`: daily 01:30 UTC, 5-minute 02:00 UTC, target date is previous UTC date.
+- `HK`: daily 09:30 UTC, 5-minute 10:00 UTC, target date is the current UTC date.
+
+EODHD fills default to a representative retail-broker commission of 3 basis
+points (0.03%) with a minimum charge of 3 units of the agent's configured
+currency. These values are configurable through `eodhd.fees`; the simplified
+paper arena does not model every exchange, clearing, regulatory, platform, or
+tax charge.
 
 Daily persistence queries EODHD's exchange calendar for each exchange and date
 range. It skips full holidays and non-working weekdays while retaining early-close
