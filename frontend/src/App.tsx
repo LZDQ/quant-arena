@@ -49,7 +49,12 @@ const MARKETS: Market[] = [
   },
 ];
 
-type ArenaStatus = { slug: string; label: string; enabled: boolean };
+type ArenaStatus = {
+  slug: string;
+  label: string;
+  enabled: boolean;
+  data_provider_only: boolean;
+};
 
 type NapCatPrivateTarget = { type: "private"; user_id: string };
 type NapCatGroupTarget = { type: "group"; group_id: string };
@@ -294,7 +299,7 @@ function todayStamp(): Stamp {
 
 function MarketPicker() {
   const stamp = todayStamp();
-  const [statuses, setStatuses] = useState<Record<string, boolean>>({});
+  const [statuses, setStatuses] = useState<Record<string, ArenaStatus>>({});
   const [loaded, setLoaded] = useState(false);
   const [busySlug, setBusySlug] = useState<string | null>(null);
   const [notice, setNotice] = useState<string>("");
@@ -307,9 +312,9 @@ function MarketPicker() {
         throw new Error(`HTTP ${response.status}`);
       }
       const rows = (await response.json()) as ArenaStatus[];
-      const next: Record<string, boolean> = {};
+      const next: Record<string, ArenaStatus> = {};
       for (const row of rows) {
-        next[row.slug] = row.enabled;
+        next[row.slug] = row;
       }
       setStatuses(next);
     } catch (fetchError) {
@@ -337,7 +342,14 @@ function MarketPicker() {
         const body = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
         throw new Error(body.detail ?? `HTTP ${response.status}`);
       }
-      setStatuses((prev) => ({ ...prev, [backendSlug]: nextEnabled }));
+      setStatuses((prev) => {
+        const current = prev[backendSlug];
+        if (!current) return prev;
+        return {
+          ...prev,
+          [backendSlug]: { ...current, enabled: nextEnabled },
+        };
+      });
       setNotice(
         `${backendSlug} marked ${nextEnabled ? "enabled" : "disabled"} in config.json. ` +
           "Restart the server to apply.",
@@ -351,7 +363,10 @@ function MarketPicker() {
 
   const knownArenas = MARKETS.filter((m) => m.backendSlug !== undefined);
   const liveCount = loaded
-    ? knownArenas.filter((m) => statuses[m.backendSlug as string] === true).length
+    ? knownArenas.filter((m) => {
+        const status = statuses[m.backendSlug as string];
+        return status?.enabled === true && !status.data_provider_only;
+      }).length
     : knownArenas.length;
   return (
     <div className="wrap reveal">
@@ -402,15 +417,19 @@ function MarketPicker() {
       <section className="picker-list">
         {MARKETS.map((m) => {
           const backendSlug = m.backendSlug;
-          const enabled = backendSlug ? statuses[backendSlug] === true : false;
+          const arenaStatus = backendSlug ? statuses[backendSlug] : undefined;
+          const enabled = arenaStatus?.enabled === true;
+          const dataProviderOnly = arenaStatus?.data_provider_only === true;
           const available = m.status === "available";
-          const isOpen = available && (loaded ? enabled : true);
+          const isOpen = available && (loaded ? enabled && !dataProviderOnly : true);
           const dataLive = isOpen ? "true" : "false";
           const statusLabel = !available
             ? "Coming · Standby"
             : loaded
               ? enabled
-                ? "Open · Trading"
+                ? dataProviderOnly
+                  ? "Data Only · Persistence"
+                  : "Open · Trading"
                 : "Disabled · Restart to Apply"
               : "Loading…";
           const statusDot = !available || (loaded && !enabled) ? "dot-soft" : "dot-rise";

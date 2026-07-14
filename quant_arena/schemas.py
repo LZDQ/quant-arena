@@ -50,6 +50,7 @@ class PathsResponse(BaseModel):
     """Resolved runtime paths."""
 
     config_path: str
+    global_market_data_root: str
     agents_root: str
     market_data_root: str
     eodhd_agents_root: str | None = None
@@ -97,6 +98,7 @@ class ArenaStatus(BaseModel):
     slug: Literal["ashare", "futumoo", "eodhd"]
     label: str
     enabled: bool
+    data_provider_only: bool
 
 
 class ToggleArenaRequest(BaseModel):

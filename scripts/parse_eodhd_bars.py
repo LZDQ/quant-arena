@@ -94,7 +94,7 @@ def main() -> None:
         "--market-data-dir",
         type=Path,
         default=None,
-        help="Override config's eodhd.market_data_root.",
+        help="Override the resolved EODHD market-data directory.",
     )
     parser.add_argument(
         "--api-token",
@@ -116,10 +116,12 @@ def main() -> None:
 
     start_date, end_date = _resolve_dates(args)
     config = load_app_config(args.config.resolve())
-    market_data_dir = args.market_data_dir or Path(config.eodhd.market_data_root)
+    market_data_dir = args.market_data_dir or config.eodhd.resolve_market_data_root(
+        config.market_data_root
+    )
     market_data_root = market_data_dir.resolve()
     _ensure_separate_market_data_roots(
-        Path(config.ashare.market_data_root).resolve(),
+        config.ashare.resolve_market_data_root(config.market_data_root),
         market_data_root,
     )
     market = EODHDService(

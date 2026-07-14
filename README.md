@@ -27,19 +27,14 @@ By default, startup creates:
 ```text
 ~/.quant-arena/
   config.json
-  A-share/
-    market-data/
+  market-data/
+    ashare/
       code_names.csv
       bars/
         <date>/
           daily.csv
           5min.csv
-    agents/
-      <agent_id>/
-        config.json
-        state.json
-  eodhd/
-    market-data/
+    eodhd/
       README.md
       <exchange>/
         code_names.csv
@@ -47,17 +42,24 @@ By default, startup creates:
           <date>.csv
         5min/
           <date>.csv
+  A-share/
+    agents/
+      <agent_id>/
+        config.json
+        state.json
+  eodhd/
     agents/
       <agent_id>/
         config.json
         state.json
 ```
 
-In production, each arena's `market_data_root` can be configured in
-`~/.quant-arena/config.json`. EODHD market data must not point at the A-share
-baostock directory; the server rejects identical or nested roots. For A-share
-details, read `quant_arena/resources/README-market-data.md`; for EODHD details,
-read `quant_arena/resources/README-eodhd-market-data.md`.
+The top-level `market_data_root` defaults to `~/.quant-arena/market-data`.
+Each persistent provider uses `<market_data_root>/<arena id>` unless its arena
+has a non-null `market_data_root` override. EODHD market data must not point at
+the A-share baostock directory; the server rejects identical or nested resolved
+roots. For A-share details, read `quant_arena/resources/README-market-data.md`;
+for EODHD details, read `quant_arena/resources/README-eodhd-market-data.md`.
 
 ## Running
 
@@ -117,6 +119,44 @@ pnpm dev
 ## Configuration
 
 See `~/.quant-arena/config.json`.
+
+All arenas share these lifecycle fields:
+
+- `enabled`: start the arena's data provider.
+- `data_provider_only`: when `true`, start provider persistence without loading
+  or registering agents. Agent HTTP routes and MCP are not mounted, and order
+  submission, matching, fills, portfolio updates, and corporate actions are not
+  run. Existing agent files are left untouched. The default is `false`.
+
+Persistent providers also share the global market-data path rule. For example:
+
+```json
+{
+  "market_data_root": "/market-data",
+  "ashare": {
+    "enabled": true,
+    "data_provider_only": false,
+    "market_data_root": null
+  },
+  "eodhd": {
+    "enabled": true,
+    "data_provider_only": true,
+    "market_data_root": null
+  }
+}
+```
+
+This resolves A-share persistence to `/market-data/ashare` and EODHD
+persistence to `/market-data/eodhd`. Set an arena's `market_data_root` to an
+alternate path to override only that arena. New configurations use `null` for
+both overrides. Existing configurations with explicit per-arena paths keep using
+those paths until the fields are removed or changed to `null`.
+
+Provider-only mode is useful for EODHD exchanges where historical persistence
+is available but live quotes are unsuitable for paper trading. A-share also
+supports the same mode. Futumoo inherits the lifecycle setting, but currently
+has no historical-data persistence task, so its provider-only mode has no
+scheduled work.
 
 ## MCP
 
@@ -226,21 +266,23 @@ all-in-one subscription and uses:
   with `type="splits"` / `type="dividends"` for corporate-action scans.
 - `get_intraday_historical_data(interval="5m")` for 5-minute UTC intraday rows.
 
-Market data is persisted under `config.eodhd.market_data_root`, never under the
-A-share baostock root. The EODHD root contains `README.md` plus one directory
-per exchange, for example `US/code_names.csv`, `US/daily/YYYY-MM-DD.csv`, and
-`US/5min/YYYY-MM-DD.csv`. Daily files are whole-exchange bulk snapshots for one
-date. Five-minute files are assembled by iterating symbols because EODHD
-intraday history is symbol/range based. The CSV columns remain EODHD-flavored;
-they are not baostock columns.
+Market data is persisted under EODHD's resolved market-data root: its override
+when configured, otherwise `<config.market_data_root>/eodhd`. It is never stored
+under the A-share baostock root. The EODHD root contains `README.md` plus one
+directory per exchange, for example `US/code_names.csv`,
+`US/daily/YYYY-MM-DD.csv`, and `US/5min/YYYY-MM-DD.csv`. Daily files are
+whole-exchange bulk snapshots for one date. Five-minute files are assembled by
+iterating symbols because EODHD intraday history is symbol/range based. The CSV
+columns remain EODHD-flavored; they are not baostock columns.
 
 The EODHD background task refreshes symbols once per UTC day and finalizes
 daily and 5-minute CSV files per configured exchange. No exchange is
 enabled by default. The generated config contains a disabled `US` exchange
 template. When EODHD starts without an enabled exchange, the server logs a
 configuration guide and does not start the exchange persistence task. The
-arena and MCP remain mounted, but no exchange accepts orders or live tracking
-until it is enabled. New EODHD agents use USD.
+agent runtime and MCP remain mounted only when `data_provider_only` is false,
+but no exchange accepts orders or live tracking until an exchange is enabled.
+New EODHD agents use USD.
 
 To enable the US exchange, set its `enabled` field in
 `~/.quant-arena/config.json` and restart the server:
@@ -318,10 +360,10 @@ merges them into per-exchange day files. The script uses `config.eodhd` by
 default and supports `--exchange` repeats plus `--market-data-dir` and
 `--api-token` overrides.
 
-The MCP endpoint is `/eodhd/mcp`, with the same agent-token authentication
-header/Bearer flow as the other arenas. It also exposes
-`arena://market-data-path` so an authenticated agent can discover the configured
-EODHD CSV root.
+When the agent runtime is enabled, the MCP endpoint is `/eodhd/mcp`, with the
+same agent-token authentication header/Bearer flow as the other arenas. It also
+exposes `arena://market-data-path` so an authenticated agent can discover the
+configured EODHD CSV root.
 EODHD agents can request live market data through MCP with `get_live_quotes` for
 websocket-supported suffixed symbols such as `AAPL.US`, `EURUSD.FOREX`, and
 `BTC-USD.CC`. Delayed REST quotes are not used for live matching. They can

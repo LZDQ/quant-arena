@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, ClassVar, Literal
 
 from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -23,6 +23,43 @@ class ServerSettings(BaseSettings):
     )
 
 
+class ArenaBaseConfig(BaseModel):
+    """Lifecycle settings shared by every arena."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Whether the arena's market-data provider is enabled. When false, its provider, agent runtime, routes, MCP mount, and background tasks are skipped.",
+    )
+    data_provider_only: bool = Field(
+        default=False,
+        description="Start only the market-data provider side of an enabled arena. Provider persistence continues, while the agent registry, agent APIs, MCP mount, order submission, and order matching are disabled.",
+    )
+
+    @property
+    def agent_runtime_enabled(self) -> bool:
+        """Whether agent registration and paper trading should be started."""
+
+        return self.enabled and not self.data_provider_only
+
+
+class PersistentMarketDataArenaConfig(ArenaBaseConfig):
+    """Shared market-data path configuration for persistent providers."""
+
+    arena_id: ClassVar[str]
+
+    market_data_root: str | None = Field(
+        default=None,
+        description="Optional arena-specific market-data directory. When unset, use <global market_data_root>/<arena id>.",
+    )
+
+    def resolve_market_data_root(self, global_market_data_root: str) -> Path:
+        """Resolve the override or the arena directory below the global root."""
+
+        if self.market_data_root is not None:
+            return Path(self.market_data_root).expanduser().resolve()
+        return (Path(global_market_data_root).expanduser() / self.arena_id).resolve()
+
+
 class AShareFeeConfig(BaseModel):
     """A-share trading fee configuration."""
 
@@ -40,17 +77,11 @@ class AShareFeeConfig(BaseModel):
     )
 
 
-class AShareConfig(BaseModel):
+class AShareConfig(PersistentMarketDataArenaConfig):
     """A-share simulator settings."""
 
-    enabled: bool = Field(
-        default=False,
-        description="Whether the A-share arena is enabled. When false, its routes, MCP mount, and background tasks are skipped.",
-    )
-    market_data_root: str = Field(
-        default=str(Path.home() / ".quant-arena" / "A-share" / "market-data"),
-        description="Public root directory for shared A-share market data files.",
-    )
+    arena_id: ClassVar[str] = "ashare"
+
     polling_interval_seconds: int = Field(
         default=150,
         description="Seconds between A-share market sync and order-matching cycles.",
@@ -188,7 +219,7 @@ class FutumooCNFeeConfig(BaseModel):
     )
 
 
-class FutumooConfig(BaseModel):
+class FutumooConfig(ArenaBaseConfig):
     """Futumoo HK/US/CN paper-trading arena settings.
 
     Orders are matched against `last_price` snapshots polled from Futu OpenD,
@@ -197,10 +228,6 @@ class FutumooConfig(BaseModel):
     carry the region prefix `HK.`, `US.`, `SH.`, or `SZ.`.
     """
 
-    enabled: bool = Field(
-        default=False,
-        description="Whether the Futumoo arena is enabled. When false, its routes, MCP mount, and background tasks are skipped.",
-    )
     host: str = Field(
         default="127.0.0.1",
         description="Hostname or IP of the Futu OpenD gateway.",
@@ -302,13 +329,11 @@ class EODHDExchangeConfig(BaseModel):
         return payload
 
 
-class EODHDConfig(BaseModel):
+class EODHDConfig(PersistentMarketDataArenaConfig):
     """EODHD all-in-one market-data and paper-trading arena settings."""
 
-    enabled: bool = Field(
-        default=False,
-        description="Whether the EODHD arena is enabled. When false, its routes, MCP mount, and background tasks are skipped.",
-    )
+    arena_id: ClassVar[str] = "eodhd"
+
     api_token: str = Field(
         default="demo",
         description="EODHD API token. The demo token is useful only for smoke checks.",
@@ -317,10 +342,6 @@ class EODHDConfig(BaseModel):
         default=50,
         gt=0,
         description="Maximum concurrent symbols subscribed on each EODHD websocket endpoint. Least-recently-used symbols are unsubscribed when the limit is reached.",
-    )
-    market_data_root: str = Field(
-        default=str(Path.home() / ".quant-arena" / "eodhd" / "market-data"),
-        description="Public root directory for EODHD market data files. Must not be the A-share baostock directory.",
     )
     exchanges: dict[str, EODHDExchangeConfig] = Field(
         default_factory=lambda: {
@@ -389,6 +410,10 @@ class EODHDConfig(BaseModel):
 class AppConfig(BaseModel):
     """Top-level server configuration. Host/port are uvicorn CLI flags, not config."""
 
+    market_data_root: str = Field(
+        default=str(Path.home() / ".quant-arena" / "market-data"),
+        description="Global market-data directory. Arenas without an override persist under <market_data_root>/<arena id>.",
+    )
     ashare: AShareConfig = Field(
         default_factory=AShareConfig,
         description="A-share simulator settings.",

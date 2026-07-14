@@ -154,7 +154,12 @@ export type AgentNotificationTargets = {
   daily_report: string[];
 };
 
-export type ArenaStatus = { slug: string; label: string; enabled: boolean };
+export type ArenaStatus = {
+  slug: string;
+  label: string;
+  enabled: boolean;
+  data_provider_only: boolean;
+};
 
 export type FutumooUserInfo = {
   nick_name: string | null;

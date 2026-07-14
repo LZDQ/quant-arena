@@ -38,7 +38,14 @@ from quant_arena.ashare import (
     create_ashare_mcp_server,
     wrap_mcp_with_agent_auth,
 )
-from quant_arena.config import AgentConfig, AppConfig, ServerSettings, load_app_config, save_app_config
+from quant_arena.config import (
+    AgentConfig,
+    AppConfig,
+    ArenaBaseConfig,
+    ServerSettings,
+    load_app_config,
+    save_app_config,
+)
 from quant_arena.errors import BadRequestError, ServiceError
 from quant_arena.futumoo import (
     FutumooArenaService,
@@ -68,6 +75,7 @@ class AppState:
         self,
         config_path: Path,
         config: AppConfig,
+        global_market_data_root: Path,
         ashare_agents_root: Path,
         ashare_market_data_root: Path,
         market: AShareService | None,
@@ -83,6 +91,7 @@ class AppState:
     ):
         self.config_path = config_path
         self.config = config
+        self.global_market_data_root = global_market_data_root
         self.ashare_agents_root = ashare_agents_root
         self.ashare_market_data_root = ashare_market_data_root
         self.market = market
@@ -120,9 +129,10 @@ def _ensure_separate_market_data_roots(ashare_root: Path, eodhd_root: Path) -> N
 
 def _load_app_state(config_path: Path) -> AppState:
     config = load_app_config(config_path)
+    global_market_data_root = Path(config.market_data_root).expanduser().resolve()
     ashare_root = (config_path.parent / "A-share").resolve()
     agents_root = ashare_root / "agents"
-    market_data_root = Path(config.ashare.market_data_root).resolve()
+    market_data_root = config.ashare.resolve_market_data_root(config.market_data_root)
     notifier = NotifierService(
         napcat=NapCatNotifier(config.napcat, agents_root),
     )
@@ -130,28 +140,30 @@ def _load_app_state(config_path: Path) -> AppState:
     arena: ArenaService | None = None
     if config.ashare.enabled:
         market = AShareService(market_data_root)
-        arena = ArenaService(
-            agents_root=agents_root,
-            market=market,
-            fees=config.ashare.fees,
-            notifier=notifier,
-            intraday_fetch_workers=config.ashare.intraday_fetch_workers,
-        )
+        if config.ashare.agent_runtime_enabled:
+            arena = ArenaService(
+                agents_root=agents_root,
+                market=market,
+                fees=config.ashare.fees,
+                notifier=notifier,
+                intraday_fetch_workers=config.ashare.intraday_fetch_workers,
+            )
     futumoo_root = (config_path.parent / "futumoo").resolve()
     futumoo_agents_root = futumoo_root / "agents"
     futumoo_market: FutumooService | None = None
     futumoo_arena: FutumooArenaService | None = None
     if config.futumoo.enabled:
         futumoo_market = FutumooService(host=config.futumoo.host, port=config.futumoo.port)
-        futumoo_arena = FutumooArenaService(
-            agents_root=futumoo_agents_root,
-            market=futumoo_market,
-            config=config.futumoo,
-            notifier=notifier,
-        )
+        if config.futumoo.agent_runtime_enabled:
+            futumoo_arena = FutumooArenaService(
+                agents_root=futumoo_agents_root,
+                market=futumoo_market,
+                config=config.futumoo,
+                notifier=notifier,
+            )
     eodhd_root = (config_path.parent / "eodhd").resolve()
     eodhd_agents_root = eodhd_root / "agents"
-    eodhd_market_data_root = Path(config.eodhd.market_data_root).resolve()
+    eodhd_market_data_root = config.eodhd.resolve_market_data_root(config.market_data_root)
     eodhd_market: EODHDService | None = None
     eodhd_arena: EODHDArenaService | None = None
     if config.eodhd.enabled:
@@ -162,12 +174,13 @@ def _load_app_state(config_path: Path) -> AppState:
             exchanges=config.eodhd.exchanges,
             websocket_subscribe_limit=config.eodhd.websocket_subscribe_limit,
         )
-        eodhd_arena = EODHDArenaService(
-            agents_root=eodhd_agents_root,
-            market=eodhd_market,
-            config=config.eodhd,
-            notifier=notifier,
-        )
+        if config.eodhd.agent_runtime_enabled:
+            eodhd_arena = EODHDArenaService(
+                agents_root=eodhd_agents_root,
+                market=eodhd_market,
+                config=config.eodhd,
+                notifier=notifier,
+            )
         if not eodhd_market.exchanges:
             logger.warning(
                 "EODHD is enabled, but no exchanges are enabled.\n"
@@ -184,6 +197,7 @@ def _load_app_state(config_path: Path) -> AppState:
     return AppState(
         config_path=config_path,
         config=config,
+        global_market_data_root=global_market_data_root,
         ashare_agents_root=agents_root,
         ashare_market_data_root=market_data_root,
         market=market,
@@ -210,9 +224,9 @@ def create_app() -> FastAPI:
     settings = ServerSettings()
     resolved_config = DEFAULT_CONFIG_PATH.resolve()
     bootstrap_config = load_app_config(resolved_config)
-    ashare_enabled = bootstrap_config.ashare.enabled
-    futumoo_enabled = bootstrap_config.futumoo.enabled
-    eodhd_enabled = bootstrap_config.eodhd.enabled
+    ashare_enabled = bootstrap_config.ashare.agent_runtime_enabled
+    futumoo_enabled = bootstrap_config.futumoo.agent_runtime_enabled
+    eodhd_enabled = bootstrap_config.eodhd.agent_runtime_enabled
     mcp_server = create_ashare_mcp_server(lambda: app.state.app_state.arena) if ashare_enabled else None
     futumoo_mcp_server = create_futumoo_mcp_server(lambda: app.state.app_state.futumoo_arena) if futumoo_enabled else None
     eodhd_mcp_server = create_eodhd_mcp_server(lambda: app.state.app_state.eodhd_arena) if eodhd_enabled else None
@@ -230,8 +244,7 @@ def create_app() -> FastAPI:
                 await stack.enter_async_context(eodhd_mcp_server.session_manager.run())
             await state.notifier.start()
             if (
-                state.arena is not None
-                and state.market is not None
+                state.market is not None
                 and state.config.ashare.polling_interval_seconds > 0
             ):
                 state.background_tasks.append(
@@ -239,6 +252,10 @@ def create_app() -> FastAPI:
                         state.market.run(state.config.ashare.polling_interval_seconds)
                     )
                 )
+            if (
+                state.arena is not None
+                and state.config.ashare.polling_interval_seconds > 0
+            ):
                 state.background_tasks.append(
                     asyncio.create_task(
                         state.arena.run(state.config.ashare.polling_interval_seconds)
@@ -255,11 +272,12 @@ def create_app() -> FastAPI:
                         )
                     )
                 )
-            if state.eodhd_market is not None and state.eodhd_arena is not None:
+            if state.eodhd_market is not None:
                 if state.eodhd_market.exchanges:
                     state.background_tasks.append(
                         asyncio.create_task(state.eodhd_market.run())
                     )
+            if state.eodhd_arena is not None:
                 state.background_tasks.append(
                     asyncio.create_task(state.eodhd_arena.run())
                 )
@@ -361,6 +379,7 @@ def create_app() -> FastAPI:
         state = get_state()
         return PathsResponse(
             config_path=str(state.config_path),
+            global_market_data_root=str(state.global_market_data_root),
             agents_root=str(state.ashare_agents_root),
             market_data_root=str(state.ashare_market_data_root),
             eodhd_agents_root=str(state.eodhd_agents_root),
@@ -373,11 +392,19 @@ def create_app() -> FastAPI:
         "eodhd": "EODHD",
     }
 
+    def _arena_status(slug: str, arena_config: ArenaBaseConfig) -> ArenaStatus:
+        return ArenaStatus(
+            slug=slug,
+            label=_ARENA_LABELS[slug],
+            enabled=arena_config.enabled,
+            data_provider_only=arena_config.data_provider_only,
+        )
+
     def _arena_statuses(config: AppConfig) -> list[ArenaStatus]:
         return [
-            ArenaStatus(slug="ashare", label=_ARENA_LABELS["ashare"], enabled=config.ashare.enabled),
-            ArenaStatus(slug="futumoo", label=_ARENA_LABELS["futumoo"], enabled=config.futumoo.enabled),
-            ArenaStatus(slug="eodhd", label=_ARENA_LABELS["eodhd"], enabled=config.eodhd.enabled),
+            _arena_status("ashare", config.ashare),
+            _arena_status("futumoo", config.futumoo),
+            _arena_status("eodhd", config.eodhd),
         ]
 
     @api.get("/api/arenas", response_model=list[ArenaStatus])
@@ -391,13 +418,14 @@ def create_app() -> FastAPI:
         state = get_state()
         config = state.config
         if slug == "ashare":
-            config.ashare.enabled = request.enabled
+            arena_config = config.ashare
         elif slug == "futumoo":
-            config.futumoo.enabled = request.enabled
+            arena_config = config.futumoo
         else:
-            config.eodhd.enabled = request.enabled
+            arena_config = config.eodhd
+        arena_config.enabled = request.enabled
         save_app_config(state.config_path, config)
-        status = ArenaStatus(slug=slug, label=_ARENA_LABELS[slug], enabled=request.enabled)
+        status = _arena_status(slug, arena_config)
         return ToggleArenaResponse(status=status, restart_required=True)
 
     @api.get("/api/notifications/destinations", response_model=NotificationDestinationsResponse)
