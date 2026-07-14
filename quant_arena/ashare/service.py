@@ -16,11 +16,15 @@ Final choices:
 import asyncio
 import math
 import shutil
+from _thread import LockType
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from importlib import resources
 from logging import getLogger
 from pathlib import Path
+from threading import Lock
+from time import monotonic
 
 import akshare as ak
 import baostock as bs
@@ -34,6 +38,14 @@ from quant_arena.ashare.models import CorporateAction
 logger = getLogger(__name__)
 
 
+@dataclass(slots=True)
+class _IntradayCacheEntry:
+    trade_date: date
+    frame: pd.DataFrame
+    latest_count: int
+    refreshed_at: float
+
+
 class AShareService:
     """
     Mixed baostock + AKShare-sina A-share market data service.
@@ -43,14 +55,18 @@ class AShareService:
     backfilling/repairing bar files with skip-on-exists continuation built in.
     """
 
-    def __init__(self, market_data_root: Path):
+    def __init__(self, market_data_root: Path, intraday_quote_cache_seconds: int = 60):
         self.market_data_root = market_data_root
         self.market_bars_dir = market_data_root / "bars"
+        self.intraday_quote_cache_seconds = intraday_quote_cache_seconds
         self._code_names_path = market_data_root / "code_names.csv"
         self._code_names: pd.DataFrame | None = None
         self._code_name_index: dict[str, str] | None = None
         self._latest_daily_frame: pd.DataFrame | None = None
         self._today_is_trading_day: tuple[date, bool] | None = None
+        self._intraday_cache_guard = Lock()
+        self._intraday_code_locks: dict[str, LockType] = {}
+        self._intraday_cache: dict[str, _IntradayCacheEntry] = {}
         self.market_bars_dir.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(
             resources.files("quant_arena.resources").joinpath("README-market-data.md"),
@@ -143,6 +159,87 @@ class AShareService:
             copied["code"] = code
         return copied
 
+    def get_cached_intraday(
+        self,
+        code: str,
+        today: date | None = None,
+    ) -> pd.DataFrame:
+        """Return today's shared Sina tick frame, refreshing it incrementally.
+
+        The full current-day frame is retained per symbol so callers asking for
+        different time windows or bar intervals reuse the same source data. A
+        cache entry older than ``intraday_quote_cache_seconds`` is refreshed
+        from the Sina page containing the first row after ``latest_count``.
+        """
+        trade_date = today or now_shanghai().date()
+        code_lock = self._intraday_code_lock(code)
+        with code_lock:
+            checked_at = monotonic()
+            with self._intraday_cache_guard:
+                entry = self._intraday_cache.get(code)
+            if entry is not None and entry.trade_date != trade_date:
+                entry = None
+            if (
+                entry is not None
+                and self.intraday_quote_cache_seconds > 0
+                and checked_at - entry.refreshed_at < self.intraday_quote_cache_seconds
+            ):
+                return self._copy_intraday_frame(entry.frame, entry.latest_count)
+
+            fresh = self.fetch_intraday(
+                code,
+                today=trade_date,
+                start_count=entry.latest_count if entry is not None else None,
+            )
+            latest_count = self._intraday_attr_int(fresh, "latest_count")
+            start_offset = self._intraday_attr_int(fresh, "start_offset")
+            if entry is None or start_offset <= 0:
+                combined = fresh.copy()
+            else:
+                cached_prefix = entry.frame.iloc[:start_offset]
+                combined = pd.concat(
+                    [cached_prefix, fresh],
+                    ignore_index=True,
+                    copy=False,
+                )
+            if not combined.empty and "ticktime" in combined.columns:
+                combined.sort_values(by=["ticktime"], inplace=True, ignore_index=True)
+            combined.attrs["latest_count"] = latest_count
+            combined.attrs["start_offset"] = 0
+            refreshed = _IntradayCacheEntry(
+                trade_date=trade_date,
+                frame=combined,
+                latest_count=latest_count,
+                refreshed_at=monotonic(),
+            )
+            with self._intraday_cache_guard:
+                self._intraday_cache[code] = refreshed
+            return self._copy_intraday_frame(combined, latest_count)
+
+    def _intraday_code_lock(self, code: str) -> LockType:
+        with self._intraday_cache_guard:
+            code_lock = self._intraday_code_locks.get(code)
+            if code_lock is None:
+                code_lock = Lock()
+                self._intraday_code_locks[code] = code_lock
+            return code_lock
+
+    @staticmethod
+    def _intraday_attr_int(frame: pd.DataFrame, name: str) -> int:
+        raw_value = frame.attrs.get(name)
+        try:
+            value = int(raw_value) if raw_value is not None else 0
+        except (TypeError, ValueError):
+            return 0
+        return max(value, 0)
+
+    @staticmethod
+    def _copy_intraday_frame(frame: pd.DataFrame, latest_count: int) -> pd.DataFrame:
+        copied = frame.copy()
+        copied.attrs["latest_count"] = latest_count
+        copied.attrs["start_offset"] = 0
+        return copied
+
     def _akshare_stock_intraday_sina(
         self, symbol: str, day: str, start_count: int | None = None
     ) -> pd.DataFrame:
@@ -186,6 +283,7 @@ class AShareService:
         if total_count <= 0:
             empty = pd.DataFrame()
             empty.attrs["latest_count"] = 0
+            empty.attrs["start_offset"] = 0
             return empty
 
         list_url = (
@@ -193,6 +291,7 @@ class AShareService:
             "CN_Bill.GetBillList"
         )
         if start_count is None:
+            start_offset = 0
             params["num"] = str(total_count)
             params["page"] = "1"
             frame = pd.DataFrame(
@@ -201,6 +300,7 @@ class AShareService:
         else:
             normalized_start_count = max(0, int(start_count))
             start_page = max(1, min((normalized_start_count // 60) + 1, total_page))
+            start_offset = (start_page - 1) * 60
             frames: list[pd.DataFrame] = []
             params["num"] = "60"
             for current_page in range(start_page, total_page + 1):
@@ -211,6 +311,7 @@ class AShareService:
                     frames.append(page_frame)
             frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
         frame.attrs["latest_count"] = total_count
+        frame.attrs["start_offset"] = start_offset
         if frame.empty:
             return frame
         frame.sort_values(by=["ticktime"], inplace=True, ignore_index=True)

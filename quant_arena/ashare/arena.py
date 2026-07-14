@@ -46,7 +46,6 @@ class IntradayCodeState:
     intraday_as_of: datetime | None = None
     latest_price: float | None = None
     latest_close_index: float | None = None
-    latest_count: int | None = None
 
 
 class ArenaService(ArenaBase[AShareAgentState]):
@@ -675,26 +674,22 @@ class ArenaService(ArenaBase[AShareAgentState]):
         """
         Refresh per-code intraday frames in parallel and update per-code state.
 
-        Each code resumes from its last successful Sina row-count on the
-        current trade date, so the matcher usually re-reads only the tail of
-        the day instead of replaying every row on every cycle.
+        The market service owns the shared per-code cache. MCP quote requests
+        and matching cycles therefore reuse the same current-day tick stream,
+        and expired entries are refreshed incrementally from Sina.
         """
         if not codes:
             return {}
 
         today = self._now().date()
         date_prefix = today.strftime("%Y-%m-%d") + " "
-        start_count_by_code: dict[str, int | None] = {}
         for code in codes:
             code_state = self._code_state(code)
             self._reset_intraday_state_for_code(code_state, today)
-            start_count_by_code[code] = code_state.latest_count
 
         def _fetch_one(code: str) -> tuple[str, pd.DataFrame | None]:
             try:
-                frame = self.market.fetch_intraday(
-                    code, today=today, start_count=start_count_by_code[code]
-                )
+                frame = self.market.get_cached_intraday(code, today=today)
             except Exception:
                 logger.exception("Intraday fetch failed for %s", code)
                 return code, None
@@ -705,13 +700,6 @@ class ArenaService(ArenaBase[AShareAgentState]):
             if frame is None:
                 continue
             code_state = self._code_state(code)
-            raw_latest_count = frame.attrs.get("latest_count")
-            if raw_latest_count is not None:
-                try:
-                    latest_count = int(raw_latest_count)
-                except (TypeError, ValueError):
-                    latest_count = 0
-                code_state.latest_count = latest_count if latest_count >= 0 else None
             if frame.empty:
                 continue
             prices = pd.to_numeric(frame["price"], errors="coerce").to_numpy(dtype=np.float64)
@@ -751,7 +739,6 @@ class ArenaService(ArenaBase[AShareAgentState]):
             return
         code_state.intraday_as_of = None
         code_state.latest_price = None
-        code_state.latest_count = None
 
     @staticmethod
     def _prune_position(state: AShareAgentState, code: str) -> None:

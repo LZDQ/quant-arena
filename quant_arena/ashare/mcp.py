@@ -1,11 +1,15 @@
 """A-share MCP server integration for quant-arena."""
 
+import asyncio
+import re
 from contextvars import ContextVar
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from typing import Callable
 
+import pandas as pd
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -28,6 +32,38 @@ _CURRENT_AGENT_ID: ContextVar[str | None] = ContextVar(
     "quant_arena_current_agent_id", default=None
 )
 _AGENT_TOKEN_HEADER = "quant-arena-token"
+_INTRADAY_INTERVAL_PATTERN = re.compile(r"^([1-9][0-9]*)(m|h)$")
+
+
+class AShareIntradayBar(BaseModel):
+    """One Shanghai-local OHLCV bar aggregated from Sina trades."""
+
+    code: str
+    start_at: datetime
+    end_at: datetime
+    local_time: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float = Field(ge=0)
+    trade_count: int = Field(gt=0)
+
+
+class AShareIntradayQuotes(BaseModel):
+    """Current-day intraday bars for one A-share symbol."""
+
+    code: str
+    name: str | None = None
+    timezone: str = "Asia/Shanghai"
+    trade_date: date
+    start_time: str
+    interval: str
+    interval_minutes: int = Field(gt=0)
+    cache_timeout_seconds: int = Field(ge=0)
+    latest_price: float | None = None
+    as_of: datetime | None = None
+    bars: list[AShareIntradayBar]
 
 
 def _request_headers(scope: Scope) -> dict[str, str]:
@@ -66,6 +102,120 @@ def _current_agent_id() -> str:
     if not agent_id:
         raise RuntimeError("No authenticated agent in MCP request context")
     return agent_id
+
+
+def _normalize_ashare_code(code: str) -> str:
+    normalized = code.strip()
+    if len(normalized) != 6 or not normalized.isdigit():
+        raise BadRequestError(
+            f"Expected one six-digit A-share code such as 600519; got {code!r}."
+        )
+    return normalized
+
+
+def _parse_start_time(value: str) -> time:
+    normalized = value.strip()
+    for pattern in ("%H:%M", "%H:%M:%S"):
+        try:
+            return datetime.strptime(normalized, pattern).time()
+        except ValueError:
+            continue
+    raise BadRequestError(
+        f"Expected start_time in HH:MM or HH:MM:SS format; got {value!r}."
+    )
+
+
+def _parse_intraday_interval(value: str) -> tuple[str, int]:
+    normalized = value.strip().lower()
+    matched = _INTRADAY_INTERVAL_PATTERN.fullmatch(normalized)
+    if matched is None:
+        raise BadRequestError(
+            f"Expected interval such as 5m, 15m, or 1h; got {value!r}."
+        )
+    amount = int(matched.group(1))
+    interval_minutes = amount if matched.group(2) == "m" else amount * 60
+    if interval_minutes > 1440:
+        raise BadRequestError("interval must be no more than 24 hours.")
+    return normalized, interval_minutes
+
+
+def _aggregate_intraday_bars(
+    frame: pd.DataFrame,
+    code: str,
+    trade_date: date,
+    start: time,
+    interval_minutes: int,
+) -> tuple[list[AShareIntradayBar], float | None, datetime | None]:
+    if frame.empty or "ticktime" not in frame.columns or "price" not in frame.columns:
+        return [], None, None
+
+    date_prefix = trade_date.strftime("%Y-%m-%d") + " "
+    trade_times = pd.to_datetime(
+        date_prefix + frame["ticktime"].astype(str),
+        errors="coerce",
+    )
+    prices = pd.to_numeric(frame["price"], errors="coerce")
+    if "volume" in frame.columns:
+        volumes = pd.to_numeric(frame["volume"], errors="coerce").fillna(0.0)
+    else:
+        volumes = pd.Series(0.0, index=frame.index)
+    valid = trade_times.notna() & prices.notna() & (volumes >= 0.0)
+    if not valid.any():
+        return [], None, None
+
+    normalized = pd.DataFrame(
+        {
+            "trade_time": trade_times[valid],
+            "price": prices[valid],
+            "volume": volumes[valid],
+        }
+    ).sort_values(by=["trade_time"], kind="stable", ignore_index=True)
+    latest_time = pd.Timestamp(normalized.iloc[-1]["trade_time"])
+    latest_price = float(normalized.iloc[-1]["price"])
+    as_of = latest_time.to_pydatetime().replace(tzinfo=SHANGHAI_TZ)
+
+    start_at = datetime.combine(trade_date, start)
+    window = normalized.loc[normalized["trade_time"] >= start_at].copy()
+    if window.empty:
+        return [], latest_price, as_of
+    interval_seconds = interval_minutes * 60
+    bucket_indexes = (
+        (window["trade_time"] - start_at).dt.total_seconds() // interval_seconds
+    ).astype("int64")
+    window["bar_start"] = pd.Timestamp(start_at) + pd.to_timedelta(
+        bucket_indexes * interval_minutes,
+        unit="m",
+    )
+    aggregated = window.groupby("bar_start", sort=True, as_index=False).agg(
+        open=("price", "first"),
+        high=("price", "max"),
+        low=("price", "min"),
+        close=("price", "last"),
+        volume=("volume", "sum"),
+        trade_count=("price", "size"),
+    )
+
+    bars: list[AShareIntradayBar] = []
+    duration = timedelta(minutes=interval_minutes)
+    for _, row in aggregated.iterrows():
+        bar_start = pd.Timestamp(row["bar_start"]).to_pydatetime().replace(
+            tzinfo=SHANGHAI_TZ
+        )
+        bars.append(
+            AShareIntradayBar(
+                code=code,
+                start_at=bar_start,
+                end_at=bar_start + duration,
+                local_time=bar_start.strftime("%H:%M:%S"),
+                open=float(row["open"]),
+                high=float(row["high"]),
+                low=float(row["low"]),
+                close=float(row["close"]),
+                volume=float(row["volume"]),
+                trade_count=int(row["trade_count"]),
+            )
+        )
+    return bars, latest_price, as_of
 
 
 def create_ashare_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
@@ -159,6 +309,51 @@ def create_ashare_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
             display_name=agent.display_name,
             role=agent.role,
             currency=None,
+        )
+
+    @mcp.tool(
+        description=(
+            "Get current-day Sina intraday OHLCV bars for one six-digit A-share "
+            "code. `start_time` is Shanghai-local HH:MM or HH:MM:SS. `interval` "
+            "accepts minute or hour durations such as `5m`, `15m`, or `1h`. "
+            "All agents and the order matcher share the same server-side raw-tick "
+            "cache; after its configured timeout, Sina is refreshed incrementally."
+        )
+    )
+    async def get_intraday_quotes(
+        code: str,
+        start_time: str,
+        interval: str = "5m",
+    ) -> AShareIntradayQuotes:
+        _current_agent_id()
+        normalized_code = _normalize_ashare_code(code)
+        parsed_start = _parse_start_time(start_time)
+        normalized_interval, interval_minutes = _parse_intraday_interval(interval)
+        trade_date = datetime.now(SHANGHAI_TZ).date()
+        arena = get_arena()
+        frame = await asyncio.to_thread(
+            arena.market.get_cached_intraday,
+            normalized_code,
+            trade_date,
+        )
+        bars, latest_price, as_of = _aggregate_intraday_bars(
+            frame,
+            normalized_code,
+            trade_date,
+            parsed_start,
+            interval_minutes,
+        )
+        return AShareIntradayQuotes(
+            code=normalized_code,
+            name=arena.market.get_code_name(normalized_code),
+            trade_date=trade_date,
+            start_time=parsed_start.isoformat(),
+            interval=normalized_interval,
+            interval_minutes=interval_minutes,
+            cache_timeout_seconds=arena.market.intraday_quote_cache_seconds,
+            latest_price=latest_price,
+            as_of=as_of,
+            bars=bars,
         )
 
     @mcp.tool(

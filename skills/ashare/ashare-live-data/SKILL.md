@@ -1,6 +1,6 @@
 ---
 name: ashare-live-data
-description: 使用 python 获取 A股实时数据
+description: 通过 quant-arena MCP 获取 A股实时数据
 ---
 
 # A股实时数据获取
@@ -9,9 +9,11 @@ description: 使用 python 获取 A股实时数据
 
 用于盯盘获取实时数据。
 
-## 依赖
+## 数据入口
 
-需要安装 `akshare` 和 `baostock`。
+实时行情统一通过 quant-arena MCP 的 `get_intraday_quotes` 工具获取。服务端会在所有
+agent 和撮合程序之间共享缓存，并在缓存过期后增量请求新浪。不要直接请求新浪，也不要
+调用 `ak.stock_intraday_sina`，否则会绕过共享缓存并增加新浪限流风险。
 
 ## 代码片段
 
@@ -31,61 +33,13 @@ bs.logout()
 
 ### 获取单支股票实时数据
 
-不要直接使用 `ak.stock_intraday_sina`，因为它会调用多次新浪后端 API 造成访问受限。
+每次调用只传一支六位股票代码：
 
-使用以下修改后的代码片段：
+- `code`: 例如 `600726` 或 `000001`。
+- `start_time`: 上海时间，格式为 `HH:MM` 或 `HH:MM:SS`。
+- `interval`: K 线周期，例如 `1m`、`5m`、`15m`、`30m` 或 `1h`。
 
-```py
-from datetime import date
-
-import akshare as ak
-import pandas as pd
-import requests
-
-
-def stock_intraday_sina_custom(code: str) -> pd.DataFrame:
-    symbol = ak.stock_a_code_to_symbol(code)
-    count_url = (
-        "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-        "CN_Bill.GetBillListCount"
-    )
-    params = {
-        "symbol": symbol,
-        "page": "1",
-        "sort": "ticktime",
-        "asc": "1",
-        "day": date.today().isoformat(),
-    }
-    headers = {
-        "Referer": (
-            "https://vip.stock.finance.sina.com.cn/quotes_service/view/"
-            f"cn_bill.php?symbol={symbol}"
-        ),
-        "user-agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36"
-        ),
-    }
-    total_count = int(requests.get(count_url, params=params, headers=headers).json())
-    assert total_count > 0
-
-    list_url = (
-        "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-        "CN_Bill.GetBillList"
-    )
-    params["num"] = str(total_count)
-    frame = pd.DataFrame(
-        requests.get(list_url, params=params, headers=headers).json()
-    )
-    assert not frame.empty
-    frame.sort_values(by=["ticktime"], inplace=True, ignore_index=True)
-    frame["price"] = pd.to_numeric(frame["price"], errors="coerce")
-    frame["volume"] = pd.to_numeric(frame["volume"], errors="coerce")
-    frame["prev_price"] = pd.to_numeric(frame["prev_price"], errors="coerce")
-    frame["code"] = code
-    return frame
-
-
-frame = stock_intraday_sina_custom("600726")
-print(frame.tail())
-```
+例如，调用 `get_intraday_quotes(code="600726", start_time="09:30", interval="5m")`。
+返回结果中的 `latest_price` 是最新成交价，`bars` 包含 OHLCV、成交笔数以及每根 K 线
+的上海本地起止时间，`as_of` 表示当前缓存里最新一笔新浪成交的时间。不同周期会复用
+相同的服务端原始成交缓存。

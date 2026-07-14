@@ -7,6 +7,7 @@ Standalone stock trading simulation and monitoring service. It is designed to ru
 - FastAPI + uvicorn backend with `/api/*` routes.
 - Same-port web UI served by the Python app.
 - MCP endpoint implemented with the official Python MCP SDK.
+- Shared cached A-share intraday quotes through MCP.
 - Filesystem-only persistence.
 - Background market sync:
   - `codes.csv` tracking
@@ -187,6 +188,38 @@ curl http://127.0.0.1:18792/A-share/mcp \
     }
   }'
 ```
+
+### A-share intraday quotes
+
+Authenticated A-share agents can call
+`get_intraday_quotes(code, start_time, interval="5m")` for one six-digit symbol
+at a time. `start_time` is Shanghai-local `HH:MM` or `HH:MM:SS`, and `interval`
+accepts minute or hour durations such as `1m`, `5m`, `15m`, `30m`, or `1h`, up
+to 24 hours. The response contains the latest price, Shanghai-local OHLCV bars,
+trade counts, the latest source-trade timestamp, and the configured cache
+timeout. Bar boundaries are anchored at `start_time`, and the current incomplete
+bar is included.
+
+The raw current-day Sina tick cache is process-wide and shared by every A-share
+agent and the pending-order matcher. Different start times and bar intervals
+reuse the same per-symbol entry. Entries are reused for 60 seconds by default;
+after that, the server fetches only the Sina tail beginning with the page that
+contains the first row after the cached row count and merges it into the cached
+day.
+
+Configure the timeout in `~/.quant-arena/config.json` and restart the server:
+
+```json
+{
+  "ashare": {
+    "intraday_quote_cache_seconds": 60
+  }
+}
+```
+
+Set `intraday_quote_cache_seconds` to `0` to perform an incremental refresh on
+every matching cycle or MCP request while still retaining the current-day rows
+needed for incremental Sina paging.
 
 ## Napcat
 

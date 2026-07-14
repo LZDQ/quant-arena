@@ -140,7 +140,10 @@ def _load_app_state(config_path: Path) -> AppState:
     market: AShareService | None = None
     arena: ArenaService | None = None
     if config.ashare.enabled:
-        market = AShareService(market_data_root)
+        market = AShareService(
+            market_data_root,
+            intraday_quote_cache_seconds=config.ashare.intraday_quote_cache_seconds,
+        )
         if config.ashare.agent_runtime_enabled:
             arena = ArenaService(
                 agents_root=agents_root,

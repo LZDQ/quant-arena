@@ -91,6 +91,15 @@ class AShareConfig(PersistentMarketDataArenaConfig):
         gt=0,
         description="Thread-pool size used for parallel per-code intraday fetches.",
     )
+    intraday_quote_cache_seconds: int = Field(
+        default=60,
+        ge=0,
+        description=(
+            "Seconds to reuse the shared current-day Sina tick cache used by "
+            "A-share order matching and MCP intraday quote queries. Set to 0 "
+            "to refresh incrementally on every request."
+        ),
+    )
     fees: AShareFeeConfig = Field(
         default_factory=AShareFeeConfig,
         description="Trading fee settings used by the A-share simulator.",
