@@ -24,6 +24,37 @@ from quant_arena.errors import ServiceError
 logger = getLogger(__name__)
 
 
+_INTRADAY_COLUMNS = [
+    "date",
+    "datetime_utc",
+    "timestamp",
+    "gmtoffset",
+    "symbol",
+    "code",
+    "exchange",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+]
+
+_INTRADAY_DTYPES = {
+    "date": "string",
+    "datetime_utc": "string",
+    "timestamp": "int64",
+    "gmtoffset": "Int64",
+    "symbol": "string",
+    "code": "string",
+    "exchange": "string",
+    "open": "float64",
+    "high": "float64",
+    "low": "float64",
+    "close": "float64",
+    "volume": "Int64",
+}
+
+
 def _text_or_none(value: object) -> str | None:
     if value is None:
         return None
@@ -1277,23 +1308,7 @@ class EODHDService:
             normalized = self._normalize_intraday_row(row, symbol, code, exchange)
             if normalized is not None:
                 rows.append(normalized)
-        return pd.DataFrame(
-            rows,
-            columns=[
-                "date",
-                "datetime_utc",
-                "timestamp",
-                "gmtoffset",
-                "symbol",
-                "code",
-                "exchange",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-            ],
-        )
+        return self._intraday_frame(rows)
 
     def fetch_intraday_window(
         self, symbol: str, start_dt_utc: datetime, end_dt_utc: datetime
@@ -1320,23 +1335,7 @@ class EODHDService:
             normalized = self._normalize_intraday_row(row, symbol, code, exchange)
             if normalized is not None:
                 rows.append(normalized)
-        frame = pd.DataFrame(
-            rows,
-            columns=[
-                "date",
-                "datetime_utc",
-                "timestamp",
-                "gmtoffset",
-                "symbol",
-                "code",
-                "exchange",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-            ],
-        )
+        frame = self._intraday_frame(rows)
         if frame.empty:
             return frame
         start_ts = int(start_dt_utc.timestamp())
@@ -1346,6 +1345,11 @@ class EODHDService:
             & (frame["timestamp"].astype(int) < end_ts)
         ]
         return filtered.sort_values("timestamp").reset_index(drop=True)
+
+    @staticmethod
+    def _intraday_frame(rows: list[dict[str, object]]) -> pd.DataFrame:
+        frame = pd.DataFrame(rows, columns=_INTRADAY_COLUMNS)
+        return frame.astype(_INTRADAY_DTYPES)
 
     def _normalize_intraday_row(
         self, row: dict[str, object], symbol: str, code: str, exchange: str
