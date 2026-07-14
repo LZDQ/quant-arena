@@ -358,6 +358,31 @@ a {
   color: var(--ink);
   font-size: 14px;
 }
+.futumoo-subscription-actions {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.futumoo-subscription-refresh {
+  padding: 0 0 1px;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.futumoo-subscription-refresh:hover:not(:disabled) {
+  color: var(--ink);
+}
+.futumoo-subscription-refresh:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
 .futumoo-subscription-list {
   display: grid;
   gap: 5px;

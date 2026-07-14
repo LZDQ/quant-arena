@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { EnlistForm } from "./components/arena/EnlistForm";
 import { Leaderboard } from "./components/arena/Leaderboard";
@@ -191,7 +191,6 @@ function FutumooUserInfoPanel({
           <FutumooInfoMetric label="API LEVEL" value={infoText(info.api_level)} />
           <FutumooInfoMetric label="UPDATE" value={infoText(info.update_type)} />
           <FutumooInfoMetric label="DISCLAIMER" value={disclaimer} />
-          <FutumooInfoMetric label="WEB KEY" value={infoText(info.web_key)} />
         </div>
       </div>
 
@@ -244,16 +243,21 @@ function FutumooSubscriptionPanel({
   status,
   loading,
   error,
+  onRefresh,
 }: {
   status: FutumooSubscriptionStatus | null;
   loading: boolean;
   error: string | null;
+  onRefresh: () => void;
 }) {
   if (loading) {
     return (
       <div className="futumoo-user-panel is-muted">
         <span className="futumoo-user-kicker">Live Quote LRU</span>
         <strong>Loading subscriptions</strong>
+        <button className="futumoo-subscription-refresh" type="button" disabled>
+          Refreshing…
+        </button>
       </div>
     );
   }
@@ -263,6 +267,9 @@ function FutumooSubscriptionPanel({
         <span className="futumoo-user-kicker">Live Quote LRU</span>
         <strong>Unavailable</strong>
         <span>{error ?? "No subscription status"}</span>
+        <button className="futumoo-subscription-refresh" type="button" onClick={onRefresh}>
+          Refresh
+        </button>
       </div>
     );
   }
@@ -271,9 +278,14 @@ function FutumooSubscriptionPanel({
     <div className="futumoo-user-panel futumoo-subscription-panel">
       <div className="futumoo-subscription-head">
         <span className="futumoo-user-kicker">Live Quote LRU</span>
-        <strong>
-          {status.subscribed_count} / {status.subscription_limit}
-        </strong>
+        <div className="futumoo-subscription-actions">
+          <strong>
+            {status.subscribed_count} / {status.subscription_limit}
+          </strong>
+          <button className="futumoo-subscription-refresh" type="button" onClick={onRefresh}>
+            Refresh
+          </button>
+        </div>
       </div>
       <div className="futumoo-subscription-list">
         {status.latest_accessed_symbols.length ? (
@@ -311,6 +323,7 @@ export function FutumooApp() {
   const [subscriptionStatusError, setSubscriptionStatusError] = useState<
     string | null
   >(null);
+  const loadedSubscriptionStatus = useRef(false);
   const stamp = todayStamp();
 
   useEffect(() => {
@@ -340,45 +353,27 @@ export function FutumooApp() {
     };
   }, [api]);
 
-  useEffect(() => {
-    let cancelled = false;
-    let initialLoad = true;
-
-    function refreshSubscriptionStatus() {
-      if (initialLoad) {
-        setLoadingSubscriptionStatus(true);
-      }
-      api
-        .getFutumooSubscriptionStatus()
-        .then((data) => {
-          if (!cancelled) {
-            setSubscriptionStatus(data);
-            setSubscriptionStatusError(null);
-          }
-        })
-        .catch((err: unknown) => {
-          if (!cancelled) {
-            setSubscriptionStatus(null);
-            setSubscriptionStatusError(
-              errorMessage(err, "Failed to load Futu subscriptions"),
-            );
-          }
-        })
-        .finally(() => {
-          if (!cancelled) {
-            setLoadingSubscriptionStatus(false);
-          }
-          initialLoad = false;
-        });
+  const refreshSubscriptionStatus = useCallback(async () => {
+    setLoadingSubscriptionStatus(true);
+    try {
+      const data = await api.getFutumooSubscriptionStatus();
+      setSubscriptionStatus(data);
+      setSubscriptionStatusError(null);
+    } catch (err: unknown) {
+      setSubscriptionStatus(null);
+      setSubscriptionStatusError(errorMessage(err, "Failed to load Futu subscriptions"));
+    } finally {
+      setLoadingSubscriptionStatus(false);
     }
-
-    refreshSubscriptionStatus();
-    const interval = window.setInterval(refreshSubscriptionStatus, 5000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
   }, [api]);
+
+  useEffect(() => {
+    if (loadedSubscriptionStatus.current) {
+      return;
+    }
+    loadedSubscriptionStatus.current = true;
+    void refreshSubscriptionStatus();
+  }, [refreshSubscriptionStatus]);
 
   const selectedRanking = arena.snapshot
     ? arena.rankings.find((entry) => entry.agent_id === arena.snapshot?.agent.agent_id) ?? null
@@ -436,6 +431,7 @@ export function FutumooApp() {
             status={subscriptionStatus}
             loading={loadingSubscriptionStatus}
             error={subscriptionStatusError}
+            onRefresh={() => void refreshSubscriptionStatus()}
           />
         </div>
       </header>
