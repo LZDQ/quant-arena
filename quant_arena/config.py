@@ -236,6 +236,14 @@ class FutumooConfig(ArenaBaseConfig):
         default=11111,
         description="TCP port of the Futu OpenD gateway.",
     )
+    live_quote_cache_seconds: int = Field(
+        default=60,
+        ge=0,
+        description=(
+            "Seconds to cache Futu get_market_snapshot results returned by "
+            "the MCP get_live_quotes tool. Set to 0 to disable the cache."
+        ),
+    )
     polling_interval_seconds: int = Field(
         default=30,
         description=(

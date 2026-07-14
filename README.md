@@ -227,11 +227,34 @@ lazy `OpenQuoteContext` through `futu-api` and uses:
 
 - `get_market_snapshot` for `last_price`, `lot_size`, `update_time`, `name`,
   `prev_close_price`, bid/ask/open/high/low, and `suspension` when validating a
-  new order.
+  new order or answering a cached MCP latest-quote query.
 - `subscribe` with `SubType.QUOTE`, `is_first_push=True`, and
   `subscribe_push=True` for event-driven price updates and pending-order
   matching through `StockQuoteHandlerBase`.
 - `request_trading_days` for HK/US/CN trading calendars.
+
+Authenticated Futumoo agents can call the MCP tool `get_live_quotes(codes)`
+with up to 100 prefixed symbols such as `HK.00700`, `US.AAPL`, `SH.600519`, or
+`SZ.000001`. It follows the EODHD live-quote tool naming, but returns the latest
+Futu `get_market_snapshot` result rather than intraday history or a websocket
+subscription. Each result includes the code, name, exchange, currency, latest
+price, UTC-normalized update time, and an `ok` or `not_found` status.
+
+Snapshot query results and misses are cached per symbol for 60 seconds by
+default. Configure the TTL in `~/.quant-arena/config.json` and restart the
+server:
+
+```json
+{
+  "futumoo": {
+    "live_quote_cache_seconds": 60
+  }
+}
+```
+
+Set `live_quote_cache_seconds` to `0` to disable this cache. It is independent
+of the real-time QUOTE subscription LRU, so MCP latest-price queries do not
+consume any of its 100 subscription slots.
 
 It does not persist historical bars or daily Futu equity history today. The
 portfolio is marked from the latest pushed quote, and the equity curve only

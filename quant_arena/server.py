@@ -154,7 +154,11 @@ def _load_app_state(config_path: Path) -> AppState:
     futumoo_market: FutumooService | None = None
     futumoo_arena: FutumooArenaService | None = None
     if config.futumoo.enabled:
-        futumoo_market = FutumooService(host=config.futumoo.host, port=config.futumoo.port)
+        futumoo_market = FutumooService(
+            host=config.futumoo.host,
+            port=config.futumoo.port,
+            live_quote_cache_seconds=config.futumoo.live_quote_cache_seconds,
+        )
         if config.futumoo.agent_runtime_enabled:
             futumoo_arena = FutumooArenaService(
                 agents_root=futumoo_agents_root,

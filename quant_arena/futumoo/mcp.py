@@ -1,11 +1,14 @@
 """Futumoo MCP server: agent-token auth on top of the HK/US/CN paper arena."""
 
+import asyncio
 from contextvars import ContextVar
 from datetime import date, datetime, timezone
-from typing import Callable
+from typing import Callable, Literal
+from zoneinfo import ZoneInfo
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import BaseModel
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -27,6 +30,31 @@ _CURRENT_AGENT_ID: ContextVar[str | None] = ContextVar(
     "quant_arena_futumoo_current_agent_id", default=None
 )
 _AGENT_TOKEN_HEADER = "quant-arena-token"
+_MAX_LIVE_QUOTE_CODES = 100
+_MARKET_CURRENCIES = {
+    "HK": "HKD",
+    "US": "USD",
+    "SH": "CNY",
+    "SZ": "CNY",
+}
+_MARKET_TIMEZONES = {
+    "HK": "Asia/Hong_Kong",
+    "US": "America/New_York",
+    "SH": "Asia/Shanghai",
+    "SZ": "Asia/Shanghai",
+}
+
+
+class FutumooLiveQuote(BaseModel):
+    """One cached Futu market-snapshot quote returned through MCP."""
+
+    code: str
+    name: str | None = None
+    exchange: str
+    currency: str
+    last_price: float | None = None
+    update_time: datetime | None = None
+    status: Literal["ok", "not_found"] = "not_found"
 
 
 def _request_headers(scope: Scope) -> dict[str, str]:
@@ -65,6 +93,72 @@ def _current_agent_id() -> str:
     if not agent_id:
         raise RuntimeError("No authenticated futumoo agent in MCP request context")
     return agent_id
+
+
+def _normalize_futumoo_code(code: str) -> str:
+    text = code.strip()
+    if "." not in text:
+        raise BadRequestError(
+            "Futumoo symbols must include a market prefix, for example "
+            "HK.00700 or US.AAPL."
+        )
+    market, symbol = text.split(".", 1)
+    market = market.strip().upper()
+    symbol = symbol.strip()
+    if market not in _MARKET_CURRENCIES or not symbol:
+        raise BadRequestError(
+            "Futumoo symbols must use HK., US., SH., or SZ. followed by a symbol."
+        )
+    return f"{market}.{symbol}"
+
+
+def _dedupe_codes(codes: list[str]) -> list[str]:
+    if not codes:
+        raise BadRequestError("At least one Futumoo symbol is required.")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for code in codes:
+        value = _normalize_futumoo_code(code)
+        if value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    if len(normalized) > _MAX_LIVE_QUOTE_CODES:
+        raise BadRequestError(
+            f"At most {_MAX_LIVE_QUOTE_CODES} Futumoo symbols can be requested "
+            "at once."
+        )
+    return normalized
+
+
+def _text_or_none(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return None
+    return text
+
+
+def _float_or_none(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_update_time(raw: object, market: str) -> datetime | None:
+    if raw is None:
+        return None
+    try:
+        moment = datetime.fromisoformat(str(raw).replace("/", "-"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=ZoneInfo(_MARKET_TIMEZONES[market]))
+    return moment.astimezone(timezone.utc)
 
 
 def create_futumoo_mcp_server(
@@ -161,6 +255,49 @@ def create_futumoo_mcp_server(
             role=agent.role,
             currency=agent.currency,
         )
+
+    @mcp.tool(
+        description=(
+            "Get batched latest Futu quotes for symbols such as `HK.00700`, "
+            "`US.AAPL`, `SH.600519`, or `SZ.000001`. Results come from "
+            "Futu OpenD get_market_snapshot and use the server-configured "
+            "snapshot cache; this tool does not subscribe to quote pushes or "
+            "return intraday history. Returns `status='not_found'` when OpenD "
+            "does not return a usable latest price."
+        )
+    )
+    async def get_live_quotes(codes: list[str]) -> list[FutumooLiveQuote]:
+        _current_agent_id()
+        normalized_codes = _dedupe_codes(codes)
+        snapshots = await asyncio.to_thread(
+            get_arena().market.get_cached_snapshots,
+            normalized_codes,
+        )
+        quotes: list[FutumooLiveQuote] = []
+        for code in normalized_codes:
+            market = code.split(".", 1)[0]
+            row = snapshots.get(code)
+            if row is None:
+                quotes.append(
+                    FutumooLiveQuote(
+                        code=code,
+                        exchange=market,
+                        currency=_MARKET_CURRENCIES[market],
+                    )
+                )
+                continue
+            quotes.append(
+                FutumooLiveQuote(
+                    code=code,
+                    name=_text_or_none(row.get("name")),
+                    exchange=market,
+                    currency=_MARKET_CURRENCIES[market],
+                    last_price=_float_or_none(row.get("last_price")),
+                    update_time=_parse_update_time(row.get("update_time"), market),
+                    status="ok",
+                )
+            )
+        return quotes
 
     @mcp.tool(
         description=(

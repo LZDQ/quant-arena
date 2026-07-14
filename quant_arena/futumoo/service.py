@@ -1,11 +1,13 @@
 """Thin Futu OpenD client used by the HK/US/CN paper-trading arena.
 
-Wraps `OpenQuoteContext` for three operations:
+Wraps `OpenQuoteContext` for four operations:
 
 * `get_snapshots(codes)` — returns a per-code dict that includes
   `last_price`, `lot_size`, `update_time` (region-local: HKT for HK,
   ET for US, China time for CN), `prev_close_price`, and `suspension`.
   Snapshots validate new orders and supply symbol metadata.
+* `get_cached_snapshots(codes)` — serves MCP latest-price queries from a
+  configurable per-symbol snapshot cache and fetches only cache misses.
 * `subscribe_live_quotes(codes)` — keeps an LRU set of real-time QUOTE
   subscriptions and forwards `StockQuoteHandlerBase` pushes to the arena.
 * `request_trading_days(market, start, end)` — returns the set of
@@ -30,6 +32,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 from logging import getLogger
+from math import isfinite
 
 from pandas import DataFrame
 
@@ -58,6 +61,12 @@ _SNAPSHOT_FIELDS: tuple[str, ...] = (
 class _QuoteSubscription:
     name: str | None
     subscribed_at: float
+
+
+@dataclass(slots=True)
+class _SnapshotCacheEntry:
+    snapshot: dict[str, object] | None
+    expires_at: float
 
 
 def _text_or_none(value: object) -> str | None:
@@ -102,11 +111,18 @@ class FutumooService:
     _SUBSCRIPTION_LIMIT: int = 100
     _MIN_SUBSCRIPTION_SECONDS: float = 60.0
 
-    def __init__(self, host: str, port: int):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        live_quote_cache_seconds: int = 60,
+    ):
         self.host = host
         self.port = port
+        self.live_quote_cache_seconds = live_quote_cache_seconds
         self._lock = threading.RLock()
         self._subscription_lock = threading.RLock()
+        self._snapshot_cache_lock = threading.RLock()
         self._quote_ctx = None  # futu.OpenQuoteContext, lazy
         # Monotonic timestamp of the last failed connect attempt, used to
         # gate retries via `_CONNECT_FAILURE_BACKOFF_SECONDS`.
@@ -114,6 +130,7 @@ class FutumooService:
         # Dict insertion order tracks least to most recently accessed.
         self._subscriptions: dict[str, _QuoteSubscription] = {}
         self._quote_names: dict[str, str] = {}
+        self._snapshot_cache: dict[str, _SnapshotCacheEntry] = {}
         self._live_quote_handler: (
             Callable[[str, dict[str, object]], None] | None
         ) = None
@@ -235,7 +252,7 @@ class FutumooService:
             last_price = float(row["last_price"])
         except (TypeError, ValueError):
             return None
-        if last_price <= 0:
+        if not isfinite(last_price) or last_price <= 0:
             return None
         entry: dict[str, object] = {
             "code": code,
@@ -278,7 +295,7 @@ class FutumooService:
                 last_price = float(row["last_price"])
             except (TypeError, ValueError):
                 continue
-            if last_price <= 0:
+            if not isfinite(last_price) or last_price <= 0:
                 continue
             entry: dict[str, object] = {"code": code, "last_price": last_price}
             for field in _SNAPSHOT_FIELDS:
@@ -288,7 +305,62 @@ class FutumooService:
                     entry[field] = row[field]
             out[code] = entry
         self._remember_quote_names(out)
+        self._cache_snapshots(codes, out)
         return out
+
+    def get_cached_snapshots(
+        self,
+        codes: list[str],
+    ) -> dict[str, dict[str, object]]:
+        """Return market snapshots, fetching only absent or expired symbols."""
+
+        if not codes:
+            return {}
+        now = time.monotonic()
+        cached: dict[str, dict[str, object]] = {}
+        missing: list[str] = []
+        with self._snapshot_cache_lock:
+            expired_codes = [
+                code
+                for code, entry in self._snapshot_cache.items()
+                if entry.expires_at <= now
+            ]
+            for code in expired_codes:
+                self._snapshot_cache.pop(code, None)
+            for code in codes:
+                entry = self._snapshot_cache.get(code)
+                if entry is None:
+                    missing.append(code)
+                    continue
+                if entry.snapshot is not None:
+                    cached[code] = dict(entry.snapshot)
+        if missing:
+            cached.update(self.get_snapshots(missing))
+        return cached
+
+    def _cache_snapshots(
+        self,
+        requested_codes: list[str],
+        snapshots: dict[str, dict[str, object]],
+    ) -> None:
+        if self.live_quote_cache_seconds <= 0:
+            return
+        now = time.monotonic()
+        expires_at = now + self.live_quote_cache_seconds
+        with self._snapshot_cache_lock:
+            expired_codes = [
+                code
+                for code, entry in self._snapshot_cache.items()
+                if entry.expires_at <= now
+            ]
+            for code in expired_codes:
+                self._snapshot_cache.pop(code, None)
+            for code in requested_codes:
+                snapshot = snapshots.get(code)
+                self._snapshot_cache[code] = _SnapshotCacheEntry(
+                    snapshot=dict(snapshot) if snapshot is not None else None,
+                    expires_at=expires_at,
+                )
 
     def _remember_quote_names(self, snapshots: dict[str, dict[str, object]]) -> None:
         with self._subscription_lock:
@@ -470,3 +542,5 @@ class FutumooService:
                 self._quote_ctx = None
         with self._subscription_lock:
             self._subscriptions.clear()
+        with self._snapshot_cache_lock:
+            self._snapshot_cache.clear()
