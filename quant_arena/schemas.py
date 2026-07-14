@@ -102,17 +102,18 @@ class ArenaStatus(BaseModel):
 
 
 class ToggleArenaRequest(BaseModel):
-    """Request body for `PATCH /api/arenas/{slug}`."""
+    """Lifecycle settings persisted by `PATCH /api/arenas/{slug}`."""
 
     enabled: bool
+    data_provider_only: bool | None = None
 
 
 class ToggleArenaResponse(BaseModel):
     """Response body for `PATCH /api/arenas/{slug}`.
 
-    `restart_required` is always true on success: the enable flag is checked
-    once at startup to gate route registration, MCP mounts, and background
-    tasks, so the new state takes effect on the next server restart.
+    `restart_required` is always true on success: lifecycle settings are
+    checked once at startup to gate route registration, MCP mounts, and
+    background tasks, so the new state takes effect on the next server restart.
     """
 
     status: ArenaStatus

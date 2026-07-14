@@ -120,10 +120,10 @@ export function createArenaApi(apiPrefix = "") {
 
     // --- Global (arena-independent) endpoints ----------------------------
     listArenas: () => request<ArenaStatus[]>(`/api/arenas`),
-    setArenaEnabled: (slug: string, enabled: boolean) =>
+    setArenaMode: (slug: string, enabled: boolean, dataProviderOnly: boolean) =>
       request<unknown>(`/api/arenas/${slug}`, {
         method: "PATCH",
-        body: JSON.stringify({ enabled }),
+        body: JSON.stringify({ enabled, data_provider_only: dataProviderOnly }),
       }),
     getDestinations: () => request<NotificationDestinations>(`/api/notifications/destinations`),
     putNapCatDestinations: (destinations: Record<string, NapCatTarget>) =>

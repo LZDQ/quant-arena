@@ -492,7 +492,7 @@ a {
   position: relative;
 }
 .market-row-wrap .market-row {
-  padding-right: 124px;
+  padding-right: 150px;
 }
 .market-toggle {
   position: absolute;
@@ -502,40 +502,40 @@ a {
   display: inline-flex;
   align-items: center;
 }
-.toggle-button {
+.arena-mode-select {
   font-family: var(--mono);
   font-size: 11px;
-  letter-spacing: 0.16em;
-  padding: 8px 16px;
+  letter-spacing: 0.08em;
+  padding: 8px 28px 8px 12px;
   border: 1px solid var(--rule);
   background: var(--paper-soft, #f8f4ed);
   cursor: pointer;
   text-transform: uppercase;
   font-weight: 600;
-  min-width: 96px;
-  text-align: center;
-  transition: background 160ms ease, color 160ms ease, border-color 160ms ease, transform 160ms ease;
+  min-width: 126px;
+  transition: background 160ms ease, color 160ms ease, border-color 160ms ease;
 }
-.toggle-button:disabled {
+.arena-mode-select:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
-.toggle-button.to-disable {
+.arena-mode-select.mode-disabled {
   background: rgba(193, 18, 31, 0.08);
   border-color: rgba(193, 18, 31, 0.55);
   color: rgba(140, 18, 24, 1);
 }
-.toggle-button.to-enable {
+.arena-mode-select.mode-data-only {
+  background: rgba(164, 122, 45, 0.14);
+  border-color: rgba(164, 122, 45, 0.6);
+  color: rgba(120, 82, 24, 1);
+}
+.arena-mode-select.mode-trading {
   background: rgba(34, 110, 64, 0.10);
   border-color: rgba(34, 110, 64, 0.55);
   color: rgba(22, 78, 46, 1);
 }
-.toggle-button:hover:not(:disabled) {
+.arena-mode-select:hover:not(:disabled) {
   filter: brightness(0.96);
-  transform: translateY(-1px);
-}
-.toggle-button:active:not(:disabled) {
-  transform: translateY(0);
 }
 
 .picker-foot {

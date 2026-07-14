@@ -426,6 +426,8 @@ def create_app() -> FastAPI:
         else:
             arena_config = config.eodhd
         arena_config.enabled = request.enabled
+        if request.data_provider_only is not None:
+            arena_config.data_provider_only = request.data_provider_only
         save_app_config(state.config_path, config)
         status = _arena_status(slug, arena_config)
         return ToggleArenaResponse(status=status, restart_required=True)

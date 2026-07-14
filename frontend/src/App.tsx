@@ -56,6 +56,42 @@ type ArenaStatus = {
   data_provider_only: boolean;
 };
 
+type ArenaMode = "disabled" | "data-only" | "trading";
+
+type ArenaStatusResponse = {
+  status: ArenaStatus;
+  restart_required: boolean;
+};
+
+const ARENA_MODES: Record<
+  ArenaMode,
+  { label: string; enabled: boolean; dataProviderOnly: boolean; description: string }
+> = {
+  disabled: {
+    label: "Disabled",
+    enabled: false,
+    dataProviderOnly: false,
+    description: "The provider, persistence tasks, agent runtime, MCP, and trading will not start.",
+  },
+  "data-only": {
+    label: "Data only",
+    enabled: true,
+    dataProviderOnly: true,
+    description: "The provider and persistence tasks will start without agents, MCP, or trading.",
+  },
+  trading: {
+    label: "Trading",
+    enabled: true,
+    dataProviderOnly: false,
+    description: "The provider, agent runtime, MCP, and paper trading will start.",
+  },
+};
+
+function arenaMode(status: ArenaStatus | undefined): ArenaMode {
+  if (!status?.enabled) return "disabled";
+  return status.data_provider_only ? "data-only" : "trading";
+}
+
 type NapCatPrivateTarget = { type: "private"; user_id: string };
 type NapCatGroupTarget = { type: "group"; group_id: string };
 type NapCatTarget = NapCatPrivateTarget | NapCatGroupTarget;
@@ -328,7 +364,8 @@ function MarketPicker() {
     void refreshStatuses();
   }, []);
 
-  async function toggle(backendSlug: string, nextEnabled: boolean) {
+  async function setArenaMode(backendSlug: string, nextMode: ArenaMode) {
+    const mode = ARENA_MODES[nextMode];
     setBusySlug(backendSlug);
     setError("");
     setNotice("");
@@ -336,22 +373,19 @@ function MarketPicker() {
       const response = await fetch(`${API_BASE}/api/arenas/${backendSlug}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: nextEnabled }),
+        body: JSON.stringify({
+          enabled: mode.enabled,
+          data_provider_only: mode.dataProviderOnly,
+        }),
       });
       if (!response.ok) {
         const body = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
         throw new Error(body.detail ?? `HTTP ${response.status}`);
       }
-      setStatuses((prev) => {
-        const current = prev[backendSlug];
-        if (!current) return prev;
-        return {
-          ...prev,
-          [backendSlug]: { ...current, enabled: nextEnabled },
-        };
-      });
+      const result = (await response.json()) as ArenaStatusResponse;
+      setStatuses((prev) => ({ ...prev, [backendSlug]: result.status }));
       setNotice(
-        `${backendSlug} marked ${nextEnabled ? "enabled" : "disabled"} in config.json. ` +
+        `${result.status.label} set to ${mode.label.toLowerCase()} in config.json. ` +
           "Restart the server to apply.",
       );
     } catch (toggleError) {
@@ -420,6 +454,7 @@ function MarketPicker() {
           const arenaStatus = backendSlug ? statuses[backendSlug] : undefined;
           const enabled = arenaStatus?.enabled === true;
           const dataProviderOnly = arenaStatus?.data_provider_only === true;
+          const mode = arenaMode(arenaStatus);
           const available = m.status === "available";
           const isOpen = available && (loaded ? enabled && !dataProviderOnly : true);
           const dataLive = isOpen ? "true" : "false";
@@ -456,29 +491,30 @@ function MarketPicker() {
               </span>
             </>
           );
-          const toggleControl = backendSlug ? (
+          const modeControl = backendSlug ? (
             <span className="market-toggle" onClick={(event) => event.stopPropagation()}>
-              <button
-                type="button"
-                className={`toggle-button ${enabled ? "to-disable" : "to-enable"}`}
+              <select
+                className={`arena-mode-select mode-${mode}`}
+                value={mode}
                 disabled={!loaded || busySlug === backendSlug}
-                onClick={(event) => {
-                  event.preventDefault();
+                onChange={(event) => {
                   event.stopPropagation();
-                  const action = enabled ? "Disable" : "Enable";
-                  const verb = enabled ? "disable" : "enable";
+                  const nextMode = event.target.value as ArenaMode;
+                  const next = ARENA_MODES[nextMode];
                   const restartHint =
                     "The change is saved to config.json; the server must be restarted to take effect.";
                   const confirmed = window.confirm(
-                    `${action} ${m.name}?\n\nThis will ${verb} the arena. ${restartHint}`,
+                    `Set ${m.name} to ${next.label}?\n\n${next.description} ${restartHint}`,
                   );
                   if (!confirmed) return;
-                  void toggle(backendSlug, !enabled);
+                  void setArenaMode(backendSlug, nextMode);
                 }}
-                aria-label={`${enabled ? "Disable" : "Enable"} ${m.name}`}
+                aria-label={`${m.name} arena mode`}
               >
-                {busySlug === backendSlug ? "…" : enabled ? "Disable" : "Enable"}
-              </button>
+                <option value="disabled">Disabled</option>
+                <option value="data-only">Data only</option>
+                <option value="trading">Trading</option>
+              </select>
             </span>
           ) : null;
           if (isOpen) {
@@ -487,7 +523,7 @@ function MarketPicker() {
                 <a className="market-row" data-live={dataLive} href={`${BASE_URL}/${m.slug}`}>
                   {inner}
                 </a>
-                {toggleControl}
+                {modeControl}
               </div>
             );
           }
@@ -496,14 +532,14 @@ function MarketPicker() {
               <div className="market-row" data-live={dataLive} aria-disabled="true">
                 {inner}
               </div>
-              {toggleControl}
+              {modeControl}
             </div>
           );
         })}
       </section>
       <GlobalNotificationTargets />
       <div className="picker-foot">
-        <span>Toggle a room to flip its enable flag · server restart applies it</span>
+        <span>Choose disabled, data only, or trading · server restart applies it</span>
         <span>Composed in {stamp.label.split(",")[0]} · 量化竞技场</span>
       </div>
     </div>

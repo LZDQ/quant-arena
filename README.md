@@ -158,6 +158,11 @@ supports the same mode. Futumoo inherits the lifecycle setting, but currently
 has no historical-data persistence task, so its provider-only mode has no
 scheduled work.
 
+The market picker exposes these lifecycle settings as a three-state selector:
+**Disabled**, **Data only**, or **Trading**. Changing the mode updates
+`config.json`; restart the server to apply the new provider, route, MCP, and
+background-task lifecycle.
+
 ## MCP
 
 The server uses the official MCP streamable HTTP implementation. A-share is
