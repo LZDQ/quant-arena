@@ -26,7 +26,7 @@ from quant_arena.ashare.models import (
 )
 from quant_arena.ashare.service import AShareService
 from quant_arena.config import AgentConfig, AShareFeeConfig
-from quant_arena.errors import BadRequestError, ConflictError, NotFoundError
+from quant_arena.errors import BadRequestError, ConflictError
 from quant_arena.notifier import NotifierService
 from quant_arena.models import (
     EquityPoint,
@@ -97,29 +97,46 @@ class ArenaService(ArenaBase[AShareAgentState]):
             raise BadRequestError("Buy order quantity must be a multiple of 100")
         if not (time(9, 30) <= now.time() <= time(15, 0)):
             raise BadRequestError("You can only submit an order between 9:30 and 15:00.")
-        if not self.market.is_today_trading_day():
-            raise BadRequestError(f"{now.date().isoformat()} is not an A-share trading day.")
         if not self._is_main_board(request.code):
             raise BadRequestError(
                 f"Only main-board codes are supported (SH 60xxxx, SZ 000/001/002/003 xxxx). "
                 f"{request.code} is on STAR / ChiNext / BJEX and is not accepted."
             )
         try:
-            limit_down, limit_up, prev_close = self.market.fetch_price_limits(request.code)
-        except Exception as exc:
-            persisted_close = self._ensure_latest_close_index(request.code)
-            if persisted_close is None:
-                raise NotFoundError(
-                    f"Could not resolve daily price limits for {request.code}: "
-                    f"EM lookup failed ({exc}) and no persisted prev close available."
-                ) from exc
-            logger.warning(
-                "stock_bid_ask_em failed for %s (%s); falling back to ±10%% of persisted close %.2f",
-                request.code, exc, persisted_close,
+            is_trading_day, previous_trading_day = self.market.get_trading_day_context(
+                now.date()
             )
-            prev_close = persisted_close
-            limit_up = round(prev_close * 1.1, 2)
-            limit_down = round(prev_close * 0.9, 2)
+        except Exception as exc:
+            raise BadRequestError(
+                f"Order rejected for {request.code}: failed to fetch the Baostock "
+                f"trading calendar needed to resolve the previous trading day for "
+                f"{now.date().isoformat()}: {exc}"
+            ) from exc
+        if not is_trading_day:
+            raise BadRequestError(
+                f"Order rejected for {request.code}: {now.date().isoformat()} is not "
+                "an A-share trading day according to Baostock."
+            )
+        try:
+            prev_close = self.market.get_persisted_daily_close(
+                request.code, previous_trading_day
+            )
+        except Exception as exc:
+            raise BadRequestError(
+                f"Order rejected for {request.code}: failed to read persisted daily "
+                f"data for the previous trading day "
+                f"{previous_trading_day.isoformat()}: {exc}"
+            ) from exc
+        if prev_close is None:
+            raise BadRequestError(
+                f"Order rejected for {request.code}: Baostock identifies "
+                f"{previous_trading_day.isoformat()} as the previous trading day, "
+                "but bars/"
+                f"{previous_trading_day.isoformat()}/daily.csv has no usable close "
+                f"for symbol {request.code}."
+            )
+        limit_up = round(prev_close * 1.1, 2)
+        limit_down = round(prev_close * 0.9, 2)
         if request.limit_price >= limit_up:
             raise BadRequestError(
                 f"Limit price {request.limit_price} >= today's limit-up "
@@ -192,11 +209,11 @@ class ArenaService(ArenaBase[AShareAgentState]):
         Match pending orders against today's intraday data.
 
         Each tracked code is fetched once per cycle, even when multiple agents
-        hold pending orders against it. Daily price-limit bands are checked at
-        submit time via `fetch_price_limits`, so the matcher only walks the
-        intraday tick stream for the order's limit price. End-of-session
-        cleanup (overnight expiration, equity finalization) lives in
-        `finalize_session`, not here.
+        hold pending orders against it. Daily price-limit bands are derived at
+        submit time from the persisted previous-trading-day close, so the matcher
+        only walks the intraday tick stream for the order's limit price.
+        End-of-session cleanup (overnight expiration, equity finalization) lives
+        in `finalize_session`, not here.
         """
         agent_pairs = self.list_agents()
         per_agent_codes: dict[str, set[str]] = {}

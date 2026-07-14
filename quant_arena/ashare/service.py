@@ -3,7 +3,6 @@ Baostock-backed market data service.
 
 Stock endpoints summary:
 - `baostock` cannot get live intraday data
-- `ak.stock_intraday_em` not stable
 - `ak.stock_intraday_sina` is stable for today's live data
 - `ak.stock_zh_a_daily` is stable
 - `ak.stock_zh_a_minute` is limited to latest 10 days
@@ -63,7 +62,9 @@ class AShareService:
         self._code_names: pd.DataFrame | None = None
         self._code_name_index: dict[str, str] | None = None
         self._latest_daily_frame: pd.DataFrame | None = None
+        self._persisted_daily_close_cache: dict[date, dict[str, float]] = {}
         self._today_is_trading_day: tuple[date, bool] | None = None
+        self._trading_day_context: tuple[date, bool, date] | None = None
         self._intraday_cache_guard = Lock()
         self._intraday_code_locks: dict[str, LockType] = {}
         self._intraday_cache: dict[str, _IntradayCacheEntry] = {}
@@ -115,24 +116,34 @@ class AShareService:
                     return self._latest_daily_frame
         return None
 
+    def get_persisted_daily_close(self, code: str, trade_date: date) -> float | None:
+        """Return the persisted close for exactly ``code`` and ``trade_date``."""
+        if trade_date not in self._persisted_daily_close_cache:
+            path = self.market_bars_dir / trade_date.isoformat() / "daily.csv"
+            if not path.exists():
+                return None
+            frame = self._read_csv(path)
+            required_columns = {"date", "code", "close"}
+            if frame.empty or not required_columns.issubset(frame.columns):
+                return None
+            day_frame = frame.loc[
+                frame["date"].astype(str) == trade_date.isoformat()
+            ]
+            close_index: dict[str, float] = {}
+            codes = day_frame["code"].astype(str).to_numpy()
+            closes = pd.to_numeric(day_frame["close"], errors="coerce").to_numpy()
+            for loaded_code, close in zip(codes, closes, strict=False):
+                numeric_close = float(close)
+                if math.isfinite(numeric_close) and numeric_close > 0.0:
+                    close_index[str(loaded_code)] = numeric_close
+            self._persisted_daily_close_cache[trade_date] = close_index
+        return self._persisted_daily_close_cache[trade_date].get(code)
+
     def _fetch_daily_bar(self, code: str, start_date: date, end_date: date) -> pd.DataFrame:
         return self._fetch_baostock_bars(code, start_date, end_date, "d")
 
     def _fetch_five_minute_bars(self, code: str, start_date: date, end_date: date) -> pd.DataFrame:
         return self._fetch_baostock_bars(code, start_date, end_date, "5")
-
-    def fetch_price_limits(self, code: str) -> tuple[float, float, float]:
-        """
-        Return (limit_down, limit_up, prev_close) for `code` from EM.
-
-        Single attempt against `stock_bid_ask_em` — no retries, EM is too
-        unstable to wait on. Callers must catch and fall back when this raises.
-        """
-        frame = ak.stock_bid_ask_em(symbol=code)
-        if frame is None or frame.empty:
-            raise RuntimeError(f"stock_bid_ask_em returned empty frame for {code}")
-        lookup = dict(zip(frame["item"].astype(str), frame["value"]))
-        return float(lookup["跌停"]), float(lookup["涨停"]), float(lookup["昨收"])
 
     def fetch_intraday(
         self, code: str, today: date | None = None, start_count: int | None = None
@@ -331,6 +342,53 @@ class AShareService:
             )
         return frame
 
+    def get_trading_day_context(self, trade_date: date) -> tuple[bool, date]:
+        """Return whether ``trade_date`` trades and its preceding trading day."""
+        cached = self._trading_day_context
+        if cached is not None and cached[0] == trade_date:
+            return cached[1], cached[2]
+
+        login_result = bs.login()
+        if login_result.error_code != "0":
+            raise RuntimeError(f"baostock login failed: {login_result.error_msg}")
+
+        start_date = trade_date - timedelta(days=366)
+        frame = self.fetch_trade_dates(start_date, trade_date)
+        required_columns = {"calendar_date", "is_trading_day"}
+        if not required_columns.issubset(frame.columns):
+            raise RuntimeError(
+                "baostock trade-date response is missing calendar_date or "
+                "is_trading_day"
+            )
+
+        calendar_dates = pd.to_datetime(
+            frame["calendar_date"], errors="coerce"
+        ).dt.date
+        target_rows = frame.loc[calendar_dates == trade_date]
+        if target_rows.empty:
+            raise RuntimeError(
+                f"baostock returned no calendar row for {trade_date.isoformat()}"
+            )
+        is_trading_day = str(target_rows.iloc[-1]["is_trading_day"]) == "1"
+
+        previous_dates = calendar_dates.loc[
+            (calendar_dates < trade_date)
+            & (frame["is_trading_day"].astype(str) == "1")
+        ]
+        if previous_dates.empty:
+            raise RuntimeError(
+                "baostock returned no preceding trading day in "
+                f"[{start_date.isoformat()}, {trade_date.isoformat()}]"
+            )
+        previous_trading_day = max(previous_dates.tolist())
+        self._trading_day_context = (
+            trade_date,
+            is_trading_day,
+            previous_trading_day,
+        )
+        self._today_is_trading_day = (trade_date, is_trading_day)
+        return is_trading_day, previous_trading_day
+
     def fetch_corporate_actions(
         self, ex_date: date, codes: Iterable[str]
     ) -> list[CorporateAction]:
@@ -399,7 +457,14 @@ class AShareService:
             return
         frame = frame.assign(code=frame["code"].astype(str))
         for day_iso, sub in frame.groupby("date", sort=False):
-            self._merge_and_write(self.market_bars_dir / str(day_iso) / "daily.csv", sub, ["code"])
+            self._merge_and_write(
+                self.market_bars_dir / str(day_iso) / "daily.csv",
+                sub,
+                ["code"],
+            )
+            self._persisted_daily_close_cache.pop(
+                date.fromisoformat(str(day_iso)), None
+            )
 
     def _persist_five_minute_frame(self, frame: pd.DataFrame) -> None:
         if frame.empty:

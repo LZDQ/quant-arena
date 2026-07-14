@@ -361,6 +361,8 @@ def create_ashare_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
             "Submit a pending buy or sell limit order on the A-share simulator. "
             "Settlement is T+1; buy quantity must be a multiple of 100; only "
             "main-board codes (SH 60xxxx, SZ 000/001/002/003 xxxx) are accepted. "
+            "Price-band validation requires Baostock's calendar and the exact "
+            "previous trading day's persisted daily close for the symbol. "
             "The comment should include the name of the code and briefly explain "
             "the reason in three sentences."
         )

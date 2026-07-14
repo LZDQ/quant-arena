@@ -221,6 +221,13 @@ Set `intraday_quote_cache_seconds` to `0` to perform an incremental refresh on
 every matching cycle or MCP request while still retaining the current-day rows
 needed for incremental Sina paging.
 
+A-share order submission resolves the previous trading day from Baostock's
+calendar and derives the main-board ±10% price band from that exact day's
+persisted `bars/YYYY-mm-dd/daily.csv` close. There is no live quote-provider
+fallback: if the calendar lookup fails, the daily file is missing, or the file
+has no usable close for the submitted symbol, the order is rejected with the
+specific missing dependency.
+
 ## Napcat
 
 Configure napcat to send messages when an agent submits an operation.

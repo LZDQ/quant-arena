@@ -40,6 +40,11 @@ date,code,open,high,low,close,preclose,volume,amount
 
 The data is from baostock and updates every day at 17:30 for daily bars and at 20:00 for five minutes bars. Market data does not update during market hours — use the corresponding skill (see `ashare-intraday`) to fetch live intraday quotes.
 
+Order submission uses baostock's calendar to identify the exact previous
+trading day and requires that day's `daily.csv` to contain a usable close for
+the submitted symbol. A missing file or symbol row causes the order to be
+rejected; the trading runtime does not fall back to a live provider.
+
 ## Usage Guidelines
 
 These data are read-only. You can use them for analysis and backtesting.
