@@ -238,7 +238,9 @@ with up to 100 prefixed symbols such as `HK.00700`, `US.AAPL`, `SH.600519`, or
 `SZ.000001`. It follows the EODHD live-quote tool naming, but returns the latest
 Futu `get_market_snapshot` result rather than intraday history or a websocket
 subscription. Each result includes the code, name, exchange, currency, latest
-price, UTC-normalized update time, and an `ok` or `not_found` status.
+price, lot size, daily OHLC and previous close, top-of-book prices and sizes,
+volume and turnover metrics, spread, amplitude, average price, security status,
+suspension state, UTC-normalized update time, and an `ok` or `not_found` status.
 
 Snapshot query results and misses are cached per symbol for 60 seconds by
 default. Configure the TTL in `~/.quant-arena/config.json` and restart the

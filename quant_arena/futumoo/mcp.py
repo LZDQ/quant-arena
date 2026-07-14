@@ -3,6 +3,7 @@
 import asyncio
 from contextvars import ContextVar
 from datetime import date, datetime, timezone
+from math import isfinite
 from typing import Callable, Literal
 from zoneinfo import ZoneInfo
 
@@ -53,6 +54,25 @@ class FutumooLiveQuote(BaseModel):
     exchange: str
     currency: str
     last_price: float | None = None
+    lot_size: int | None = None
+    prev_close_price: float | None = None
+    open_price: float | None = None
+    high_price: float | None = None
+    low_price: float | None = None
+    bid_price: float | None = None
+    ask_price: float | None = None
+    bid_vol: int | None = None
+    ask_vol: int | None = None
+    volume: int | None = None
+    turnover: float | None = None
+    turnover_rate: float | None = None
+    price_spread: float | None = None
+    amplitude: float | None = None
+    avg_price: float | None = None
+    bid_ask_ratio: float | None = None
+    volume_ratio: float | None = None
+    suspension: bool | None = None
+    sec_status: str | None = None
     update_time: datetime | None = None
     status: Literal["ok", "not_found"] = "not_found"
 
@@ -135,7 +155,7 @@ def _text_or_none(value: object) -> str | None:
     if value is None:
         return None
     text = str(value).strip()
-    if not text or text.lower() == "nan":
+    if not text or text.lower() in {"nan", "n/a"}:
         return None
     return text
 
@@ -144,9 +164,42 @@ def _float_or_none(value: object) -> float | None:
     if value is None:
         return None
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return None
+    return parsed if isfinite(parsed) else None
+
+
+def _int_or_none(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(float(value))
+    except (OverflowError, TypeError, ValueError):
+        return None
+
+
+def _positive_int_or_none(value: object) -> int | None:
+    parsed = _int_or_none(value)
+    if parsed is None:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _bool_or_none(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    text = _text_or_none(value)
+    if text is None:
+        return None
+    normalized = text.lower()
+    if normalized in {"true", "1", "yes"}:
+        return True
+    if normalized in {"false", "0", "no"}:
+        return False
+    return None
 
 
 def _parse_update_time(raw: object, market: str) -> datetime | None:
@@ -293,6 +346,25 @@ def create_futumoo_mcp_server(
                     exchange=market,
                     currency=_MARKET_CURRENCIES[market],
                     last_price=_float_or_none(row.get("last_price")),
+                    lot_size=_positive_int_or_none(row.get("lot_size")),
+                    prev_close_price=_float_or_none(row.get("prev_close_price")),
+                    open_price=_float_or_none(row.get("open_price")),
+                    high_price=_float_or_none(row.get("high_price")),
+                    low_price=_float_or_none(row.get("low_price")),
+                    bid_price=_float_or_none(row.get("bid_price")),
+                    ask_price=_float_or_none(row.get("ask_price")),
+                    bid_vol=_int_or_none(row.get("bid_vol")),
+                    ask_vol=_int_or_none(row.get("ask_vol")),
+                    volume=_int_or_none(row.get("volume")),
+                    turnover=_float_or_none(row.get("turnover")),
+                    turnover_rate=_float_or_none(row.get("turnover_rate")),
+                    price_spread=_float_or_none(row.get("price_spread")),
+                    amplitude=_float_or_none(row.get("amplitude")),
+                    avg_price=_float_or_none(row.get("avg_price")),
+                    bid_ask_ratio=_float_or_none(row.get("bid_ask_ratio")),
+                    volume_ratio=_float_or_none(row.get("volume_ratio")),
+                    suspension=_bool_or_none(row.get("suspension")),
+                    sec_status=_text_or_none(row.get("sec_status")),
                     update_time=_parse_update_time(row.get("update_time"), market),
                     status="ok",
                 )
