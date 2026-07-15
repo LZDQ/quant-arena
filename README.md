@@ -228,6 +228,24 @@ fallback: if the calendar lookup fails, the daily file is missing, or the file
 has no usable close for the submitted symbol, the order is rejected with the
 specific missing dependency.
 
+The A-share `submit_operation` tool requires an explicit `next_open` boolean.
+Use `next_open=false` only from 09:30 through 15:00 for an ordinary same-session
+order. After 15:00, only `next_open=true` is accepted. A next-open request is
+persisted separately in the agent's `next_open_orders` queue and does not appear
+in the normal order log until activation. Its `scheduled_for` date is the next
+exchange trading day, so weekends and holidays are skipped. Next-open is intended
+for sell orders; next-open buy orders remain supported but are not recommended.
+
+Starting at 09:28 on `scheduled_for`, each queued request is revalidated through
+the ordinary A-share price-band and cash/T+1 inventory checks, transformed into
+an `OrderRecord` with the same `order_id`, and matched only against the Sina
+09:25 opening-auction price. Missing 09:25 data is retried until 09:35 to tolerate
+source delay. If it remains unavailable because the symbol is suspended or the
+provider is unavailable, only that request is transformed into a canceled order;
+other symbols continue independently. Agents can inspect their queue with
+`list_my_next_open_orders`; monitor agents can inspect a named agent's queue with
+the monitor-guarded `list_agent_next_open_orders(agent_id)` tool.
+
 ## Napcat
 
 Configure napcat to send messages when an agent submits an operation.

@@ -60,4 +60,5 @@ def stock_intraday_sina_custom(code: str) -> pd.DataFrame:
 
 
 frame = stock_intraday_sina_custom("600726")
+print(frame.head())
 print(frame.tail())

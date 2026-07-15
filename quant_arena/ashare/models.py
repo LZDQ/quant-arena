@@ -5,7 +5,41 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from quant_arena.models import ArenaAgentState
+from quant_arena.models import ArenaAgentState, OrderSide, SubmitOrder
+
+
+class AShareSubmitOrder(SubmitOrder):
+    """A-share order request with an explicit execution-session choice."""
+
+    next_open: bool = Field(
+        description=(
+            "False submits an ordinary same-session order; True queues the "
+            "request for the next trading day's opening auction. Next-open is "
+            "intended for sell orders; buy orders are accepted but not recommended."
+        )
+    )
+
+
+class NextOpenOrder(BaseModel):
+    """Persisted A-share request waiting to become a normal order at the open."""
+
+    order_id: str = Field(default_factory=lambda: uuid4().hex)
+    agent_id: str
+    code: str = Field(description="Six-digit A-share instrument identifier.")
+    name: str | None = Field(
+        default=None,
+        description="Instrument display name resolved when the request is queued.",
+    )
+    side: OrderSide
+    quantity: int = Field(gt=0)
+    limit_price: float = Field(gt=0)
+    comment: str = Field(min_length=1, max_length=200)
+    submitted_at: datetime = Field(
+        description="Shanghai-local timestamp when the next-open request was accepted."
+    )
+    scheduled_for: date = Field(
+        description="Trading date whose 09:25 opening-auction price will be used."
+    )
 
 
 class PositionLot(BaseModel):
@@ -69,4 +103,8 @@ class AShareAgentState(ArenaAgentState):
     corporate_actions: list[CorporateActionRecord] = Field(
         default_factory=list,
         description="已应用的分红送转事件",
+    )
+    next_open_orders: list[NextOpenOrder] = Field(
+        default_factory=list,
+        description="等待在下一交易日开盘集合竞价转换为普通订单的请求",
     )

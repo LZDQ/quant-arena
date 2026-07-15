@@ -389,6 +389,34 @@ class AShareService:
         self._today_is_trading_day = (trade_date, is_trading_day)
         return is_trading_day, previous_trading_day
 
+    def get_next_trading_day(self, after_date: date) -> date:
+        """Return the first exchange trading day strictly after ``after_date``."""
+        login_result = bs.login()
+        if login_result.error_code != "0":
+            raise RuntimeError(f"baostock login failed: {login_result.error_msg}")
+
+        start_date = after_date + timedelta(days=1)
+        end_date = after_date + timedelta(days=366)
+        frame = self.fetch_trade_dates(start_date, end_date)
+        required_columns = {"calendar_date", "is_trading_day"}
+        if not required_columns.issubset(frame.columns):
+            raise RuntimeError(
+                "baostock trade-date response is missing calendar_date or "
+                "is_trading_day"
+            )
+        calendar_dates = pd.to_datetime(
+            frame["calendar_date"], errors="coerce"
+        ).dt.date
+        trading_dates = calendar_dates.loc[
+            frame["is_trading_day"].astype(str) == "1"
+        ].dropna()
+        if trading_dates.empty:
+            raise RuntimeError(
+                "baostock returned no following trading day in "
+                f"[{start_date.isoformat()}, {end_date.isoformat()}]"
+            )
+        return min(trading_dates.tolist())
+
     def fetch_corporate_actions(
         self, ex_date: date, codes: Iterable[str]
     ) -> list[CorporateAction]:

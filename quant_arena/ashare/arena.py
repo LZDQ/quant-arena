@@ -20,8 +20,10 @@ from quant_arena.arena import ArenaBase
 from quant_arena.ashare.clock import SHANGHAI_TZ, now_shanghai
 from quant_arena.ashare.models import (
     AShareAgentState,
+    AShareSubmitOrder,
     CorporateAction,
     CorporateActionRecord,
+    NextOpenOrder,
     PositionLot,
 )
 from quant_arena.ashare.service import AShareService
@@ -39,6 +41,9 @@ from quant_arena.models import (
 )
 
 logger = getLogger(__name__)
+
+_NEXT_OPEN_ACTIVATION_TIME = time(9, 28)
+_NEXT_OPEN_CUTOFF_TIME = time(9, 35)
 
 
 @dataclass(slots=True)
@@ -78,6 +83,7 @@ class ArenaService(ArenaBase[AShareAgentState]):
 
     def _clear_positions(self, state: AShareAgentState) -> None:
         state.positions.clear()
+        state.next_open_orders.clear()
 
     def _prepare_agent(self, agent: AgentConfig) -> AgentConfig:
         agent.currency = None
@@ -88,35 +94,100 @@ class ArenaService(ArenaBase[AShareAgentState]):
     async def submit_order(
         self,
         agent_id: str,
-        request: SubmitOrder,
+        request: AShareSubmitOrder,
         submitted_at: datetime | None = None,
-    ) -> OrderRecord:
+    ) -> OrderRecord | NextOpenOrder:
         agent = self.get_agent(agent_id)
         now = submitted_at or self._now()
+        self._validate_order_shape(request)
+        if request.next_open:
+            if now.time() <= time(15, 0):
+                raise BadRequestError(
+                    "next_open=true is only accepted after 15:00 on a trading day."
+                )
+            self._previous_trading_day(request.code, now.date())
+            try:
+                scheduled_for = self.market.get_next_trading_day(now.date())
+            except Exception as exc:
+                raise BadRequestError(
+                    f"Next-open order rejected for {request.code}: failed to resolve "
+                    f"the trading day after {now.date().isoformat()}: {exc}"
+                ) from exc
+            with self._order_lock:
+                state = self._state(agent_id)
+                self._validate_next_open_capacity(state, request, scheduled_for)
+                queued = NextOpenOrder(
+                    agent_id=agent_id,
+                    code=request.code,
+                    name=self.market.get_code_name(request.code),
+                    side=request.side,
+                    quantity=request.quantity,
+                    limit_price=request.limit_price,
+                    comment=request.comment,
+                    submitted_at=now,
+                    scheduled_for=scheduled_for,
+                )
+                state.next_open_orders.append(queued)
+                self._save_agent_state(state)
+            return queued
+
+        if not (time(9, 30) <= now.time() <= time(15, 0)):
+            if now.time() > time(15, 0):
+                raise BadRequestError(
+                    "After 15:00 you can only submit an order with next_open=true."
+                )
+            raise BadRequestError(
+                "next_open=false is only accepted between 09:30 and 15:00."
+            )
+        self._validate_price_band(request, now.date())
+        with self._order_lock:
+            state = self._state(agent_id)
+            order = self._create_order(
+                state,
+                agent_id,
+                request,
+                submitted_at=now,
+                trade_date=now.date(),
+            )
+            state.orders.append(order)
+            self._save_agent_state(state)
+        self.notifier.notify_order_submitted(agent, order)
+        return order
+
+    @staticmethod
+    def _validate_order_shape(request: SubmitOrder | NextOpenOrder) -> None:
         if request.side == "buy" and request.quantity % 100 != 0:
             raise BadRequestError("Buy order quantity must be a multiple of 100")
-        if not (time(9, 30) <= now.time() <= time(15, 0)):
-            raise BadRequestError("You can only submit an order between 9:30 and 15:00.")
-        if not self._is_main_board(request.code):
+        if not ArenaService._is_main_board(request.code):
             raise BadRequestError(
                 f"Only main-board codes are supported (SH 60xxxx, SZ 000/001/002/003 xxxx). "
                 f"{request.code} is on STAR / ChiNext / BJEX and is not accepted."
             )
+
+    def _previous_trading_day(self, code: str, trade_date: date) -> date:
         try:
             is_trading_day, previous_trading_day = self.market.get_trading_day_context(
-                now.date()
+                trade_date
             )
         except Exception as exc:
             raise BadRequestError(
-                f"Order rejected for {request.code}: failed to fetch the Baostock "
+                f"Order rejected for {code}: failed to fetch the Baostock "
                 f"trading calendar needed to resolve the previous trading day for "
-                f"{now.date().isoformat()}: {exc}"
+                f"{trade_date.isoformat()}: {exc}"
             ) from exc
         if not is_trading_day:
             raise BadRequestError(
-                f"Order rejected for {request.code}: {now.date().isoformat()} is not "
+                f"Order rejected for {code}: {trade_date.isoformat()} is not "
                 "an A-share trading day according to Baostock."
             )
+        return previous_trading_day
+
+    def _validate_price_band(
+        self,
+        request: SubmitOrder | NextOpenOrder,
+        trade_date: date,
+    ) -> None:
+        previous_trading_day = self._previous_trading_day(request.code, trade_date)
         try:
             prev_close = self.market.get_persisted_daily_close(
                 request.code, previous_trading_day
@@ -139,67 +210,372 @@ class ArenaService(ArenaBase[AShareAgentState]):
         limit_down = round(prev_close * 0.9, 2)
         if request.limit_price >= limit_up:
             raise BadRequestError(
-                f"Limit price {request.limit_price} >= today's limit-up "
+                f"Limit price {request.limit_price} >= {trade_date.isoformat()} limit-up "
                 f"{limit_up} for {request.code} (prev close {prev_close}); "
                 f"order would never fill."
             )
         if request.limit_price <= limit_down:
             raise BadRequestError(
-                f"Limit price {request.limit_price} is below today's limit-down "
+                f"Limit price {request.limit_price} is below "
+                f"{trade_date.isoformat()} limit-down "
                 f"{limit_down} for {request.code} (prev close {prev_close}); "
                 f"order would never fill."
             )
+
+    def _create_order(
+        self,
+        state: AShareAgentState,
+        agent_id: str,
+        request: SubmitOrder | NextOpenOrder,
+        submitted_at: datetime,
+        trade_date: date,
+        order_id: str | None = None,
+    ) -> OrderRecord:
+        self._validate_order_capacity(state, request, trade_date)
+        return self._new_order_record(
+            agent_id,
+            request,
+            submitted_at=submitted_at,
+            order_id=order_id,
+        )
+
+    def _new_order_record(
+        self,
+        agent_id: str,
+        request: SubmitOrder | NextOpenOrder,
+        submitted_at: datetime,
+        order_id: str | None = None,
+    ) -> OrderRecord:
+        payload: dict[str, object] = {
+            "agent_id": agent_id,
+            "code": request.code,
+            "name": (
+                request.name
+                if isinstance(request, NextOpenOrder)
+                else self.market.get_code_name(request.code)
+            ),
+            "side": request.side,
+            "quantity": request.quantity,
+            "limit_price": request.limit_price,
+            "comment": request.comment,
+            "submitted_at": submitted_at,
+        }
+        if order_id is not None:
+            payload["order_id"] = order_id
+        return OrderRecord.model_validate(payload)
+
+    def _validate_order_capacity(
+        self,
+        state: AShareAgentState,
+        request: SubmitOrder | NextOpenOrder,
+        trade_date: date,
+    ) -> None:
+        if request.side == "sell":
+            sellable = self._sellable_quantity(state, request.code, trade_date)
+            pending_sell = sum(
+                pending.quantity
+                for pending in state.orders
+                if pending.status == "pending"
+                and pending.side == "sell"
+                and pending.code == request.code
+            )
+            available = sellable - pending_sell
+            if request.quantity > available:
+                raise BadRequestError(
+                    f"Sell quantity {request.quantity} exceeds T+1 sellable {available} "
+                    f"(sellable={sellable}, encumbered_by_pending_sells={pending_sell})"
+                )
+            return
+
+        order_notional = request.limit_price * request.quantity
+        order_cost = order_notional + self._commission(order_notional)
+        pending_buy_cost = 0.0
+        for pending in state.orders:
+            if pending.status != "pending" or pending.side != "buy":
+                continue
+            pending_notional = pending.limit_price * pending.quantity
+            pending_buy_cost += pending_notional + self._commission(pending_notional)
+        available_cash = state.cash - pending_buy_cost
+        if order_cost > available_cash:
+            raise BadRequestError(
+                f"Insufficient cash for buy {request.code} x{request.quantity} "
+                f"@ limit {request.limit_price}: requires ¥{order_cost:.2f} "
+                f"(notional ¥{order_notional:.2f} + commission "
+                f"¥{self._commission(order_notional):.2f}) but only "
+                f"¥{available_cash:.2f} available "
+                f"(cash=¥{state.cash:.2f}, "
+                f"encumbered_by_pending_buys=¥{pending_buy_cost:.2f})"
+            )
+
+    def _validate_next_open_capacity(
+        self,
+        state: AShareAgentState,
+        request: AShareSubmitOrder,
+        scheduled_for: date,
+    ) -> None:
+        if request.side == "sell":
+            sellable = self._sellable_quantity(state, request.code, scheduled_for)
+            queued_sell = sum(
+                queued.quantity
+                for queued in state.next_open_orders
+                if queued.scheduled_for == scheduled_for
+                and queued.side == "sell"
+                and queued.code == request.code
+            )
+            available = sellable - queued_sell
+            if request.quantity > available:
+                raise BadRequestError(
+                    f"Sell quantity {request.quantity} exceeds next-open T+1 "
+                    f"sellable {available} (sellable={sellable}, "
+                    f"encumbered_by_next_open_sells={queued_sell})"
+                )
+            return
+
+        order_notional = request.limit_price * request.quantity
+        order_cost = order_notional + self._commission(order_notional)
+        queued_buy_cost = 0.0
+        for queued in state.next_open_orders:
+            if queued.scheduled_for != scheduled_for or queued.side != "buy":
+                continue
+            queued_notional = queued.limit_price * queued.quantity
+            queued_buy_cost += queued_notional + self._commission(queued_notional)
+        available_cash = state.cash - queued_buy_cost
+        if order_cost > available_cash:
+            raise BadRequestError(
+                f"Insufficient cash for next-open buy {request.code} "
+                f"x{request.quantity} @ limit {request.limit_price}: requires "
+                f"¥{order_cost:.2f} but only ¥{available_cash:.2f} is available "
+                f"after ¥{queued_buy_cost:.2f} queued next-open buys"
+            )
+
+    def list_next_open_orders(self, agent_id: str) -> list[NextOpenOrder]:
+        """Return a snapshot of one agent's queued next-open requests."""
+        self.get_agent(agent_id)
+        with self._order_lock:
+            return list(self._state(agent_id).next_open_orders)
+
+    def cancel_order(
+        self,
+        agent_id: str,
+        order_id: str,
+    ) -> OrderRecord | NextOpenOrder:
+        """Cancel a normal pending order or an unactivated next-open request."""
+        self.get_agent(agent_id)
         with self._order_lock:
             state = self._state(agent_id)
-            if request.side == "sell":
-                sellable = self._sellable_quantity(state, request.code, now.date())
-                pending_sell = sum(
-                    pending.quantity
-                    for pending in state.orders
-                    if pending.status == "pending"
-                    and pending.side == "sell"
-                    and pending.code == request.code
-                )
-                available = sellable - pending_sell
-                if request.quantity > available:
-                    raise BadRequestError(
-                        f"Sell quantity {request.quantity} exceeds T+1 sellable {available} "
-                        f"(sellable={sellable}, encumbered_by_pending_sells={pending_sell})"
-                    )
-            else:
-                order_notional = request.limit_price * request.quantity
-                order_cost = order_notional + self._commission(order_notional)
-                pending_buy_cost = 0.0
-                for pending in state.orders:
-                    if pending.status != "pending" or pending.side != "buy":
+            for index, queued in enumerate(state.next_open_orders):
+                if queued.order_id != order_id:
+                    continue
+                canceled = state.next_open_orders.pop(index)
+                self._save_agent_state(state)
+                return canceled
+        return super().cancel_order(agent_id, order_id)
+
+    def activate_next_open_orders(self) -> bool:
+        """Transform today's queued requests and match them to the 09:25 price.
+
+        Returns True when no request for today remains queued. Missing per-symbol
+        opening data is retried until 09:35, then converted into a canceled
+        normal order so a suspension or provider gap cannot block other symbols.
+        """
+        now = self._now()
+        today = now.date()
+        if now.time() < _NEXT_OPEN_ACTIVATION_TIME:
+            return False
+
+        due_codes: set[str] = set()
+        has_due_orders = False
+        with self._order_lock:
+            for agent_id, _ in self.list_agents():
+                state = self._state(agent_id)
+                for queued in state.next_open_orders:
+                    if queued.scheduled_for <= today:
+                        has_due_orders = True
+                    if queued.scheduled_for == today:
+                        due_codes.add(queued.code)
+        if not has_due_orders:
+            return True
+
+        opening_by_code: dict[str, tuple[float, datetime]] = {}
+        if now.time() <= _NEXT_OPEN_CUTOFF_TIME:
+            frames = self._refresh_intraday_cache(due_codes)
+            for code, frame in frames.items():
+                opening_quote = self._opening_auction_quote(frame, today)
+                if opening_quote is not None:
+                    opening_by_code[code] = opening_quote
+
+        submitted_notifications: list[OrderRecord] = []
+        canceled_notifications: list[OrderRecord] = []
+        filled_notifications: list[OrderRecord] = []
+        still_waiting = False
+        with self._order_lock:
+            for agent_id, _ in self.list_agents():
+                state = self._state(agent_id)
+                retained: list[NextOpenOrder] = []
+                dirty = False
+                for queued in state.next_open_orders:
+                    if queued.scheduled_for > today:
+                        retained.append(queued)
                         continue
-                    p_notional = pending.limit_price * pending.quantity
-                    pending_buy_cost += p_notional + self._commission(p_notional)
-                available_cash = state.cash - pending_buy_cost
-                if order_cost > available_cash:
-                    raise BadRequestError(
-                        f"Insufficient cash for buy {request.code} x{request.quantity} "
-                        f"@ limit {request.limit_price}: requires ¥{order_cost:.2f} "
-                        f"(notional ¥{order_notional:.2f} + commission "
-                        f"¥{self._commission(order_notional):.2f}) but only "
-                        f"¥{available_cash:.2f} available "
-                        f"(cash=¥{state.cash:.2f}, "
-                        f"encumbered_by_pending_buys=¥{pending_buy_cost:.2f})"
+                    if queued.scheduled_for < today:
+                        rejection_reason = (
+                            "Next-open activation was missed for "
+                            f"{queued.scheduled_for.isoformat()}"
+                        )
+                        opening_quote = None
+                    else:
+                        opening_quote = opening_by_code.get(queued.code)
+                        rejection_reason = None
+                        if (
+                            opening_quote is None
+                            and now.time() < _NEXT_OPEN_CUTOFF_TIME
+                        ):
+                            retained.append(queued)
+                            still_waiting = True
+                            continue
+                        if opening_quote is None:
+                            rejection_reason = (
+                                "No 09:25 opening-auction price was available; "
+                                "the symbol may be suspended or Sina data may be unavailable"
+                            )
+
+                    order = self._transform_next_open_order(
+                        state,
+                        queued,
+                        now,
+                        today,
+                        opening_quote,
+                        rejection_reason,
                     )
-            order = OrderRecord(
-                agent_id=agent_id,
-                code=request.code,
-                name=self.market.get_code_name(request.code),
-                side=request.side,
-                quantity=request.quantity,
-                limit_price=request.limit_price,
-                comment=request.comment,
-                submitted_at=now,
+                    submitted_notifications.append(order)
+                    if order.status == "filled":
+                        filled_notifications.append(order)
+                    elif order.status == "canceled":
+                        canceled_notifications.append(order)
+                    dirty = True
+                if dirty:
+                    state.next_open_orders = retained
+                    self._update_today_equity_point(state)
+                    self._save_agent_state(state)
+
+        for order in submitted_notifications:
+            self.notifier.notify_order_submitted(self.get_agent(order.agent_id), order)
+        for order in filled_notifications:
+            if order.fill is not None:
+                self.notifier.notify_order_filled(
+                    self.get_agent(order.agent_id), order, order.fill
+                )
+        for order in canceled_notifications:
+            self.notifier.notify_order_canceled(self.get_agent(order.agent_id), order)
+        if submitted_notifications:
+            self._rankings_cache = None
+        return not still_waiting
+
+    def _transform_next_open_order(
+        self,
+        state: AShareAgentState,
+        queued: NextOpenOrder,
+        activated_at: datetime,
+        trade_date: date,
+        opening_quote: tuple[float, datetime] | None,
+        rejection_reason: str | None,
+    ) -> OrderRecord:
+        try:
+            self._validate_price_band(queued, trade_date)
+            order = self._create_order(
+                state,
+                queued.agent_id,
+                queued,
+                submitted_at=activated_at,
+                trade_date=trade_date,
+                order_id=queued.order_id,
             )
-            state.orders.append(order)
-            self._save_agent_state(state)
-        self.notifier.notify_order_submitted(agent, order)
+        except BadRequestError as exc:
+            order = self._new_order_record(
+                queued.agent_id,
+                queued,
+                submitted_at=activated_at,
+                order_id=queued.order_id,
+            )
+            rejection_reason = exc.detail
+        state.orders.append(order)
+
+        if rejection_reason is not None:
+            self._cancel_activated_order(order, activated_at, rejection_reason)
+            return order
+        if opening_quote is None:
+            self._cancel_activated_order(
+                order,
+                activated_at,
+                "No 09:25 opening-auction price was available",
+            )
+            return order
+
+        opening_price, executed_at = opening_quote
+        price_crosses = (
+            opening_price <= order.limit_price
+            if order.side == "buy"
+            else opening_price >= order.limit_price
+        )
+        if not price_crosses:
+            self._cancel_activated_order(
+                order,
+                activated_at,
+                f"Next-open limit {order.limit_price} did not cross the 09:25 "
+                f"auction price {opening_price}",
+            )
+            return order
+        if not self._can_fill(state, order, opening_price, trade_date):
+            self._cancel_activated_order(
+                order,
+                activated_at,
+                "Account cash or sellable quantity changed before next-open activation",
+            )
+            return order
+        self._fill_order(
+            state,
+            order,
+            opening_price,
+            executed_at,
+            trade_date,
+            notify=False,
+        )
         return order
+
+    @staticmethod
+    def _cancel_activated_order(
+        order: OrderRecord,
+        canceled_at: datetime,
+        reason: str,
+    ) -> None:
+        order.status = "canceled"
+        order.canceled_at = canceled_at
+        order.rejection_reason = reason
+
+    @staticmethod
+    def _opening_auction_quote(
+        frame: pd.DataFrame,
+        trade_date: date,
+    ) -> tuple[float, datetime] | None:
+        if frame.empty:
+            return None
+        prices = frame["price"].to_numpy(dtype=np.float64, copy=False)
+        times = frame["trade_time"].to_numpy(copy=False)
+        minute_start = np.datetime64(datetime.combine(trade_date, time(9, 25)), "ns")
+        minute_end = np.datetime64(datetime.combine(trade_date, time(9, 26)), "ns")
+        indices = np.flatnonzero((times >= minute_start) & (times < minute_end))
+        if indices.size == 0:
+            return None
+        matched_index = int(indices[-1])
+        opening_price = float(prices[matched_index])
+        if not np.isfinite(opening_price) or opening_price <= 0.0:
+            return None
+        executed_at = (
+            pd.Timestamp(times[matched_index])
+            .to_pydatetime()
+            .replace(tzinfo=SHANGHAI_TZ)
+        )
+        return opening_price, executed_at
 
     # ----- matching loop -----
 
@@ -324,12 +700,15 @@ class ArenaService(ArenaBase[AShareAgentState]):
     async def run(self, polling_interval_seconds: int) -> None:
         """
         Match pending orders during 9:30 to 15:00, then finalize the session
-        once after 15:00 each trade-date. Cash-dividend / bonus-share events are
-        applied once per trade-date only before 9:30; if the server first starts
-        after the market opens, that day's corporate-action scan is skipped.
+        once after 15:00 each trade-date. Queued next-open requests are activated
+        from 09:28 and matched only against the 09:25 auction price. Cash-dividend /
+        bonus-share events are applied once per trade-date only before 9:30; if the
+        server first starts after the market opens, that day's corporate-action
+        scan is skipped.
         """
         last_finalized_date: date | None = None
         last_corporate_action_date: date | None = None
+        last_next_open_activation_date: date | None = None
         while True:
             now = self._now()
             today = now.date()
@@ -347,6 +726,18 @@ class ArenaService(ArenaBase[AShareAgentState]):
                     logger.warning("Corporate action scan is skipped "
                                    "because the market is already open")
                     last_corporate_action_date = today
+            if (
+                now.time() >= _NEXT_OPEN_ACTIVATION_TIME
+                and last_next_open_activation_date != today
+            ):
+                try:
+                    activation_complete = await asyncio.to_thread(
+                        self.activate_next_open_orders
+                    )
+                    if activation_complete:
+                        last_next_open_activation_date = today
+                except Exception:
+                    logger.exception("Exception activating next-open orders")
             if time(9, 30) <= now.time() <= time(15, 0):
                 try:
                     await asyncio.to_thread(self.match_pending_orders)
@@ -595,6 +986,7 @@ class ArenaService(ArenaBase[AShareAgentState]):
         market_price: float,
         executed_at: datetime,
         trade_date: date,
+        notify: bool = True,
     ) -> None:
         notional = market_price * order.quantity
         commission = self._commission(notional)
@@ -623,7 +1015,10 @@ class ArenaService(ArenaBase[AShareAgentState]):
             )
         order.status = "filled"
         order.fill = fill
-        self.notifier.notify_order_filled(self.get_agent(order.agent_id), order, fill)
+        if notify:
+            self.notifier.notify_order_filled(
+                self.get_agent(order.agent_id), order, fill
+            )
 
     def _build_portfolio(self, state: AShareAgentState) -> PortfolioSnapshot:
         today = self._now().date()

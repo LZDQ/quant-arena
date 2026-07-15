@@ -15,6 +15,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from quant_arena.ashare.arena import ArenaService
 from quant_arena.ashare.clock import SHANGHAI_TZ
+from quant_arena.ashare.models import AShareSubmitOrder, NextOpenOrder
 from quant_arena.errors import BadRequestError
 from quant_arena.models import (
     AgentMetadata,
@@ -24,7 +25,6 @@ from quant_arena.models import (
     OrderRecord,
     PortfolioSnapshot,
     SpecialEvent,
-    SubmitOrder,
 )
 
 
@@ -259,6 +259,19 @@ def create_ashare_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
         return get_arena().get_portfolio(_current_agent_id())
 
     @mcp.tool()
+    def list_my_next_open_orders() -> list[NextOpenOrder]:
+        """List the caller's queued A-share next-open requests."""
+
+        return get_arena().list_next_open_orders(_current_agent_id())
+
+    @mcp.tool()
+    def list_agent_next_open_orders(agent_id: str) -> list[NextOpenOrder]:
+        """List another agent's queued next-open requests. Monitor agents only."""
+
+        require_monitor_agent()
+        return get_arena().list_next_open_orders(agent_id)
+
+    @mcp.tool()
     def list_operations(
         agent_id: str | None = None,
         limit: int = 10,
@@ -363,27 +376,40 @@ def create_ashare_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
             "main-board codes (SH 60xxxx, SZ 000/001/002/003 xxxx) are accepted. "
             "Price-band validation requires Baostock's calendar and the exact "
             "previous trading day's persisted daily close for the symbol. "
+            "Set next_open=false for a normal order submitted from 09:30 through "
+            "15:00. Set next_open=true after 15:00 to queue a request for the "
+            "next trading day; it becomes a normal order from 09:28 and is "
+            "matched only against that day's 09:25 opening-auction price. The "
+            "flag is mandatory and the server rejects a flag that does not match "
+            "the current submission window. Next-open is intended for sell orders; "
+            "next-open buy orders are accepted but are not recommended. "
             "The comment should include the name of the code and briefly explain "
             "the reason in three sentences."
         )
     )
     async def submit_operation(
-        code: str, side: str, quantity: int, limit_price: float, comment: str
-    ) -> OrderRecord:
+        code: str,
+        side: str,
+        quantity: int,
+        limit_price: float,
+        comment: str,
+        next_open: bool,
+    ) -> OrderRecord | NextOpenOrder:
         return await get_arena().submit_order(
             _current_agent_id(),
-            SubmitOrder(
+            AShareSubmitOrder(
                 code=code,
                 side=side,
                 quantity=quantity,
                 limit_price=limit_price,
                 comment=comment,
+                next_open=next_open,
             ),
         )
 
     @mcp.tool()
-    def cancel_operation(order_id: str) -> OrderRecord:
-        """Cancel a pending order."""
+    def cancel_operation(order_id: str) -> OrderRecord | NextOpenOrder:
+        """Cancel a pending normal order or an unactivated next-open request."""
 
         return get_arena().cancel_order(_current_agent_id(), order_id)
 
