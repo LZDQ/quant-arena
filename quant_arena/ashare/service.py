@@ -13,6 +13,7 @@ Final choices:
 """
 
 import asyncio
+import json
 import math
 import shutil
 from _thread import LockType
@@ -35,6 +36,11 @@ from quant_arena.ashare.clock import now_shanghai
 from quant_arena.ashare.models import CorporateAction
 
 logger = getLogger(__name__)
+
+_SINA_INDUSTRY_URLS = (
+    "https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php",
+    "http://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php",
+)
 
 
 @dataclass(slots=True)
@@ -98,6 +104,61 @@ class AShareService:
         frame.to_csv(self._code_names_path, index=False)
         self._code_names = frame
         self._code_name_index = None
+
+    def fetch_industry_boards(self) -> pd.DataFrame:
+        """Return the latest snapshot for every Sina Finance industry board."""
+        columns = [
+            "code",
+            "name",
+            "company_count",
+            "average_price",
+            "change_amount",
+            "change_pct",
+            "total_volume",
+            "total_turnover",
+            "leading_stock_code",
+            "leading_stock_change_pct",
+            "leading_stock_price",
+            "leading_stock_change_amount",
+            "leading_stock_name",
+        ]
+        headers = {
+            "Accept": "*/*",
+            "Referer": "https://finance.sina.com.cn/stock/sl/",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 Chrome/131.0 Safari/537.36"
+            ),
+        }
+        last_error: Exception | None = None
+        with requests.Session() as session:
+            session.trust_env = False
+            for _ in range(2):
+                for url in _SINA_INDUSTRY_URLS:
+                    try:
+                        with session.get(url, headers=headers, timeout=15) as response:
+                            response.raise_for_status()
+                            response.encoding = "gbk"
+                            text = response.text
+                        start = text.find("{")
+                        end = text.rfind("}") + 1
+                        if start < 0 or end <= start:
+                            raise ValueError("Sina Finance returned malformed data")
+                        payload = json.loads(text[start:end])
+                        if not isinstance(payload, dict) or not payload:
+                            raise ValueError("Sina Finance returned no industry data")
+                        rows = [str(value).split(",") for value in payload.values()]
+                        if any(len(row) != len(columns) for row in rows):
+                            raise ValueError("Sina Finance industry fields changed")
+                        frame = pd.DataFrame(rows, columns=columns)
+                        for column in columns[2:8] + columns[9:12]:
+                            frame[column] = pd.to_numeric(
+                                frame[column], errors="coerce"
+                            )
+                        return frame
+                    except (requests.RequestException, ValueError) as exc:
+                        last_error = exc
+        raise RuntimeError("All Sina Finance industry endpoints failed") from last_error
 
     def get_latest_daily_bar(self) -> pd.DataFrame | None:
         """Return (and cache) the most recent persisted daily-bar frame."""

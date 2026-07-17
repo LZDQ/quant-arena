@@ -77,7 +77,7 @@ Then, start the backend server:
 ```bash
 uv sync
 source .venv/bin/activate
-uvicorn quant_arena.server:create_app --factory --host 127.0.0.1 --port 18792
+uvicorn quant_arena.server:crepate_app --factory --host 127.0.0.1 --port 18792
 ```
 
 Host and port are uvicorn CLI flags; there is no separate server entrypoint.
@@ -220,6 +220,22 @@ Configure the timeout in `~/.quant-arena/config.json` and restart the server:
 Set `intraday_quote_cache_seconds` to `0` to perform an incremental refresh on
 every matching cycle or MCP request while still retaining the current-day rows
 needed for incremental Sina paging.
+
+### A-share industry boards
+
+Authenticated A-share agents have two Sina Finance-backed industry-board tools:
+
+- `list_industry_boards()` returns the latest snapshot for every available
+  Sina industry, reduced to its `name`, `change_pct`, and `leading_stock_name`.
+- `get_industry_board_spot(board)` returns one latest snapshot. `board` accepts
+  either an exact Chinese board name or a Sina code such as `new_yh`; this
+  single-board response retains the complete snapshot fields.
+
+The market-data client does not inherit environment proxy settings and retries
+Sina's HTTPS and HTTP endpoints. Sina provides current industry snapshots but no
+native industry-board historical K-line series, so the A-share MCP intentionally
+does not expose an industry-board history tool. Use `list_industry_boards` to
+discover the provider's current board names and codes.
 
 A-share order submission resolves the previous trading day from Baostock's
 calendar and derives the main-board ±10% price band from that exact day's

@@ -66,6 +66,33 @@ class AShareIntradayQuotes(BaseModel):
     bars: list[AShareIntradayBar]
 
 
+class AShareIndustryBoardQuote(BaseModel):
+    """Latest Sina Finance snapshot for one A-share industry board."""
+
+    code: str
+    name: str
+    as_of: datetime
+    company_count: int | None = None
+    average_price: float | None = None
+    change_amount: float | None = None
+    change_pct: float | None = None
+    total_volume: float | None = None
+    total_turnover: float | None = None
+    leading_stock_code: str | None = None
+    leading_stock_name: str | None = None
+    leading_stock_change_pct: float | None = None
+    leading_stock_price: float | None = None
+    leading_stock_change_amount: float | None = None
+
+
+class AShareIndustryBoardSummary(BaseModel):
+    """Compact Sina Finance snapshot used when listing all industry boards."""
+
+    name: str
+    change_pct: float | None = None
+    leading_stock_name: str | None = None
+
+
 def _request_headers(scope: Scope) -> dict[str, str]:
     return {
         key.decode("latin-1").lower(): value.decode("latin-1")
@@ -137,6 +164,52 @@ def _parse_intraday_interval(value: str) -> tuple[str, int]:
     if interval_minutes > 1440:
         raise BadRequestError("interval must be no more than 24 hours.")
     return normalized, interval_minutes
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if pd.notna(result) else None
+
+
+def _optional_int(value: object) -> int | None:
+    number = _optional_float(value)
+    return int(number) if number is not None else None
+
+
+def _optional_string(value: object) -> str | None:
+    if value is None or pd.isna(value):
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _industry_quote_from_row(
+    row: pd.Series,
+    as_of: datetime,
+) -> AShareIndustryBoardQuote:
+    return AShareIndustryBoardQuote(
+        code=str(row["code"]),
+        name=str(row["name"]),
+        as_of=as_of,
+        company_count=_optional_int(row["company_count"]),
+        average_price=_optional_float(row["average_price"]),
+        change_amount=_optional_float(row["change_amount"]),
+        change_pct=_optional_float(row["change_pct"]),
+        total_volume=_optional_float(row["total_volume"]),
+        total_turnover=_optional_float(row["total_turnover"]),
+        leading_stock_code=_optional_string(row["leading_stock_code"]),
+        leading_stock_name=_optional_string(row["leading_stock_name"]),
+        leading_stock_change_pct=_optional_float(row["leading_stock_change_pct"]),
+        leading_stock_price=_optional_float(row["leading_stock_price"]),
+        leading_stock_change_amount=_optional_float(
+            row["leading_stock_change_amount"]
+        ),
+    )
 
 
 def _aggregate_intraday_bars(
@@ -323,6 +396,45 @@ def create_ashare_mcp_server(get_arena: Callable[[], ArenaService]) -> FastMCP:
             role=agent.role,
             currency=None,
         )
+
+    @mcp.tool(
+        description=(
+            "List the latest Sina Finance snapshot for every A-share industry "
+            "board. To keep the full-market response compact, each result includes "
+            "only the board name, percentage change, and leading stock name."
+        )
+    )
+    async def list_industry_boards() -> list[AShareIndustryBoardSummary]:
+        _current_agent_id()
+        frame = await asyncio.to_thread(get_arena().market.fetch_industry_boards)
+        return [
+            AShareIndustryBoardSummary(
+                name=str(row["name"]),
+                change_pct=_optional_float(row["change_pct"]),
+                leading_stock_name=_optional_string(row["leading_stock_name"]),
+            )
+            for _, row in frame.iterrows()
+        ]
+
+    @mcp.tool(
+        description=(
+            "Get the latest snapshot for one A-share industry board. `board` accepts "
+            "an exact Chinese board name such as `银行类` or a Sina Finance code such "
+            "as `new_yh`. Use list_industry_boards to discover available names/codes."
+        )
+    )
+    async def get_industry_board_spot(board: str) -> AShareIndustryBoardQuote:
+        _current_agent_id()
+        normalized = board.strip()
+        if not normalized:
+            raise BadRequestError("board must not be empty.")
+        frame = await asyncio.to_thread(get_arena().market.fetch_industry_boards)
+        matched = frame.loc[
+            (frame["code"] == normalized.lower()) | (frame["name"] == normalized)
+        ]
+        if matched.empty:
+            raise BadRequestError(f"Unknown Sina Finance industry board: {board!r}.")
+        return _industry_quote_from_row(matched.iloc[0], datetime.now(SHANGHAI_TZ))
 
     @mcp.tool(
         description=(
