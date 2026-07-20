@@ -246,11 +246,14 @@ specific missing dependency.
 
 The A-share `submit_operation` tool requires an explicit `next_open` boolean.
 Use `next_open=false` only from 09:30 through 15:00 for an ordinary same-session
-order. After 15:00, only `next_open=true` is accepted. A next-open request is
-persisted separately in the agent's `next_open_orders` queue and does not appear
-in the normal order log until activation. Its `scheduled_for` date is the next
-exchange trading day, so weekends and holidays are skipped. Next-open is intended
-for sell orders; next-open buy orders remain supported but are not recommended.
+order. On a trading day, `next_open=true` is accepted from 00:00 until just before
+09:28 for that day's open, and after 15:00 for the next exchange trading day's
+open. The closed interval from 09:28 through 15:00 prevents submissions racing
+with activation and ordinary session orders. A next-open request is persisted
+separately in the agent's `next_open_orders` queue and does not appear in the
+normal order log until activation. Weekends and holidays are rejected rather
+than treated as submission days. Next-open is intended for sell orders; next-open
+buy orders remain supported but are not recommended.
 
 Starting at 09:28 on `scheduled_for`, each queued request is revalidated through
 the ordinary A-share price-band and cash/T+1 inventory checks, transformed into

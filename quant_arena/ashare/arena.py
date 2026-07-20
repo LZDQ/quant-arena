@@ -101,18 +101,22 @@ class ArenaService(ArenaBase[AShareAgentState]):
         now = submitted_at or self._now()
         self._validate_order_shape(request)
         if request.next_open:
-            if now.time() <= time(15, 0):
+            if now.time() < _NEXT_OPEN_ACTIVATION_TIME:
+                scheduled_for = now.date()
+            elif now.time() <= time(15, 0):
                 raise BadRequestError(
-                    "next_open=true is only accepted after 15:00 on a trading day."
+                    "next_open=true is only accepted before 09:28 or after 15:00 "
+                    "on a trading day."
                 )
             self._previous_trading_day(request.code, now.date())
-            try:
-                scheduled_for = self.market.get_next_trading_day(now.date())
-            except Exception as exc:
-                raise BadRequestError(
-                    f"Next-open order rejected for {request.code}: failed to resolve "
-                    f"the trading day after {now.date().isoformat()}: {exc}"
-                ) from exc
+            if now.time() > time(15, 0):
+                try:
+                    scheduled_for = self.market.get_next_trading_day(now.date())
+                except Exception as exc:
+                    raise BadRequestError(
+                        f"Next-open order rejected for {request.code}: failed to resolve "
+                        f"the trading day after {now.date().isoformat()}: {exc}"
+                    ) from exc
             with self._order_lock:
                 state = self._state(agent_id)
                 self._validate_next_open_capacity(state, request, scheduled_for)
